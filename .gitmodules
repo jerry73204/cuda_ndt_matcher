@@ -1,0 +1,3 @@
+[submodule "external/fast_gicp_rust"]
+	path = external/fast_gicp_rust
+	url = https://github.com/jerry73204/fast_gicp_rust.git

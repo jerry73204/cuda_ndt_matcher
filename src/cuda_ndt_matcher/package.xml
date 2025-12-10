@@ -1,0 +1,17 @@
+<package format="3">
+  <name>cuda_ndt_matcher</name>
+  <version>0.1.0</version>
+  <description>CUDA-accelerated NDT scan matcher for localization</description>
+  <maintainer email="todo@example.com">TODO</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclrs</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2_msgs</depend>
+
+  <export>
+    <build_type>ament_cargo</build_type>
+  </export>
+</package>

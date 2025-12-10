@@ -1,0 +1,15 @@
+[package]
+name = "cuda_ndt_matcher"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+ctrlc = "3.4"
+
+# ROS 2 dependencies - resolved via ament_index by cargo-ros2
+rclrs = "*"
+std_msgs = "*"
+sensor_msgs = "*"
+geometry_msgs = "*"
+tf2_msgs = "*"
