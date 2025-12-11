@@ -48,10 +48,64 @@ pub struct ScoreParams {
     pub converged_param_nearest_voxel_transformation_likelihood: f64,
 }
 
+/// Covariance estimation type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum CovarianceEstimationType {
+    /// Use fixed covariance matrix
+    Fixed = 0,
+    /// Use Laplace approximation (inverse of Hessian)
+    LaplaceApproximation = 1,
+    /// Use multi-NDT (multiple alignments from offset poses)
+    MultiNdt = 2,
+    /// Use multi-NDT with score-based weighting (faster than MultiNdt)
+    MultiNdtScore = 3,
+}
+
+impl CovarianceEstimationType {
+    pub fn from_i32(value: i32) -> Self {
+        match value {
+            0 => Self::Fixed,
+            1 => Self::LaplaceApproximation,
+            2 => Self::MultiNdt,
+            3 => Self::MultiNdtScore,
+            _ => Self::Fixed, // Default to fixed for unknown values
+        }
+    }
+}
+
+/// Covariance estimation sub-parameters
+pub struct CovarianceEstimationParams {
+    /// Initial pose offset model X coordinates (meters)
+    pub initial_pose_offset_model_x: Vec<f64>,
+    /// Initial pose offset model Y coordinates (meters)
+    pub initial_pose_offset_model_y: Vec<f64>,
+    /// Softmax temperature for MULTI_NDT_SCORE (lower = sharper weights)
+    pub temperature: f64,
+    /// Scale factor for estimated covariance
+    pub scale_factor: f64,
+}
+
+impl Default for CovarianceEstimationParams {
+    fn default() -> Self {
+        Self {
+            // Default offsets matching Autoware reference
+            initial_pose_offset_model_x: vec![0.0, 0.0, 0.5, -0.5, 1.0, -1.0],
+            initial_pose_offset_model_y: vec![0.5, -0.5, 0.0, 0.0, 0.0, 0.0],
+            temperature: 0.05,
+            scale_factor: 1.0,
+        }
+    }
+}
+
 /// Covariance configuration
 pub struct CovarianceParams {
+    /// Static 6x6 covariance matrix (used for FIXED mode and as fallback)
     pub output_pose_covariance: [f64; 36],
-    pub covariance_estimation_type: i32,
+    /// Covariance estimation type
+    pub covariance_estimation_type: CovarianceEstimationType,
+    /// Estimation parameters for dynamic modes
+    pub estimation: CovarianceEstimationParams,
 }
 
 /// Dynamic map loading configuration
@@ -196,11 +250,36 @@ impl NdtParams {
             },
             covariance: CovarianceParams {
                 output_pose_covariance: default_covariance(),
-                covariance_estimation_type: node
-                    .declare_parameter("covariance.covariance_estimation.covariance_estimation_type")
-                    .default(0)
-                    .mandatory()?
-                    .get() as i32,
+                covariance_estimation_type: CovarianceEstimationType::from_i32(
+                    node.declare_parameter("covariance.covariance_estimation.covariance_estimation_type")
+                        .default(0)
+                        .mandatory()?
+                        .get() as i32,
+                ),
+                estimation: CovarianceEstimationParams {
+                    initial_pose_offset_model_x: node
+                        .declare_parameter::<Arc<[f64]>>("covariance.covariance_estimation.initial_pose_offset_model_x")
+                        .default(Arc::from([0.0, 0.0, 0.5, -0.5, 1.0, -1.0]))
+                        .mandatory()?
+                        .get()
+                        .to_vec(),
+                    initial_pose_offset_model_y: node
+                        .declare_parameter::<Arc<[f64]>>("covariance.covariance_estimation.initial_pose_offset_model_y")
+                        .default(Arc::from([0.5, -0.5, 0.0, 0.0, 0.0, 0.0]))
+                        .mandatory()?
+                        .get()
+                        .to_vec(),
+                    temperature: node
+                        .declare_parameter("covariance.covariance_estimation.temperature")
+                        .default(0.05)
+                        .mandatory()?
+                        .get(),
+                    scale_factor: node
+                        .declare_parameter("covariance.covariance_estimation.scale_factor")
+                        .default(1.0)
+                        .mandatory()?
+                        .get(),
+                },
             },
             dynamic_map: DynamicMapParams {
                 update_distance: node

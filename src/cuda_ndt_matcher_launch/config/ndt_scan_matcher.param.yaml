@@ -34,7 +34,26 @@
 
     covariance:
       covariance_estimation:
+        # Covariance estimation type:
+        # 0 = FIXED (use static covariance matrix)
+        # 1 = LAPLACE (inverse of Hessian from NDT optimization)
+        # 2 = MULTI_NDT (sample covariance from multiple alignments - slowest)
+        # 3 = MULTI_NDT_SCORE (score-weighted covariance - faster than MULTI_NDT)
         covariance_estimation_type: 0
+
+        # Initial pose offsets for MULTI_NDT and MULTI_NDT_SCORE modes
+        # These define search positions relative to the result pose
+        # Arrays must have equal length
+        initial_pose_offset_model_x: [0.0, 0.0, 0.5, -0.5, 1.0, -1.0]
+        initial_pose_offset_model_y: [0.5, -0.5, 0.0, 0.0, 0.0, 0.0]
+
+        # Softmax temperature for MULTI_NDT_SCORE mode
+        # Lower values = sharper weights (more focus on best matches)
+        # Higher values = smoother weights (more diffuse distribution)
+        temperature: 0.05
+
+        # Scale factor for estimated covariance (applied to dynamic estimates only)
+        scale_factor: 1.0
 
     dynamic_map_loading:
       update_distance: 20.0

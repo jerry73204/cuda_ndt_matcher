@@ -1,3 +1,4 @@
+mod covariance;
 mod ndt_manager;
 mod params;
 mod pointcloud;
@@ -241,6 +242,20 @@ impl NdtScanMatcherNode {
             return;
         }
 
+        // Estimate covariance based on configured mode
+        let source_cloud = fast_gicp::PointCloudXYZ::from_points(&sensor_points);
+        let target_cloud = fast_gicp::PointCloudXYZ::from_points(map);
+
+        let covariance_result = covariance::estimate_covariance(
+            &params.covariance,
+            &result.hessian,
+            &result.pose,
+            manager.ndt(),
+            &source_cloud,
+            &target_cloud,
+            &result.final_transform,
+        );
+
         // Create output header
         let header = Header {
             stamp: msg.header.stamp.clone(),
@@ -256,12 +271,12 @@ impl NdtScanMatcherNode {
             log_error!(NODE_NAME, "Failed to publish pose: {e}");
         }
 
-        // Publish PoseWithCovarianceStamped
+        // Publish PoseWithCovarianceStamped with estimated covariance
         let pose_cov_msg = PoseWithCovarianceStamped {
             header,
             pose: PoseWithCovariance {
                 pose: result.pose,
-                covariance: params.covariance.output_pose_covariance,
+                covariance: covariance_result.covariance,
             },
         };
         if let Err(e) = pose_cov_pub.publish(&pose_cov_msg) {

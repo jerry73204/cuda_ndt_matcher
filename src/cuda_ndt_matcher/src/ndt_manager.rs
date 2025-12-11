@@ -2,16 +2,20 @@
 
 use crate::params::NdtParams;
 use anyhow::{bail, Result};
-use fast_gicp::{NdtDistanceMode, NDTCuda, NeighborSearchMethod, PointCloudXYZ, Transform3f};
+use fast_gicp::{Hessian6x6, NdtDistanceMode, NDTCuda, NeighborSearchMethod, PointCloudXYZ, Transform3f};
 use geometry_msgs::msg::{Point, Pose, Quaternion};
 use nalgebra::{Isometry3, Quaternion as NaQuaternion, Translation3, UnitQuaternion};
 
-/// Result of NDT alignment
+/// Result of NDT alignment with Hessian for covariance estimation
 pub struct AlignResult {
     pub pose: Pose,
     pub converged: bool,
     pub score: f64,
     pub iterations: i32,
+    /// Hessian matrix from NDT optimization (for Laplace covariance estimation)
+    pub hessian: Hessian6x6,
+    /// The final transformation as Transform3f (for multi-NDT covariance estimation)
+    pub final_transform: Transform3f,
 }
 
 /// NDT alignment manager
@@ -67,20 +71,27 @@ impl NdtManager {
         // Convert initial pose to transform
         let initial_transform = pose_to_transform(initial_pose);
 
-        // Run alignment
-        let result = self
+        // Run alignment with full result (includes Hessian)
+        let ndt_result = self
             .ndt
-            .align_with_guess(&source, &target, Some(&initial_transform))?;
+            .align_with_guess_full(&source, &target, Some(&initial_transform))?;
 
         // Convert result transform to pose
-        let pose = transform_to_pose(&result.final_transformation);
+        let pose = transform_to_pose(&ndt_result.result.final_transformation);
 
         Ok(AlignResult {
             pose,
-            converged: result.has_converged,
-            score: result.fitness_score,
-            iterations: result.num_iterations,
+            converged: ndt_result.result.has_converged,
+            score: ndt_result.result.fitness_score,
+            iterations: ndt_result.result.num_iterations,
+            hessian: ndt_result.hessian,
+            final_transform: ndt_result.result.final_transformation,
         })
+    }
+
+    /// Get the NDT instance for covariance estimation
+    pub fn ndt(&self) -> &NDTCuda {
+        &self.ndt
     }
 }
 
