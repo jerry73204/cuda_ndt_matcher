@@ -251,20 +251,26 @@ impl NdtParams {
             covariance: CovarianceParams {
                 output_pose_covariance: default_covariance(),
                 covariance_estimation_type: CovarianceEstimationType::from_i32(
-                    node.declare_parameter("covariance.covariance_estimation.covariance_estimation_type")
-                        .default(0)
-                        .mandatory()?
-                        .get() as i32,
+                    node.declare_parameter(
+                        "covariance.covariance_estimation.covariance_estimation_type",
+                    )
+                    .default(0)
+                    .mandatory()?
+                    .get() as i32,
                 ),
                 estimation: CovarianceEstimationParams {
                     initial_pose_offset_model_x: node
-                        .declare_parameter::<Arc<[f64]>>("covariance.covariance_estimation.initial_pose_offset_model_x")
+                        .declare_parameter::<Arc<[f64]>>(
+                            "covariance.covariance_estimation.initial_pose_offset_model_x",
+                        )
                         .default(Arc::from([0.0, 0.0, 0.5, -0.5, 1.0, -1.0]))
                         .mandatory()?
                         .get()
                         .to_vec(),
                     initial_pose_offset_model_y: node
-                        .declare_parameter::<Arc<[f64]>>("covariance.covariance_estimation.initial_pose_offset_model_y")
+                        .declare_parameter::<Arc<[f64]>>(
+                            "covariance.covariance_estimation.initial_pose_offset_model_y",
+                        )
                         .default(Arc::from([0.5, -0.5, 0.0, 0.0, 0.0, 0.0]))
                         .mandatory()?
                         .get()

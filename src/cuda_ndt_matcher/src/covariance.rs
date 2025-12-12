@@ -65,15 +65,15 @@ pub fn estimate_covariance(
         // Ensure minimum covariance values from the static matrix
         let adjusted = adjust_diagonal_covariance(
             &scaled,
-            params.output_pose_covariance[0],  // default cov_xx
-            params.output_pose_covariance[7],  // default cov_yy
+            params.output_pose_covariance[0], // default cov_xx
+            params.output_pose_covariance[7], // default cov_yy
         );
 
         // Update the XY block of the 6x6 covariance matrix
-        covariance[0] = adjusted[0][0];     // [0][0]
-        covariance[1] = adjusted[0][1];     // [0][1]
-        covariance[6] = adjusted[1][0];     // [1][0]
-        covariance[7] = adjusted[1][1];     // [1][1]
+        covariance[0] = adjusted[0][0]; // [0][0]
+        covariance[1] = adjusted[0][1]; // [0][1]
+        covariance[6] = adjusted[1][0]; // [1][0]
+        covariance[7] = adjusted[1][1]; // [1][1]
 
         Some(adjusted)
     };
@@ -264,7 +264,7 @@ fn rotate_covariance(covariance: &[f64; 36], pose: &Pose) -> [f64; 36] {
     }
 
     // Rotate covariance: R * C * R^T
-    let rotated = &rot_6x6 * &cov * rot_6x6.transpose();
+    let rotated = rot_6x6 * cov * rot_6x6.transpose();
 
     let mut result = [0.0; 36];
     for i in 0..6 {
@@ -284,11 +284,7 @@ fn scale_covariance_2d(cov: &[[f64; 2]; 2], scale: f64) -> [[f64; 2]; 2] {
 }
 
 /// Adjust diagonal covariance to ensure minimum values
-fn adjust_diagonal_covariance(
-    cov: &[[f64; 2]; 2],
-    min_xx: f64,
-    min_yy: f64,
-) -> [[f64; 2]; 2] {
+fn adjust_diagonal_covariance(cov: &[[f64; 2]; 2], min_xx: f64, min_yy: f64) -> [[f64; 2]; 2] {
     [
         [cov[0][0].max(min_xx), cov[0][1]],
         [cov[1][0], cov[1][1].max(min_yy)],
@@ -321,10 +317,7 @@ fn calculate_sample_covariance(points: &[Vector2<f64>]) -> [[f64; 2]; 2] {
 }
 
 /// Calculate weighted covariance from 2D points
-fn calculate_weighted_covariance(
-    points: &[Vector2<f64>],
-    weights: &[f64],
-) -> [[f64; 2]; 2] {
+fn calculate_weighted_covariance(points: &[Vector2<f64>], weights: &[f64]) -> [[f64; 2]; 2] {
     let n = points.len();
     if n < 2 || weights.len() != n {
         return [[1.0, 0.0], [0.0, 1.0]];
@@ -381,20 +374,44 @@ fn extract_xy_from_transform(transform: &Transform3f) -> Vector2<f64> {
 fn transform_to_matrix4(transform: &Transform3f) -> Matrix4<f64> {
     let flat = transform.to_flat();
     Matrix4::new(
-        flat[0] as f64, flat[1] as f64, flat[2] as f64, flat[3] as f64,
-        flat[4] as f64, flat[5] as f64, flat[6] as f64, flat[7] as f64,
-        flat[8] as f64, flat[9] as f64, flat[10] as f64, flat[11] as f64,
-        flat[12] as f64, flat[13] as f64, flat[14] as f64, flat[15] as f64,
+        flat[0] as f64,
+        flat[1] as f64,
+        flat[2] as f64,
+        flat[3] as f64,
+        flat[4] as f64,
+        flat[5] as f64,
+        flat[6] as f64,
+        flat[7] as f64,
+        flat[8] as f64,
+        flat[9] as f64,
+        flat[10] as f64,
+        flat[11] as f64,
+        flat[12] as f64,
+        flat[13] as f64,
+        flat[14] as f64,
+        flat[15] as f64,
     )
 }
 
 /// Convert nalgebra Matrix4 to Transform3f
 fn matrix4_to_transform(matrix: &Matrix4<f64>) -> Transform3f {
     Transform3f::from_flat(&[
-        matrix[(0, 0)] as f32, matrix[(0, 1)] as f32, matrix[(0, 2)] as f32, matrix[(0, 3)] as f32,
-        matrix[(1, 0)] as f32, matrix[(1, 1)] as f32, matrix[(1, 2)] as f32, matrix[(1, 3)] as f32,
-        matrix[(2, 0)] as f32, matrix[(2, 1)] as f32, matrix[(2, 2)] as f32, matrix[(2, 3)] as f32,
-        matrix[(3, 0)] as f32, matrix[(3, 1)] as f32, matrix[(3, 2)] as f32, matrix[(3, 3)] as f32,
+        matrix[(0, 0)] as f32,
+        matrix[(0, 1)] as f32,
+        matrix[(0, 2)] as f32,
+        matrix[(0, 3)] as f32,
+        matrix[(1, 0)] as f32,
+        matrix[(1, 1)] as f32,
+        matrix[(1, 2)] as f32,
+        matrix[(1, 3)] as f32,
+        matrix[(2, 0)] as f32,
+        matrix[(2, 1)] as f32,
+        matrix[(2, 2)] as f32,
+        matrix[(2, 3)] as f32,
+        matrix[(3, 0)] as f32,
+        matrix[(3, 1)] as f32,
+        matrix[(3, 2)] as f32,
+        matrix[(3, 3)] as f32,
     ])
 }
 

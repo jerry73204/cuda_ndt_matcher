@@ -2,7 +2,9 @@
 
 use crate::params::NdtParams;
 use anyhow::{bail, Result};
-use fast_gicp::{Hessian6x6, NdtDistanceMode, NDTCuda, NeighborSearchMethod, PointCloudXYZ, Transform3f};
+use fast_gicp::{
+    Hessian6x6, NDTCuda, NdtDistanceMode, NeighborSearchMethod, PointCloudXYZ, Transform3f,
+};
 use geometry_msgs::msg::{Point, Pose, Quaternion};
 use nalgebra::{Isometry3, Quaternion as NaQuaternion, Translation3, UnitQuaternion};
 
@@ -72,9 +74,9 @@ impl NdtManager {
         let initial_transform = pose_to_transform(initial_pose);
 
         // Run alignment with full result (includes Hessian)
-        let ndt_result = self
-            .ndt
-            .align_with_guess_full(&source, &target, Some(&initial_transform))?;
+        let ndt_result =
+            self.ndt
+                .align_with_guess_full(&source, &target, Some(&initial_transform))?;
 
         // Convert result transform to pose
         let pose = transform_to_pose(&ndt_result.result.final_transformation);
