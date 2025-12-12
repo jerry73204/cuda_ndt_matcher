@@ -9,6 +9,8 @@ ctrlc.workspace = true
 arc-swap.workspace = true
 parking_lot.workspace = true
 nalgebra.workspace = true
+rand.workspace = true
+rand_distr.workspace = true
 
 # fast-gicp CUDA NDT
 fast-gicp.workspace = true

@@ -1,7 +1,10 @@
 mod covariance;
+mod initial_pose;
 mod ndt_manager;
 mod params;
+mod particle;
 mod pointcloud;
+mod tpe;
 
 use anyhow::Result;
 use arc_swap::ArcSwap;
@@ -18,11 +21,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use std_msgs::msg::Header;
-use std_srvs::srv::SetBool;
+use std_srvs::srv::{SetBool, Trigger};
 
 // Type aliases
 type SetBoolRequest = std_srvs::srv::SetBool_Request;
 type SetBoolResponse = std_srvs::srv::SetBool_Response;
+type TriggerRequest = std_srvs::srv::Trigger_Request;
+type TriggerResponse = std_srvs::srv::Trigger_Response;
 
 const NODE_NAME: &str = "ndt_scan_matcher";
 
@@ -36,13 +41,15 @@ struct NdtScanMatcherNode {
     pose_pub: Publisher<PoseStamped>,
     pose_cov_pub: Publisher<PoseWithCovarianceStamped>,
 
-    // Service
+    // Services
     _trigger_srv: Service<SetBool>,
+    _ndt_align_srv: Service<Trigger>,
 
     // State
     ndt_manager: Arc<Mutex<NdtManager>>,
     map_points: Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
     latest_pose: Arc<ArcSwap<Option<PoseWithCovarianceStamped>>>,
+    latest_sensor_points: Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
     enabled: Arc<AtomicBool>,
     params: Arc<NdtParams>,
 }
@@ -66,6 +73,8 @@ impl NdtScanMatcherNode {
         let map_points: Arc<ArcSwap<Option<Vec<[f32; 3]>>>> = Arc::new(ArcSwap::from_pointee(None));
         let latest_pose: Arc<ArcSwap<Option<PoseWithCovarianceStamped>>> =
             Arc::new(ArcSwap::from_pointee(None));
+        let latest_sensor_points: Arc<ArcSwap<Option<Vec<[f32; 3]>>>> =
+            Arc::new(ArcSwap::from_pointee(None));
         let enabled = Arc::new(AtomicBool::new(true));
 
         // QoS for sensor data
@@ -83,13 +92,14 @@ impl NdtScanMatcherNode {
             let ndt_manager = Arc::clone(&ndt_manager);
             let map_points = Arc::clone(&map_points);
             let latest_pose = Arc::clone(&latest_pose);
+            let latest_sensor_points = Arc::clone(&latest_sensor_points);
             let enabled = Arc::clone(&enabled);
             let pose_pub = pose_pub.clone();
             let pose_cov_pub = pose_cov_pub.clone();
             let params = Arc::clone(&params);
 
             let mut opts = SubscriptionOptions::new("points_raw");
-            opts.qos = sensor_qos.clone();
+            opts.qos = sensor_qos;
 
             node.create_subscription(opts, move |msg: PointCloud2| {
                 Self::on_points(
@@ -97,6 +107,7 @@ impl NdtScanMatcherNode {
                     &ndt_manager,
                     &map_points,
                     &latest_pose,
+                    &latest_sensor_points,
                     &enabled,
                     &pose_pub,
                     &pose_cov_pub,
@@ -110,7 +121,7 @@ impl NdtScanMatcherNode {
             let latest_pose = Arc::clone(&latest_pose);
 
             let mut opts = SubscriptionOptions::new("ekf_pose_with_covariance");
-            opts.qos = sensor_qos.clone();
+            opts.qos = sensor_qos;
 
             node.create_subscription(opts, move |msg: PoseWithCovarianceStamped| {
                 latest_pose.store(Arc::new(Some(msg)));
@@ -147,6 +158,30 @@ impl NdtScanMatcherNode {
             )?
         };
 
+        // NDT align service (initial pose estimation)
+        let ndt_align_srv = {
+            let ndt_manager = Arc::clone(&ndt_manager);
+            let map_points = Arc::clone(&map_points);
+            let latest_pose = Arc::clone(&latest_pose);
+            let latest_sensor_points = Arc::clone(&latest_sensor_points);
+            let pose_cov_pub = pose_cov_pub.clone();
+            let params = Arc::clone(&params);
+
+            node.create_service::<Trigger, _>(
+                "ndt_align_srv",
+                move |_req: TriggerRequest, _info: rclrs::ServiceInfo| {
+                    Self::on_ndt_align(
+                        &ndt_manager,
+                        &map_points,
+                        &latest_pose,
+                        &latest_sensor_points,
+                        &pose_cov_pub,
+                        &params,
+                    )
+                },
+            )?
+        };
+
         log_info!(NODE_NAME, "NDT scan matcher node initialized");
 
         Ok(Self {
@@ -156,19 +191,23 @@ impl NdtScanMatcherNode {
             pose_pub,
             pose_cov_pub,
             _trigger_srv: trigger_srv,
+            _ndt_align_srv: ndt_align_srv,
             ndt_manager,
             map_points,
             latest_pose,
+            latest_sensor_points,
             enabled,
             params,
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn on_points(
         msg: PointCloud2,
         ndt_manager: &Arc<Mutex<NdtManager>>,
         map_points: &Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
         latest_pose: &Arc<ArcSwap<Option<PoseWithCovarianceStamped>>>,
+        latest_sensor_points: &Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
         enabled: &Arc<AtomicBool>,
         pose_pub: &Publisher<PoseStamped>,
         pose_cov_pub: &Publisher<PoseWithCovarianceStamped>,
@@ -208,6 +247,9 @@ impl NdtScanMatcherNode {
             }
         };
 
+        // Store sensor points for initial pose estimation service
+        latest_sensor_points.store(Arc::new(Some(sensor_points.clone())));
+
         // Check minimum distance
         let max_dist = sensor_points
             .iter()
@@ -234,11 +276,7 @@ impl NdtScanMatcherNode {
         };
 
         if !result.converged {
-            log_warn!(
-                NODE_NAME,
-                "NDT did not converge, score={:.3}",
-                result.score
-            );
+            log_warn!(NODE_NAME, "NDT did not converge, score={:.3}", result.score);
             return;
         }
 
@@ -281,6 +319,105 @@ impl NdtScanMatcherNode {
         };
         if let Err(e) = pose_cov_pub.publish(&pose_cov_msg) {
             log_error!(NODE_NAME, "Failed to publish pose with covariance: {e}");
+        }
+    }
+
+    /// Handle NDT align service request (initial pose estimation)
+    fn on_ndt_align(
+        ndt_manager: &Arc<Mutex<NdtManager>>,
+        map_points: &Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
+        latest_pose: &Arc<ArcSwap<Option<PoseWithCovarianceStamped>>>,
+        latest_sensor_points: &Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
+        pose_cov_pub: &Publisher<PoseWithCovarianceStamped>,
+        params: &NdtParams,
+    ) -> TriggerResponse {
+        log_info!(
+            NODE_NAME,
+            "NDT align service called - starting initial pose estimation"
+        );
+
+        // Get map points
+        let map = map_points.load();
+        let map = match map.as_ref() {
+            Some(m) => m,
+            None => {
+                return TriggerResponse {
+                    success: false,
+                    message: "No map loaded".to_string(),
+                };
+            }
+        };
+
+        // Get initial pose
+        let initial_pose = latest_pose.load();
+        let initial_pose = match initial_pose.as_ref() {
+            Some(p) => p.clone(),
+            None => {
+                return TriggerResponse {
+                    success: false,
+                    message: "No initial pose available".to_string(),
+                };
+            }
+        };
+
+        // Get sensor points
+        let sensor_points = latest_sensor_points.load();
+        let sensor_points = match sensor_points.as_ref() {
+            Some(p) => p,
+            None => {
+                return TriggerResponse {
+                    success: false,
+                    message: "No sensor points available".to_string(),
+                };
+            }
+        };
+
+        // Run initial pose estimation
+        let mut manager = ndt_manager.lock();
+        let result = match initial_pose::estimate_initial_pose(
+            &initial_pose,
+            &mut manager,
+            sensor_points,
+            map,
+            &params.initial_pose,
+            params
+                .score
+                .converged_param_nearest_voxel_transformation_likelihood,
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                log_error!(NODE_NAME, "Initial pose estimation failed: {e}");
+                return TriggerResponse {
+                    success: false,
+                    message: format!("Estimation failed: {e}"),
+                };
+            }
+        };
+
+        log_info!(
+            NODE_NAME,
+            "Initial pose estimation complete: score={:.3}, reliable={}, particles={}",
+            result.score,
+            result.reliable,
+            result.particles.len()
+        );
+
+        // Publish the result
+        if let Err(e) = pose_cov_pub.publish(&result.pose_with_covariance) {
+            log_error!(NODE_NAME, "Failed to publish estimated pose: {e}");
+        }
+
+        // Update latest pose with the estimated pose
+        latest_pose.store(Arc::new(Some(result.pose_with_covariance)));
+
+        TriggerResponse {
+            success: true,
+            message: format!(
+                "score={:.3}, reliable={}, particles={}",
+                result.score,
+                result.reliable,
+                result.particles.len()
+            ),
         }
     }
 

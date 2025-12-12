@@ -11,6 +11,8 @@ ctrlc = "3.4"
 arc-swap = "1.7"
 parking_lot = "0.12"
 nalgebra = "0.33"
+rand = "0.8"
+rand_distr = "0.4"
 
 # fast-gicp CUDA NDT
 fast-gicp = { path = "../external/fast_gicp_rust/fast-gicp", features = ["cuda"] }
