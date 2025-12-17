@@ -1,0 +1,125 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- NDT Replay Simulation
+       Based on Autoware's logging_simulator with minimal components for NDT testing.
+
+       For Autoware mode: Uses logging_simulator with standard NDT
+       For CUDA mode: Uses logging_simulator with pose_source=gyro_odom (no NDT),
+                      then launches our CUDA NDT separately
+  -->
+
+  <!-- Implementation Selection -->
+  <arg name="use_cuda" default="false" description="Use CUDA NDT matcher (true) or Autoware original (false)"/>
+
+  <!-- Map and data paths -->
+  <arg name="map_path" description="Directory containing pointcloud_map.pcd and lanelet2_map.osm"/>
+  <arg name="vehicle_model" default="sample_vehicle"/>
+  <!-- Use rosbag_sensor_kit which has 3 LiDARs (top, left, right) matching the sample rosbag -->
+  <arg name="sensor_model" default="rosbag_sensor_kit"/>
+  <arg name="lanelet2_map_file" default="lanelet2_map.osm"/>
+  <arg name="pointcloud_map_file" default="pointcloud_map.pcd"/>
+
+  <!-- RViz -->
+  <arg name="rviz" default="true"/>
+
+  <!-- CUDA NDT parameter file -->
+  <arg name="ndt_param_file" default="$(find-pkg-share cuda_ndt_matcher_launch)/config/ndt_scan_matcher.param.yaml"/>
+
+  <!-- Common disabled components -->
+  <let name="disabled_components" value="true"/>
+
+  <!-- ========== Autoware Mode ========== -->
+  <group unless="$(var use_cuda)">
+    <include file="$(find-pkg-share autoware_launch)/launch/logging_simulator.launch.xml">
+      <arg name="map_path" value="$(var map_path)"/>
+      <arg name="vehicle_model" value="$(var vehicle_model)"/>
+      <arg name="sensor_model" value="$(var sensor_model)"/>
+      <arg name="lanelet2_map_file" value="$(var lanelet2_map_file)"/>
+      <arg name="pointcloud_map_file" value="$(var pointcloud_map_file)"/>
+      <arg name="map" value="true"/>
+      <arg name="sensing" value="true"/>
+      <arg name="localization" value="true"/>
+      <arg name="vehicle" value="false"/>
+      <arg name="system" value="false"/>
+      <arg name="perception" value="false"/>
+      <arg name="planning" value="false"/>
+      <arg name="control" value="false"/>
+      <arg name="rviz" value="$(var rviz)"/>
+    </include>
+  </group>
+
+  <!-- ========== CUDA Mode ========== -->
+  <group if="$(var use_cuda)">
+    <!-- Use Autoware for map + sensing, but disable localization entirely -->
+    <include file="$(find-pkg-share autoware_launch)/launch/logging_simulator.launch.xml">
+      <arg name="map_path" value="$(var map_path)"/>
+      <arg name="vehicle_model" value="$(var vehicle_model)"/>
+      <arg name="sensor_model" value="$(var sensor_model)"/>
+      <arg name="lanelet2_map_file" value="$(var lanelet2_map_file)"/>
+      <arg name="pointcloud_map_file" value="$(var pointcloud_map_file)"/>
+      <arg name="map" value="true"/>
+      <arg name="sensing" value="true"/>
+      <arg name="localization" value="false"/>
+      <arg name="vehicle" value="false"/>
+      <arg name="system" value="false"/>
+      <arg name="perception" value="false"/>
+      <arg name="planning" value="false"/>
+      <arg name="control" value="false"/>
+      <arg name="rviz" value="$(var rviz)"/>
+    </include>
+
+    <!-- Include localization components from tier4_localization_launch -->
+    <group>
+      <push-ros-namespace namespace="localization"/>
+
+      <!-- Pose twist fusion filter (EKF) -->
+      <group>
+        <push-ros-namespace namespace="pose_twist_fusion_filter"/>
+        <include file="$(find-pkg-share tier4_localization_launch)/launch/pose_twist_fusion_filter/pose_twist_fusion_filter.launch.xml">
+          <arg name="ekf_localizer_param_path" value="$(find-pkg-share autoware_launch)/config/localization/ekf_localizer.param.yaml"/>
+          <arg name="stop_filter_param_path" value="$(find-pkg-share autoware_launch)/config/localization/stop_filter.param.yaml"/>
+          <arg name="twist2accel_param_path" value="$(find-pkg-share autoware_launch)/config/localization/twist2accel.param.yaml"/>
+        </include>
+      </group>
+
+      <!-- Gyro odometer (twist estimator) -->
+      <group>
+        <push-ros-namespace namespace="twist_estimator"/>
+        <include file="$(find-pkg-share tier4_localization_launch)/launch/pose_twist_estimator/gyro_odometer.launch.xml"/>
+      </group>
+
+      <!-- Util: pose_initializer and pointcloud downsampling -->
+      <group>
+        <push-ros-namespace namespace="util"/>
+        <include file="$(find-pkg-share autoware_pose_initializer)/launch/pose_initializer.launch.xml">
+          <arg name="ndt_enabled" value="true"/>
+          <arg name="gnss_enabled" value="true"/>
+          <arg name="ekf_enabled" value="true"/>
+          <arg name="stop_check_enabled" value="false"/>
+          <arg name="config_file" value="$(find-pkg-share autoware_launch)/config/localization/pose_initializer.param.yaml"/>
+        </include>
+        <include file="$(find-pkg-share tier4_localization_launch)/launch/util/util.launch.xml">
+          <arg name="input_pointcloud" value="/sensing/lidar/concatenated/pointcloud"/>
+          <arg name="ndt_scan_matcher/pointcloud_preprocessor/crop_box_filter_measurement_range_param_path" value="$(find-pkg-share autoware_launch)/config/localization/ndt_scan_matcher/pointcloud_preprocessor/crop_box_filter_measurement_range.param.yaml"/>
+          <arg name="ndt_scan_matcher/pointcloud_preprocessor/voxel_grid_downsample_filter_param_path" value="$(find-pkg-share autoware_launch)/config/localization/ndt_scan_matcher/pointcloud_preprocessor/voxel_grid_filter.param.yaml"/>
+          <arg name="ndt_scan_matcher/pointcloud_preprocessor/random_downsample_filter_param_path" value="$(find-pkg-share autoware_launch)/config/localization/ndt_scan_matcher/pointcloud_preprocessor/random_downsample_filter.param.yaml"/>
+        </include>
+      </group>
+
+      <!-- CUDA NDT (pose estimator) -->
+      <group>
+        <push-ros-namespace namespace="pose_estimator"/>
+        <include file="$(find-pkg-share cuda_ndt_matcher_launch)/launch/cuda_ndt_scan_matcher.launch.xml">
+          <arg name="input_pointcloud" value="/localization/util/downsample/pointcloud"/>
+          <arg name="input_initial_pose_topic" value="/localization/pose_twist_fusion_filter/biased_pose_with_covariance"/>
+          <arg name="input_regularization_pose_topic" value="/sensing/gnss/pose_with_covariance"/>
+          <arg name="input_service_trigger_node" value="trigger_node"/>
+          <arg name="output_pose_topic" value="pose"/>
+          <arg name="output_pose_with_covariance_topic" value="pose_with_covariance"/>
+          <arg name="client_map_loader" value="/map/get_differential_pointcloud_map"/>
+          <arg name="param_file" value="$(var ndt_param_file)"/>
+        </include>
+      </group>
+    </group>
+  </group>
+</launch>
