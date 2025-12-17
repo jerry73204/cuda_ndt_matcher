@@ -4,12 +4,20 @@
 cargo_config := "build/ros2_cargo_config.toml"
 manifest := "src/Cargo.toml"
 
+# Paths for testing
+autoware_setup := "external/autoware_repo/install/setup.bash"
+local_setup := "install/setup.bash"
+sample_map_dir := "data/sample-map-rosbag"
+sample_rosbag := "data/sample-rosbag"
+
 # Show available recipes
 default:
     @just --list
 
 # Build all packages with colcon
 build:
+    #!/usr/bin/env bash
+    source {{autoware_setup}}
     colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release --cargo-args --release
 
 # Clean all build artifacts
@@ -22,11 +30,15 @@ format:
 
 # Check formatting and run clippy
 lint:
+    #!/usr/bin/env bash
+    source {{local_setup}}
     cargo +nightly fmt --check --manifest-path {{manifest}}
     cargo clippy --manifest-path {{manifest}} --config {{cargo_config}} --all-targets
 
 # Run all tests
 test:
+    #!/usr/bin/env bash
+    source {{local_setup}}
     cargo test --manifest-path {{manifest}} --config {{cargo_config}} --all-targets
 
 # Run all quality checks (lint + test)
@@ -35,3 +47,42 @@ quality: lint test
 # Download sample map and rosbag data
 download-data:
     ./scripts/download_sample_data.sh
+
+# Run replay simulation with CUDA NDT (map + sensing from Autoware, CUDA localization)
+run-ndt-cuda:
+    #!/usr/bin/env bash
+    set -eo pipefail
+    source {{local_setup}}
+    play_launch launch cuda_ndt_matcher_launch ndt_replay_simulation.launch.xml \
+        use_cuda:=true \
+        map_path:=$(realpath {{sample_map_dir}})
+
+# Run replay simulation with Autoware NDT (minimal: map + sensing + localization)
+run-ndt-autoware:
+    #!/usr/bin/env bash
+    set -eo pipefail
+    source {{local_setup}}
+    play_launch launch cuda_ndt_matcher_launch ndt_replay_simulation.launch.xml \
+        use_cuda:=false \
+        map_path:=$(realpath {{sample_map_dir}})
+
+# Play sample rosbag (run in separate terminal after run-ndt-*)
+play-rosbag:
+    #!/usr/bin/env bash
+    set -eo pipefail
+    source {{autoware_setup}}
+    # Get all topics except /clock (which interferes with --clock option)
+    topics=$(ros2 bag info {{sample_rosbag}} -s sqlite3 | grep -oP '(?<=Topic: )\S+' | grep -v '^/clock$' | tr '\n' ' ')
+    ros2 bag play {{sample_rosbag}} -l -r 1.0 -s sqlite3 --clock --topics $topics
+
+# Enable NDT matching via service call
+enable-ndt:
+    #!/usr/bin/env bash
+    source {{autoware_setup}}
+    ros2 service call /localization/pose_estimator/trigger_node_srv std_srvs/srv/SetBool "{data: true}"
+
+# Monitor NDT pose output
+monitor-ndt:
+    #!/usr/bin/env bash
+    source {{autoware_setup}}
+    ros2 topic echo /localization/pose_estimator/pose_with_covariance
