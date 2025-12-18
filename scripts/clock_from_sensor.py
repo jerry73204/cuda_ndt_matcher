@@ -13,22 +13,26 @@ use consistent timestamps.
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import Imu, PointCloud2
 
 
 class ClockFromSensor(Node):
     def __init__(self):
-        super().__init__('clock_from_sensor')
+        # Disable use_sim_time for this node - we're the clock source
+        super().__init__('clock_from_sensor', parameter_overrides=[
+            rclpy.parameter.Parameter('use_sim_time', rclpy.Parameter.Type.BOOL, False)
+        ])
 
-        # Publisher for /clock
+        # Publisher for /clock - use SystemDefaultsQoS for clock
         self.clock_pub = self.create_publisher(Clock, '/clock', 10)
 
-        # QoS for sensor topics - use best effort to match typical sensor QoS
+        # QoS for sensor topics - match the publisher's QoS (RELIABLE)
         sensor_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
+            reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
+            durability=DurabilityPolicy.VOLATILE,
             depth=1
         )
 
@@ -49,6 +53,7 @@ class ClockFromSensor(Node):
         )
 
         self.last_stamp = None
+        self.msg_count = 0
         self.get_logger().info('Clock republisher started')
 
     def publish_clock(self, stamp):
@@ -59,6 +64,9 @@ class ClockFromSensor(Node):
             clock_msg = Clock()
             clock_msg.clock = stamp
             self.clock_pub.publish(clock_msg)
+            self.msg_count += 1
+            if self.msg_count % 100 == 1:
+                self.get_logger().info(f'Published clock: {stamp.sec}.{stamp.nanosec:09d} (count: {self.msg_count})')
 
     def imu_callback(self, msg):
         self.publish_clock(msg.header.stamp)
