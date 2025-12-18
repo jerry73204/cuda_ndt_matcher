@@ -51,6 +51,7 @@ download-data:
 # Service unit names
 ndt_autoware_unit := "ndt-autoware"
 ndt_cuda_unit := "ndt-cuda"
+rosbag_unit := "rosbag-player"
 
 # Start Autoware NDT as a systemd user service
 start-ndt-autoware:
@@ -71,11 +72,12 @@ stop-ndt-autoware:
 # Restart Autoware NDT service
 restart-ndt-autoware: stop-ndt-autoware start-ndt-autoware
 
-# Show Autoware NDT service status and logs
+# Show Autoware NDT service status
 status-ndt-autoware:
     systemctl --user status {{ndt_autoware_unit}} || true
 
-logs-ndt-autoware:
+# Show Autoware NDT logs
+log-ndt-autoware:
     journalctl --user -u {{ndt_autoware_unit}} -f
 
 # Start CUDA NDT as a systemd user service
@@ -97,30 +99,57 @@ stop-ndt-cuda:
 # Restart CUDA NDT service
 restart-ndt-cuda: stop-ndt-cuda start-ndt-cuda
 
-# Show CUDA NDT service status and logs
+# Show CUDA NDT service status
 status-ndt-cuda:
     systemctl --user status {{ndt_cuda_unit}} || true
 
-logs-ndt-cuda:
+# Show CUDA NDT logs
+log-ndt-cuda:
     journalctl --user -u {{ndt_cuda_unit}} -f
 
-# Play sample rosbag (run in separate terminal after run-ndt-*)
-# Note: The sample rosbag has inconsistent timestamps:
-#   - /clock topic: Feb 2021
-#   - Message headers: April 2020
-# We exclude /clock from the bag and run a clock republisher that extracts
-# timestamps from sensor messages to publish to /clock.
-play-rosbag:
+# Start rosbag player as a systemd user service
+start-rosbag:
     #!/usr/bin/env bash
     set -eo pipefail
-    source {{autoware_setup}}
-    # Start clock republisher in background
-    python3 scripts/clock_from_sensor.py &
-    CLOCK_PID=$!
-    trap "kill $CLOCK_PID 2>/dev/null || true" EXIT
-    # Play bag without /clock topic
-    topics=$(ros2 bag info {{sample_rosbag}} -s sqlite3 | grep -oP '(?<=Topic: )\S+' | grep -v '^/clock$' | tr '\n' ' ')
-    ros2 bag play {{sample_rosbag}} -l -r 0.5 -s sqlite3 --topics $topics
+    systemctl --user stop {{rosbag_unit}} 2>/dev/null || true
+    systemctl --user reset-failed {{rosbag_unit}} 2>/dev/null || true
+    systemd-run --user --unit={{rosbag_unit}} --same-dir --collect \
+        scripts/play_rosbag.sh "$(realpath {{sample_rosbag}})"
+    echo "Started {{rosbag_unit}} service. Use 'just stop-rosbag' to stop."
+
+# Stop rosbag player service
+stop-rosbag:
+    systemctl --user stop {{rosbag_unit}} || true
+    @echo "Stopped {{rosbag_unit}} service."
+
+# Restart rosbag player service
+restart-rosbag: stop-rosbag start-rosbag
+
+# Show rosbag player service status
+status-rosbag:
+    systemctl --user status {{rosbag_unit}} || true
+
+# Show rosbag player logs
+log-rosbag:
+    journalctl --user -u {{rosbag_unit}} -f
+
+# Start Autoware demo (NDT + rosbag)
+start-demo-autoware: start-ndt-autoware
+    @sleep 30
+    @echo "Starting rosbag playback..."
+    just start-rosbag
+
+# Start CUDA demo (NDT + rosbag)
+start-demo-cuda: start-ndt-cuda
+    @sleep 30
+    @echo "Starting rosbag playback..."
+    just start-rosbag
+
+# Stop all demo services
+stop-demo:
+    just stop-rosbag
+    just stop-ndt-cuda
+    just stop-ndt-autoware
 
 # Enable NDT matching via service call
 enable-ndt:
