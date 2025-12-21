@@ -260,7 +260,20 @@ impl NdtScanMatcherNode {
         pose_cov_pub: &Publisher<PoseWithCovarianceStamped>,
         params: &NdtParams,
     ) {
-        // Check if enabled
+        // Convert sensor points first - needed for align service even before we have initial pose
+        let sensor_points = match pointcloud::from_pointcloud2(&msg) {
+            Ok(pts) => pts,
+            Err(e) => {
+                log_error!(NODE_NAME, "Failed to convert point cloud: {e}");
+                return;
+            }
+        };
+
+        // Always store sensor points for initial pose estimation service (ndt_align_srv)
+        // This must happen before any early returns so the align service can work
+        latest_sensor_points.store(Arc::new(Some(sensor_points.clone())));
+
+        // Check if enabled for regular NDT alignment
         if !enabled.load(Ordering::SeqCst) {
             return;
         }
@@ -284,18 +297,6 @@ impl NdtScanMatcherNode {
                 return;
             }
         };
-
-        // Convert sensor points
-        let sensor_points = match pointcloud::from_pointcloud2(&msg) {
-            Ok(pts) => pts,
-            Err(e) => {
-                log_error!(NODE_NAME, "Failed to convert point cloud: {e}");
-                return;
-            }
-        };
-
-        // Store sensor points for initial pose estimation service
-        latest_sensor_points.store(Arc::new(Some(sensor_points.clone())));
 
         // Check minimum distance
         let max_dist = sensor_points
