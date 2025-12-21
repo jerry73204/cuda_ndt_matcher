@@ -2,6 +2,7 @@ mod covariance;
 mod initial_pose;
 mod map_module;
 mod ndt_manager;
+mod nvtl;
 mod params;
 mod particle;
 mod pointcloud;
@@ -372,7 +373,8 @@ impl NdtScanMatcherNode {
 
     /// Handle NDT align service request
     /// This service is called by pose_initializer with an initial pose guess.
-    /// It performs a single NDT alignment and returns the aligned pose.
+    /// It performs multi-particle NDT alignment using TPE and returns the best aligned pose.
+    /// This matches Autoware's behavior of sampling multiple initial poses to find the best match.
     fn on_ndt_align(
         req: PoseWithCovSrvRequest,
         ndt_manager: &Arc<Mutex<NdtManager>>,
@@ -413,12 +415,22 @@ impl NdtScanMatcherNode {
             }
         };
 
-        // Run single NDT alignment from the provided initial pose
+        // Run multi-particle initial pose estimation using TPE
         let mut manager = ndt_manager.lock();
-        let result = match manager.align(sensor_points, map, &initial_pose.pose.pose) {
+        let score_threshold = params.score.converged_param_nearest_voxel_transformation_likelihood;
+
+        let result = match initial_pose::estimate_initial_pose(
+            &initial_pose,
+            &mut manager,
+            sensor_points,
+            map,
+            &params.initial_pose,
+            params.ndt.resolution,
+            score_threshold,
+        ) {
             Ok(r) => r,
             Err(e) => {
-                log_error!(NODE_NAME, "NDT alignment failed: {e}");
+                log_error!(NODE_NAME, "Initial pose estimation failed: {e}");
                 return PoseWithCovSrvResponse {
                     success: false,
                     reliable: false,
@@ -427,30 +439,26 @@ impl NdtScanMatcherNode {
             }
         };
 
-        // Check convergence
-        let reliable = result.converged
-            && result.score >= params.score.converged_param_nearest_voxel_transformation_likelihood;
-
         log_info!(
             NODE_NAME,
-            "NDT align complete: converged={}, score={:.3}, reliable={}",
-            result.converged,
+            "NDT align complete: converged=true, score={:.3}, reliable={}, particles={}",
             result.score,
-            reliable
+            result.reliable,
+            result.particles.len()
         );
 
-        // Build result with aligned pose
+        // Build result with best aligned pose
         let result_pose = PoseWithCovarianceStamped {
             header: initial_pose.header,
             pose: PoseWithCovariance {
-                pose: result.pose,
+                pose: result.pose_with_covariance.pose.pose,
                 covariance: params.covariance.output_pose_covariance,
             },
         };
 
         PoseWithCovSrvResponse {
-            success: result.converged,
-            reliable,
+            success: true,
+            reliable: result.reliable,
             pose_with_covariance: result_pose,
         }
     }

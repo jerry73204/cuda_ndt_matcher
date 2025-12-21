@@ -30,6 +30,12 @@
       # Remaining (particles_num - n_startup_trials) use TPE guidance
       n_startup_trials: 100
 
+      # Yaw weight sigma for biasing toward initial yaw (degrees)
+      # Smaller values = stronger bias toward initial GNSS heading
+      # Larger values = more exploration of different orientations
+      # Set to a large value (e.g., 360.0) to disable yaw bias
+      yaw_weight_sigma: 30.0
+
     validation:
       initial_pose_timeout_sec: 1.0
       initial_pose_distance_tolerance_m: 10.0

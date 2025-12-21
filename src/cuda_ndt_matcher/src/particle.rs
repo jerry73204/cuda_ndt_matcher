@@ -27,7 +27,8 @@ impl Particle {
     }
 }
 
-/// Find the best particle (highest score) from a collection
+/// Find the best particle (highest likelihood score) from a collection
+/// Note: likelihood score is "higher = better" (converted from fitness_score)
 pub fn select_best_particle(particles: &[Particle]) -> Option<&Particle> {
     particles.iter().max_by(|a, b| {
         a.score
@@ -55,14 +56,15 @@ mod tests {
 
     #[test]
     fn test_select_best_particle() {
+        // likelihood score is "higher = better"
         let particles = vec![
-            Particle::new(make_pose(0.0, 0.0, 0.0), make_pose(0.1, 0.0, 0.0), 1.5, 10),
-            Particle::new(make_pose(1.0, 0.0, 0.0), make_pose(1.1, 0.0, 0.0), 2.5, 8),
-            Particle::new(make_pose(2.0, 0.0, 0.0), make_pose(2.1, 0.0, 0.0), 1.8, 12),
+            Particle::new(make_pose(0.0, 0.0, 0.0), make_pose(0.1, 0.0, 0.0), 0.5, 10),
+            Particle::new(make_pose(1.0, 0.0, 0.0), make_pose(1.1, 0.0, 0.0), 0.9, 8), // best (highest)
+            Particle::new(make_pose(2.0, 0.0, 0.0), make_pose(2.1, 0.0, 0.0), 0.3, 12),
         ];
 
         let best = select_best_particle(&particles).unwrap();
-        assert!((best.score - 2.5).abs() < 1e-10);
+        assert!((best.score - 0.9).abs() < 1e-10);
     }
 
     #[test]

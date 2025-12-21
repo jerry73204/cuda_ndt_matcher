@@ -5,6 +5,7 @@
 //! pose space and find the best match against the reference map.
 
 use crate::ndt_manager::NdtManager;
+use crate::nvtl::{NvtlConfig, NvtlVoxelGrid};
 use crate::params::InitialPoseParams;
 use crate::particle::{select_best_particle, Particle};
 use crate::tpe::{
@@ -35,6 +36,7 @@ pub struct InitialPoseResult {
 /// * `source_points` - Source point cloud (sensor data)
 /// * `target_points` - Target point cloud (map data)
 /// * `params` - Initial pose estimation parameters
+/// * `resolution` - NDT voxel resolution (for NVTL scoring)
 /// * `score_threshold` - Minimum score for reliable result
 ///
 /// # Returns
@@ -45,7 +47,8 @@ pub fn estimate_initial_pose(
     source_points: &[[f32; 3]],
     target_points: &[[f32; 3]],
     params: &InitialPoseParams,
-    score_threshold: f64,
+    resolution: f64,
+    _score_threshold: f64,
 ) -> Result<InitialPoseResult, String> {
     // Extract covariance to determine sampling distributions
     let covariance = &initial_pose_with_cov.pose.covariance;
@@ -61,6 +64,45 @@ pub fn estimate_initial_pose(
     // Extract initial pose components
     let initial_pose = &initial_pose_with_cov.pose.pose;
     let (roll, pitch, yaw) = quaternion_to_rpy(&initial_pose.orientation);
+
+    // Debug: Print initial pose input
+    eprintln!("=== Initial Pose Estimation ===");
+    eprintln!(
+        "INPUT: pos=({:.2}, {:.2}, {:.2}), quat=({:.4}, {:.4}, {:.4}, {:.4})",
+        initial_pose.position.x,
+        initial_pose.position.y,
+        initial_pose.position.z,
+        initial_pose.orientation.x,
+        initial_pose.orientation.y,
+        initial_pose.orientation.z,
+        initial_pose.orientation.w
+    );
+    eprintln!(
+        "INPUT RPY: roll={:.2}°, pitch={:.2}°, yaw={:.2}°",
+        roll.to_degrees(),
+        pitch.to_degrees(),
+        yaw.to_degrees()
+    );
+    eprintln!(
+        "STDDEV: x={:.2}, y={:.2}, z={:.2}, roll={:.2}°, pitch={:.2}°",
+        stddev_x,
+        stddev_y,
+        stddev_z,
+        stddev_roll.to_degrees(),
+        stddev_pitch.to_degrees()
+    );
+    eprintln!(
+        "PARAMS: particles={}, n_startup={}, yaw_weight_sigma={:.1}°",
+        params.particles_num, params.n_startup_trials, params.yaw_weight_sigma
+    );
+
+    // Build NVTL voxel grid once for efficient scoring of all particles
+    let nvtl_config = NvtlConfig {
+        resolution,
+        outlier_ratio: 0.55, // Autoware default
+    };
+    let nvtl_grid = NvtlVoxelGrid::new(target_points, &nvtl_config);
+    eprintln!("NVTL voxel grid built with resolution={resolution}");
 
     // Create mean and stddev for TPE
     let mean = pose_components_to_input(
@@ -82,6 +124,8 @@ pub fn estimate_initial_pose(
     ];
 
     // Initialize TPE
+    // Note: We convert fitness_score to likelihood-like score using exp(-fitness_score)
+    // This makes it "higher = better" like Autoware's transform_probability
     let mut tpe = TreeStructuredParzenEstimator::new(
         Direction::Maximize,
         params.n_startup_trials as i64,
@@ -109,28 +153,105 @@ pub fn estimate_initial_pose(
             }
         };
 
-        // Create particle with results
+        // Compute NVTL score for the result pose (higher = better)
+        // This matches Autoware's nearest_voxel_transformation_likelihood
+        let fitness_score = align_result.score; // Keep for debug output
+        let nvtl_score = nvtl_grid.compute_score_with_pose(source_points, &align_result.pose);
+
+        // Get yaw values for debugging
+        let candidate_yaw = quaternion_to_rpy(&candidate_pose.orientation).2;
+        let result_yaw = quaternion_to_rpy(&align_result.pose.orientation).2;
+
+        // Use NVTL score directly (no yaw weighting, like Autoware)
+        let weighted_score = nvtl_score;
+
+        // Debug: Print every 20th particle or particles with good scores
+        let particle_idx = particles.len();
+        if particle_idx % 20 == 0 || nvtl_score > 2.0 {
+            eprintln!(
+                "P[{:3}]: cand_yaw={:7.2}° -> result_yaw={:7.2}°, fitness={:.4}, nvtl={:.4}",
+                particle_idx,
+                candidate_yaw.to_degrees(),
+                result_yaw.to_degrees(),
+                fitness_score,
+                nvtl_score
+            );
+        }
+
+        // Create particle with results (using weighted score for selection)
         let particle = Particle::new(
             candidate_pose,
             align_result.pose.clone(),
-            align_result.score,
+            weighted_score,
             align_result.iterations,
         );
         particles.push(particle.clone());
 
         // Update TPE with result for next iteration's guidance
+        // TPE uses the NVTL score to explore the space (higher = better)
         let result_input = pose_to_input(&align_result.pose);
         tpe.add_trial(Trial {
             input: result_input,
-            score: align_result.score,
+            score: nvtl_score,
         });
     }
 
-    // Select best particle
+    // Debug: Print top 5 particles by NVTL score
+    let mut sorted_particles = particles.clone();
+    sorted_particles.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    eprintln!("=== Top 5 Particles (by NVTL score) ===");
+    for (i, p) in sorted_particles.iter().take(5).enumerate() {
+        let (_, _, result_yaw) = quaternion_to_rpy(&p.result_pose.orientation);
+        eprintln!(
+            "Top[{}]: pos=({:.2}, {:.2}, {:.2}), yaw={:.2}°, nvtl={:.4}",
+            i,
+            p.result_pose.position.x,
+            p.result_pose.position.y,
+            p.result_pose.position.z,
+            result_yaw.to_degrees(),
+            p.score
+        );
+    }
+
+    // Select best particle (highest NVTL score)
     let best_particle = select_best_particle(&particles)
         .ok_or_else(|| "No particles evaluated successfully".to_string())?;
 
+    // Debug: Print selected best particle
+    let (best_roll, best_pitch, best_yaw) = quaternion_to_rpy(&best_particle.result_pose.orientation);
+    eprintln!("=== Selected Best Particle ===");
+    eprintln!(
+        "BEST: pos=({:.2}, {:.2}, {:.2}), quat=({:.4}, {:.4}, {:.4}, {:.4})",
+        best_particle.result_pose.position.x,
+        best_particle.result_pose.position.y,
+        best_particle.result_pose.position.z,
+        best_particle.result_pose.orientation.x,
+        best_particle.result_pose.orientation.y,
+        best_particle.result_pose.orientation.z,
+        best_particle.result_pose.orientation.w
+    );
+    eprintln!(
+        "BEST RPY: roll={:.2}°, pitch={:.2}°, yaw={:.2}°, nvtl={:.4}",
+        best_roll.to_degrees(),
+        best_pitch.to_degrees(),
+        best_yaw.to_degrees(),
+        best_particle.score
+    );
+    eprintln!(
+        "YAW DIFF from input: {:.2}° (input_yaw={:.2}°, result_yaw={:.2}°)",
+        (best_yaw - yaw).to_degrees(),
+        yaw.to_degrees(),
+        best_yaw.to_degrees()
+    );
+    eprintln!("================================");
+
     // Build result
+    // NVTL score is "higher = better" (Autoware threshold is around 2.3)
+    let nvtl_threshold = 2.3;
     let result = InitialPoseResult {
         pose_with_covariance: PoseWithCovarianceStamped {
             header: initial_pose_with_cov.header.clone(),
@@ -141,7 +262,7 @@ pub fn estimate_initial_pose(
             },
         },
         score: best_particle.score,
-        reliable: best_particle.score >= score_threshold,
+        reliable: best_particle.score >= nvtl_threshold,
         particles,
     };
 

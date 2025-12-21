@@ -30,6 +30,9 @@ pub struct NdtAlgorithmParams {
 pub struct InitialPoseParams {
     pub particles_num: i32,
     pub n_startup_trials: i32,
+    /// Yaw weight sigma for biasing toward initial yaw (degrees)
+    /// Smaller values give stronger bias toward the initial yaw
+    pub yaw_weight_sigma: f64,
 }
 
 /// Validation configuration
@@ -202,6 +205,11 @@ impl NdtParams {
                     .default(100)
                     .mandatory()?
                     .get() as i32,
+                yaw_weight_sigma: node
+                    .declare_parameter("initial_pose_estimation.yaw_weight_sigma")
+                    .default(30.0) // 30 degrees - moderate bias toward initial yaw
+                    .mandatory()?
+                    .get(),
             },
             validation: ValidationParams {
                 initial_pose_timeout_sec: node
