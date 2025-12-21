@@ -17,6 +17,7 @@
   <arg name="output_pose_with_covariance_topic" default="ndt_pose_with_covariance" description="Estimated self position with covariance"/>
 
   <arg name="client_map_loader" default="pcd_loader_service" description="Map loader service name"/>
+  <arg name="input_pointcloud_map" default="/map/pointcloud_map" description="Pointcloud map topic"/>
 
   <arg name="node_name" default="ndt_scan_matcher" description="Use a different name for this node"/>
 
@@ -25,6 +26,7 @@
     <remap from="ekf_pose_with_covariance" to="$(var input_initial_pose_topic)"/>
     <remap from="regularization_pose_with_covariance" to="$(var input_regularization_pose_topic)"/>
     <remap from="trigger_node_srv" to="$(var input_service_trigger_node)"/>
+    <remap from="pointcloud_map" to="$(var input_pointcloud_map)"/>
 
     <remap from="ndt_pose" to="$(var output_pose_topic)"/>
     <remap from="ndt_pose_with_covariance" to="$(var output_pose_with_covariance_topic)"/>

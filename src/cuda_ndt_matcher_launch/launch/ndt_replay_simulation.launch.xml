@@ -52,9 +52,9 @@
   </group>
 
   <!-- ========== CUDA Mode ========== -->
-  <!-- Simplified: Uses full Autoware localization stack, then user can compare CUDA NDT output -->
+  <!-- Uses logging_simulator WITHOUT localization, then includes our CUDA localization stack -->
   <group if="$(var use_cuda)">
-    <!-- Use full Autoware stack with localization enabled -->
+    <!-- Autoware stack without localization (we provide our own) -->
     <include file="$(find-pkg-share autoware_launch)/launch/logging_simulator.launch.xml">
       <arg name="map_path" value="$(var map_path)"/>
       <arg name="vehicle_model" value="$(var vehicle_model)"/>
@@ -63,7 +63,7 @@
       <arg name="pointcloud_map_file" value="$(var pointcloud_map_file)"/>
       <arg name="map" value="true"/>
       <arg name="sensing" value="true"/>
-      <arg name="localization" value="true"/>
+      <arg name="localization" value="false"/>
       <arg name="vehicle" value="true"/>
       <arg name="system" value="false"/>
       <arg name="perception" value="false"/>
@@ -72,20 +72,10 @@
       <arg name="rviz" value="$(var rviz)"/>
     </include>
 
-    <!-- Launch CUDA NDT alongside Autoware's NDT for comparison -->
-    <!-- Output to different topics to avoid conflicts -->
-    <group>
-      <push-ros-namespace namespace="cuda_ndt"/>
-      <include file="$(find-pkg-share cuda_ndt_matcher_launch)/launch/cuda_ndt_scan_matcher.launch.xml">
-        <arg name="input_pointcloud" value="/localization/util/downsample/pointcloud"/>
-        <arg name="input_initial_pose_topic" value="/localization/pose_twist_fusion_filter/biased_pose_with_covariance"/>
-        <arg name="input_regularization_pose_topic" value="/sensing/gnss/pose_with_covariance"/>
-        <arg name="input_service_trigger_node" value="trigger_node"/>
-        <arg name="output_pose_topic" value="pose"/>
-        <arg name="output_pose_with_covariance_topic" value="pose_with_covariance"/>
-        <arg name="client_map_loader" value="/map/get_differential_pointcloud_map"/>
-        <arg name="param_file" value="$(var ndt_param_file)"/>
-      </include>
-    </group>
+    <!-- CUDA NDT localization stack -->
+    <include file="$(find-pkg-share cuda_ndt_matcher_launch)/launch/cuda_localization.launch.xml">
+      <arg name="ndt_param_file" value="$(var ndt_param_file)"/>
+      <arg name="gnss_enabled" value="false"/>
+    </include>
   </group>
 </launch>
