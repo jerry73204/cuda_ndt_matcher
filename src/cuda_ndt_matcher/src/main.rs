@@ -586,20 +586,9 @@ fn main() -> Result<()> {
     // In production, this would come from pcd_loader_service
     log_info!(NODE_NAME, "Waiting for map and initial pose...");
 
-    // Signal handling
-    let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
-
-    ctrlc::set_handler(move || {
-        log_info!(NODE_NAME, "Shutting down...");
-        r.store(false, Ordering::SeqCst);
-    })?;
-
-    // Spin
-    while running.load(Ordering::SeqCst) {
-        let opts = SpinOptions::spin_once().timeout(Duration::from_millis(100));
-        let _ = executor.spin(opts);
-    }
+    // Spin until shutdown (Ctrl-C or ROS shutdown)
+    // Using default spin options which properly handles service responses
+    executor.spin(SpinOptions::default()).first_error()?;
 
     log_info!(NODE_NAME, "Shutdown complete");
     Ok(())
