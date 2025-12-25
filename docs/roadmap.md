@@ -178,7 +178,60 @@ ros2 service call /ndt_scan_matcher/map_update_srv std_srvs/srv/Trigger
 
 ---
 
-## Phase 6: Validation & Diagnostics
+## Phase 6: Visualization & Debug Topics
+
+Add missing publishers for RViz visualization and debugging.
+
+### Work Items
+
+**Visualization (RViz essential):**
+- [x] Add `ndt_marker` publisher (MarkerArray) - NDT result pose as arrow/axis
+  - Note: Publishes only final pose. Builtin publishes transformation_array (all iteration poses) but fast-gicp doesn't expose iteration history.
+- [x] Add `points_aligned` publisher (PointCloud2) - Source points transformed by result
+- [ ] Add `monte_carlo_initial_pose_marker` publisher (MarkerArray) - Initial pose particles
+
+**Debug Metrics:**
+- [x] Add `transform_probability` publisher (Float32Stamped) - NDT fitness score
+- [x] Add `nearest_voxel_transformation_likelihood` publisher (Float32Stamped) - NVTL score
+- [x] Add `iteration_num` publisher (Int32Stamped) - Convergence iterations
+- [x] Add `exe_time_ms` publisher (Float32Stamped) - Execution time
+
+**Pose Tracking:**
+- [x] Add `initial_pose_with_covariance` publisher (PoseWithCovarianceStamped)
+- [x] Add `initial_to_result_distance` publisher (Float32Stamped)
+- [x] Add `initial_to_result_relative_pose` publisher (PoseStamped)
+
+**Optional:**
+- [ ] Add `multi_ndt_pose` publisher (PoseArray) - Multi-NDT covariance poses
+- [ ] Add `multi_initial_pose` publisher (PoseArray) - Multi-initial poses
+- [ ] Add `/tf` broadcast (base_link -> ndt_base_link)
+- [ ] Add `voxel_score_points` publisher (PointCloud2) - Points colored by score
+
+### Passing Criteria
+
+- NDT result visible in RViz as marker
+- Aligned point cloud visible in RViz
+- Initial pose particles visible during estimation
+- Debug topics show valid values
+
+### Tests
+
+```bash
+# Integration: verify all topics exist
+ros2 topic list | grep -E "ndt_marker|points_aligned|monte_carlo"
+
+# Visualization: check markers in RViz
+rviz2 -d config/ndt_debug.rviz
+
+# Debug: verify metrics
+ros2 topic echo /localization/pose_estimator/transform_probability
+ros2 topic echo /localization/pose_estimator/nearest_voxel_transformation_likelihood
+ros2 topic echo /localization/pose_estimator/iteration_num
+```
+
+---
+
+## Phase 7: Validation & Diagnostics
 
 Implement all validation and diagnostic features.
 
@@ -213,7 +266,7 @@ ros2 topic pub /ekf_pose_with_covariance ...  # Old timestamp
 
 ---
 
-## Phase 7: Performance Optimization
+## Phase 8: Performance Optimization
 
 Optimize for real-time performance.
 
