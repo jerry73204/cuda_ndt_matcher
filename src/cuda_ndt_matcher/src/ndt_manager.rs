@@ -95,6 +95,43 @@ impl NdtManager {
     pub fn ndt(&self) -> &NDTCuda {
         &self.ndt
     }
+
+    /// Evaluate NVTL (Nearest Voxel Transformation Likelihood) score at a given pose.
+    ///
+    /// NVTL is Autoware's metric for evaluating alignment quality.
+    /// Higher scores indicate better alignment (typically in range [0, ~5]).
+    ///
+    /// # Arguments
+    /// * `source_points` - Source point cloud (sensor data)
+    /// * `target_points` - Target point cloud (map data)
+    /// * `pose` - The pose to evaluate
+    /// * `outlier_ratio` - Outlier ratio for Gaussian parameters (Autoware default: 0.55)
+    ///
+    /// # Returns
+    /// NVTL score (higher = better alignment)
+    pub fn evaluate_nvtl(
+        &self,
+        source_points: &[[f32; 3]],
+        target_points: &[[f32; 3]],
+        pose: &Pose,
+        outlier_ratio: f64,
+    ) -> Result<f64> {
+        if source_points.is_empty() {
+            bail!("Source point cloud is empty");
+        }
+        if target_points.is_empty() {
+            bail!("Target point cloud is empty");
+        }
+
+        let source = PointCloudXYZ::from_points(source_points);
+        let target = PointCloudXYZ::from_points(target_points);
+        let transform = pose_to_transform(pose);
+
+        let nvtl = self
+            .ndt
+            .evaluate_nvtl(&source, &target, &transform, outlier_ratio)?;
+        Ok(nvtl)
+    }
 }
 
 /// Convert ROS Pose to fast-gicp Transform3f using nalgebra

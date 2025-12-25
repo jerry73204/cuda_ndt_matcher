@@ -417,7 +417,9 @@ impl NdtScanMatcherNode {
 
         // Run multi-particle initial pose estimation using TPE
         let mut manager = ndt_manager.lock();
-        let score_threshold = params.score.converged_param_nearest_voxel_transformation_likelihood;
+        let score_threshold = params
+            .score
+            .converged_param_nearest_voxel_transformation_likelihood;
 
         let result = match initial_pose::estimate_initial_pose(
             &initial_pose,

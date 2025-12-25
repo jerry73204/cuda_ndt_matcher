@@ -32,6 +32,7 @@ impl Default for NvtlConfig {
 
 /// Gaussian fitting parameters from Autoware's NDT implementation
 /// Based on [Magnusson 2009] equations
+#[allow(dead_code)]
 struct GaussParams {
     d1: f64,
     d2: f64,
@@ -57,6 +58,7 @@ impl GaussParams {
 }
 
 /// Voxel with Gaussian distribution (mean and covariance)
+#[allow(dead_code)]
 struct GaussianVoxel {
     /// Mean of points in this voxel
     mean: Vector3<f64>,
@@ -109,6 +111,7 @@ impl GaussianVoxel {
 }
 
 /// NDT voxel grid with Gaussian distributions
+#[allow(dead_code)]
 struct NdtVoxelGrid {
     /// Map from voxel key to Gaussian voxel
     voxels: HashMap<(i64, i64, i64), GaussianVoxel>,
@@ -186,11 +189,13 @@ impl NdtVoxelGrid {
 ///
 /// Build this once for the target (map) point cloud, then reuse for
 /// scoring multiple candidate poses.
+#[allow(dead_code)]
 pub struct NvtlVoxelGrid {
     grid: NdtVoxelGrid,
     gauss: GaussParams,
 }
 
+#[allow(dead_code)]
 impl NvtlVoxelGrid {
     /// Create a new NVTL voxel grid from target points
     pub fn new(target_points: &[[f32; 3]], config: &NvtlConfig) -> Self {
@@ -306,8 +311,13 @@ fn transform_points(points: &[[f32; 3]], pose: &geometry_msgs::msg::Pose) -> Vec
     points
         .iter()
         .map(|pt| {
-            let transformed = isometry * nalgebra::Point3::new(pt[0] as f64, pt[1] as f64, pt[2] as f64);
-            [transformed.x as f32, transformed.y as f32, transformed.z as f32]
+            let transformed =
+                isometry * nalgebra::Point3::new(pt[0] as f64, pt[1] as f64, pt[2] as f64);
+            [
+                transformed.x as f32,
+                transformed.y as f32,
+                transformed.z as f32,
+            ]
         })
         .collect()
 }
@@ -336,7 +346,17 @@ mod tests {
     #[test]
     fn test_nvtl_perfect_match() {
         let config = NvtlConfig::default();
-        let points: Vec<[f32; 3]> = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        // Need at least 6 points in a voxel for valid covariance
+        // Points within resolution=2.0 will be in the same voxel
+        let points: Vec<[f32; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [0.1, 0.0, 0.0],
+            [0.0, 0.1, 0.0],
+            [0.0, 0.0, 0.1],
+            [0.1, 0.1, 0.0],
+            [0.1, 0.0, 0.1],
+            [0.0, 0.1, 0.1],
+        ];
 
         // Same points should give high score
         let score = compute_nvtl(&points, &points, &config);
@@ -346,10 +366,25 @@ mod tests {
     #[test]
     fn test_nvtl_with_offset() {
         let config = NvtlConfig::default();
-        let source: Vec<[f32; 3]> = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
-        let target: Vec<[f32; 3]> = vec![[0.1, 0.0, 0.0], [1.1, 0.0, 0.0]];
+        // Need at least 6 points in a voxel for valid covariance
+        let source: Vec<[f32; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [0.1, 0.0, 0.0],
+            [0.0, 0.1, 0.0],
+            [0.0, 0.0, 0.1],
+            [0.1, 0.1, 0.0],
+            [0.1, 0.0, 0.1],
+        ];
+        let target: Vec<[f32; 3]> = vec![
+            [0.2, 0.0, 0.0],
+            [0.3, 0.0, 0.0],
+            [0.2, 0.1, 0.0],
+            [0.2, 0.0, 0.1],
+            [0.3, 0.1, 0.0],
+            [0.3, 0.0, 0.1],
+        ];
 
-        // Small offset should still give reasonable score
+        // Small offset should still give reasonable score (both in same voxel)
         let score = compute_nvtl(&source, &target, &config);
         assert!(score > 0.0, "Small offset should have positive score");
     }
