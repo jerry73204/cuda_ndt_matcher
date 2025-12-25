@@ -125,16 +125,27 @@ main() {
         find "${DATA_DIR}/sample-rosbag" -name "*.db3" -o -name "metadata.yaml" | head -20
     fi
 
+    # Fix /clock timestamps in rosbag (idempotent - skips if already fixed)
+    local fixed_rosbag="${DATA_DIR}/sample-rosbag-fixed"
+    if [[ -d "${fixed_rosbag}" ]]; then
+        info "Fixed rosbag already exists: ${fixed_rosbag}"
+    else
+        info "Fixing /clock timestamps in rosbag..."
+        # Source ROS environment for the fix script
+        source "${PROJECT_ROOT}/external/autoware_repo/install/setup.bash"
+        python3 "${SCRIPT_DIR}/fix_rosbag_clock.py" \
+            "${DATA_DIR}/sample-rosbag" \
+            "${fixed_rosbag}" \
+            --reference-topic /sensing/imu/tamagawa/imu_raw
+        info "Fixed rosbag created: ${fixed_rosbag}"
+    fi
+
     echo ""
     info "Download complete!"
     echo ""
     echo "Usage:"
-    echo "  # Launch NDT with sample map"
-    echo "  ros2 launch cuda_ndt_matcher_launch test_with_rosbag.launch.xml \\"
-    echo "    map_path:=${DATA_DIR}/sample-map-rosbag/pointcloud_map.pcd"
-    echo ""
-    echo "  # Play sample rosbag"
-    echo "  ros2 bag play ${DATA_DIR}/sample-rosbag --clock"
+    echo "  just run-builtin   # Run Autoware NDT with sample data"
+    echo "  just run-cuda      # Run CUDA NDT with sample data"
 }
 
 main "$@"
