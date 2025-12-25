@@ -43,7 +43,12 @@ fi
 # Source the local workspace setup
 source "$PROJECT_DIR/install/setup.bash"
 
-exec ros2 launch cuda_ndt_matcher_launch ndt_replay_simulation.launch.xml \
+exec \
+    play_launch launch \
+    --web-ui \
+    --web-ui-addr 0.0.0.0 \
+    --web-ui-port 8888 \
+    cuda_ndt_matcher_launch ndt_replay_simulation.launch.xml \
     use_cuda:="$USE_CUDA" \
     map_path:="$MAP_PATH" \
     rviz:="$RVIZ"
