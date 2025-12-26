@@ -2,21 +2,8 @@
 resolver = "2"
 members = [
     "src/cuda_ndt_matcher",
+    "src/ndt_cuda",
 ]
-
-[workspace.package]
-# These fields are needed for fast-gicp workspace inheritance
-version = "0.3.0"
-edition = "2021"
-authors = ["Fast GICP Rust Contributors"]
-license = "BSD-3-Clause"
-repository = "https://github.com/jerry73204/fast_gicp_rust.git"
-description = "Rust wrapper for fast_gicp point cloud registration library"
-readme = "README.md"
-homepage = "https://github.com/jerry73204/fast_gicp_rust"
-documentation = "https://docs.rs/fast-gicp"
-keywords = ["robotics", "point-cloud", "registration", "icp", "gicp"]
-categories = ["science::robotics", "algorithms", "external-ffi-bindings"]
 
 [workspace.dependencies]
 # Core utilities
@@ -27,16 +14,9 @@ parking_lot = "0.12"
 nalgebra = "0.33"
 rand = "0.8"
 rand_distr = "0.4"
-
-# Dependencies for fast-gicp workspace inheritance
 thiserror = "2.0"
-criterion = "0.6"
-cxx = "1.0"
-cmake = "0.1"
-pkg-config = "0.3"
-
-# fast-gicp CUDA NDT
-fast-gicp = { path = "external/fast_gicp_rust/fast-gicp", features = ["cuda"] }
+rayon = "1.10"
+approx = "0.5"
 
 # ROS 2 dependencies - resolved via ament_index by cargo-ros2
 rclrs = "*"

@@ -12,8 +12,8 @@ nalgebra.workspace = true
 rand.workspace = true
 rand_distr.workspace = true
 
-# fast-gicp CUDA NDT
-fast-gicp.workspace = true
+# CubeCL NDT (our implementation)
+ndt_cuda = { path = "../ndt_cuda" }
 
 # ROS 2 dependencies
 rclrs.workspace = true

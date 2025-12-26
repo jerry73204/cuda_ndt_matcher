@@ -1,0 +1,30 @@
+[package]
+name = "ndt_cuda"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "CubeCL-based CUDA NDT scan matching"
+
+[dependencies]
+# CubeCL for GPU compute
+cubecl = { version = "0.8", features = ["cuda"] }
+
+# Linear algebra
+nalgebra = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Parallel CPU (for reference implementation)
+rayon = "1.10"
+
+[dev-dependencies]
+# Testing
+rand = { workspace = true }
+rand_distr = { workspace = true }
+approx = { workspace = true }
+
+[features]
+default = ["cuda"]
+cuda = []

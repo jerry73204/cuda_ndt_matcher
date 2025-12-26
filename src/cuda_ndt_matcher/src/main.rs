@@ -376,18 +376,8 @@ impl NdtScanMatcherNode {
         }
 
         // Estimate covariance based on configured mode
-        let source_cloud = fast_gicp::PointCloudXYZ::from_points(&sensor_points);
-        let target_cloud = fast_gicp::PointCloudXYZ::from_points(map);
-
-        let covariance_result = covariance::estimate_covariance(
-            &params.covariance,
-            &result.hessian,
-            &result.pose,
-            manager.ndt(),
-            &source_cloud,
-            &target_cloud,
-            &result.final_transform,
-        );
+        let covariance_result =
+            covariance::estimate_covariance(&params.covariance, &result.hessian, &result.pose);
 
         // Create output header
         let header = Header {
