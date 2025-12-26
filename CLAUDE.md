@@ -13,49 +13,29 @@ NDT (Normal Distributions Transform) scan matching is used for position estimati
 
 ## Implementation Status
 
-### Current State: Pivoting from fast-gicp to CubeCL
+### CubeCL NDT Implementation
 
-The initial fast-gicp integration is complete but **does not work correctly** for real-time localization. We are pivoting to implement custom CUDA kernels using CubeCL.
-
-#### fast-gicp Integration (DEPRECATED)
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| fast-gicp integration | ⚠️ | Works but diverges during driving |
-| PointCloud2 conversion | ✅ | Keep |
-| ROS subscriptions/publishers | ✅ | Keep |
-| trigger_node_srv service | ✅ | Keep |
-| Launch files | ✅ | Keep |
-| Covariance estimation | ✅ | Keep (will adapt to new NDT) |
-
-#### CubeCL NDT Implementation (NEW - In Progress)
-
-See `docs/cubecl-ndt-roadmap.md` for detailed implementation plan.
+The project uses a pure-Rust NDT implementation built with [CubeCL](https://github.com/tracel-ai/cubecl). See `docs/cubecl-ndt-roadmap.md` for implementation details.
 
 | Phase | Component | Status |
 |-------|-----------|--------|
-| Phase 1 | Voxel Grid Construction | 🔲 Not started |
-| Phase 2 | Derivative Computation | 🔲 Not started |
-| Phase 3 | Newton Optimization | 🔲 Not started |
-| Phase 4 | Scoring & NVTL | 🔲 Not started |
-| Phase 5 | Integration | 🔲 Not started |
+| Phase 1 | Voxel Grid Construction | ✅ Complete |
+| Phase 2 | Derivative Computation | ✅ Complete |
+| Phase 3 | Newton Optimization | ✅ Complete |
+| Phase 4 | Scoring & NVTL | ✅ Complete |
+| Phase 5 | Integration | ✅ Complete |
 | Phase 6 | Validation | 🔲 Not started |
 
-### Why fast-gicp Doesn't Work
+### Core Components
 
-Investigation revealed fundamental algorithm differences between fast-gicp and Autoware's pclomp:
-
-| Aspect | pclomp (Autoware) | fast-gicp | Impact |
-|--------|-------------------|-----------|--------|
-| **Optimizer** | Newton + More-Thuente line search | Levenberg-Marquardt | fast-gicp hits max iterations (30) every time |
-| **Cost Function** | Probability-based (Magnusson 2009) | Mahalanobis + Cauchy kernel | Different optimization landscape |
-| **Rotation** | Euler angles (XYZ) | SO(3) exponential map | Different Jacobian structure |
-| **Convergence** | 1-6 iterations typical | Never converges properly | Pose drifts during driving |
-
-Key code references for the issues:
-- `external/fast_gicp_rust/fast_gicp/include/fast_gicp/gicp/impl/lsq_registration_impl.hpp:122-168` - LM optimizer
-- `external/fast_gicp_rust/fast-gicp-sys/src/wrapper.cpp:600-603` - Iteration count bug (always returns max)
-- `external/fast_gicp_rust/fast_gicp/src/fast_gicp/cuda/ndt_compute_derivatives.cu` - Different cost function
+| Component | Status | Notes |
+|-----------|--------|-------|
+| ndt_cuda library | ✅ | CubeCL-based NDT with Newton optimizer |
+| PointCloud2 conversion | ✅ | Efficient point cloud handling |
+| ROS subscriptions/publishers | ✅ | Full Autoware integration |
+| trigger_node_srv service | ✅ | Enable/disable NDT matching |
+| Launch files | ✅ | Drop-in replacement for Autoware NDT |
+| Covariance estimation | ✅ | FIXED and LAPLACE modes |
 
 ## Build System
 
@@ -146,7 +126,7 @@ cuda_ndt_matcher/
 ├── docs/                        # Design documentation
 │   ├── overview.md              # Project goals and strategy
 │   ├── architecture.md          # System architecture, ROS interface
-│   ├── integration.md           # fast_gicp_rust + cubecl usage
+│   ├── integration.md           # ROS2 integration details
 │   ├── roadmap.md               # Phased work items with tests
 │   ├── rosbag-replay-guide.md   # Guide for custom rosbag replay simulation
 │   └── cubecl-ndt-roadmap.md    # CubeCL NDT implementation plan
@@ -155,15 +135,11 @@ cuda_ndt_matcher/
 │   └── sample-rosbag/           # Sample rosbag for replay simulation
 ├── external/
 │   ├── autoware_repo/           # Autoware installation (install/setup.bash)
-│   ├── autoware_core/.../autoware_ndt_scan_matcher/  # C++ reference
-│   └── fast_gicp_rust/          # Rust CUDA NDT bindings
-│       ├── fast-gicp/           # High-level Rust API
-│       ├── fast-gicp-sys/       # C++ FFI layer
-│       └── fast_gicp/           # Upstream C++ (git submodule, has COLCON_IGNORE)
+│   └── autoware_core/.../autoware_ndt_scan_matcher/  # C++ reference
 ├── Cargo.toml                   # Cargo workspace root
 ├── target/                      # Cargo build output
 ├── src/
-│   ├── ndt_cuda/                # NEW: CubeCL NDT library (planned)
+│   ├── ndt_cuda/                # CubeCL NDT library
 │   │   ├── src/
 │   │   │   ├── lib.rs
 │   │   │   ├── voxel_grid/      # Voxelization kernels
@@ -228,10 +204,7 @@ Key differences from `sample_sensor_kit`:
 
 ## COLCON_IGNORE Files
 
-These prevent colcon from picking up unwanted CMake packages:
-- `external/fast_gicp_rust/fast_gicp/COLCON_IGNORE` - Upstream C++ library
-
-Note: The `target/` directory is at project root and excluded automatically since colcon uses `--base-paths src`.
+The `target/` directory is at project root and excluded automatically since colcon uses `--base-paths src`.
 
 ## Reference Implementation
 
@@ -243,54 +216,33 @@ The Autoware `ndt_scan_matcher` at `external/autoware_core/localization/autoware
 - `particle.hpp/cpp`: Particle representation for Monte Carlo
 - `hyper_parameters.hpp`: Configuration parameters
 
-## fast_gicp_rust (DEPRECATED)
+## ndt_cuda Library
 
-> **Note:** fast-gicp is being phased out due to fundamental algorithm incompatibilities with Autoware's NDT requirements. See "Why fast-gicp Doesn't Work" section above.
-
-`external/fast_gicp_rust/` provides Rust bindings for CUDA-accelerated point cloud registration.
-
-**Key types:**
-- `NDTCuda` - GPU NDT via `NDTCuda::builder().resolution().build()`
-- `PointCloudXYZ` - Point cloud via `PointCloudXYZ::from_points(&[[f32;3]])`
-- `Transform3f` - 4x4 transform matrix
-- `NdtDistanceMode` - P2D (point-to-distribution) or D2D
-- `NeighborSearchMethod` - Direct1, Direct7, Direct27
-
-**API pattern:**
-```rust
-let ndt = NDTCuda::builder()
-    .resolution(2.0)
-    .max_iterations(30)
-    .transformation_epsilon(0.01)
-    .distance_mode(NdtDistanceMode::P2D)
-    .neighbor_search_method(NeighborSearchMethod::Direct7)
-    .build()?;
-
-let result = ndt.align_with_guess(&source, &target, Some(&initial_transform))?;
-// result.has_converged, result.fitness_score, result.final_transformation
-```
-
-## CubeCL NDT (NEW)
-
-We are implementing custom CUDA kernels using [CubeCL](https://github.com/tracel-ai/cubecl), a pure-Rust GPU compute library that compiles to CUDA, ROCm, and WebGPU.
+The `ndt_cuda` crate provides a pure-Rust NDT implementation using [CubeCL](https://github.com/tracel-ai/cubecl) for GPU compute.
 
 ### Why CubeCL?
 
 - **Pure Rust**: No C++/CUDA FFI complexity
 - **Multi-platform**: Same code for CUDA, ROCm, WebGPU
 - **Type-safe**: Rust's guarantees for GPU code
-- **Automatic vectorization**: `Line<T>` handles SIMD
 
-### Planned Structure
+### API
 
-```
-src/
-├── cuda_ndt_matcher/     # Existing ROS node
-└── ndt_cuda/             # NEW: CubeCL NDT library
-    ├── voxel_grid/       # Voxelization kernels
-    ├── derivatives/      # Jacobian/Hessian computation
-    ├── optimization/     # Newton solver
-    └── scoring/          # Transform probability, NVTL
+```rust
+use ndt_cuda::NdtScanMatcher;
+
+let mut matcher = NdtScanMatcher::builder()
+    .resolution(2.0)
+    .max_iterations(30)
+    .transformation_epsilon(0.01)
+    .build()?;
+
+// Set target (map) point cloud
+matcher.set_target(&map_points)?;
+
+// Align source to target with initial guess
+let result = matcher.align(&source_points, initial_pose)?;
+// result.converged, result.score, result.pose, result.hessian
 ```
 
 ### Key Algorithm (Magnusson 2009)
@@ -357,9 +309,7 @@ let quaternion = UnitQuaternion::from_rotation_matrix(&rotation);
 - `ament_cargo` does NOT install data files (launch, config) - use separate CMake package
 - Cargo workspace is at project root `Cargo.toml`, with members in `src/`
 - Use `colcon build --base-paths src` to avoid scanning external/ and target/ directories
-- The root `Cargo.toml` includes `[workspace.package]` and extra `[workspace.dependencies]` to satisfy fast-gicp's workspace inheritance (it uses `edition.workspace = true`, etc.)
 - `build/ros2_cargo_config.toml` generated by colcon, needed for standalone cargo commands
-- Git submodules in external dependencies need `git submodule update --init --recursive`
 - Add COLCON_IGNORE to directories containing unwanted CMakeLists.txt
 
 ## Coding Conventions
