@@ -15,8 +15,13 @@ pub struct NdtConfig {
     /// Iteration stops when ||Δp|| < trans_epsilon.
     pub trans_epsilon: f64,
 
-    /// Step size for Newton update (typically 1.0).
-    /// Values < 1.0 provide damping.
+    /// Maximum step length for Newton update (Autoware default: 0.1).
+    ///
+    /// The Newton step direction is normalized, then scaled by
+    /// `min(newton_step_norm, step_size)`. This prevents large steps
+    /// when far from the optimum while allowing full steps when close.
+    ///
+    /// NOTE: This is NOT a damping factor - it's the maximum allowed step length.
     pub step_size: f64,
 
     /// Probability that a point is an outlier (typically 0.55).
@@ -35,7 +40,7 @@ impl Default for NdtConfig {
             resolution: 2.0,
             max_iterations: 30,
             trans_epsilon: 0.01,
-            step_size: 1.0,
+            step_size: 0.1, // Autoware default: max step length (NOT a damping factor)
             outlier_ratio: 0.55,
             use_line_search: false,
             regularization: 1e-6,

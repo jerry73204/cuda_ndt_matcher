@@ -161,8 +161,11 @@ impl NdtOptimizer {
                 }
             };
 
-            // Check convergence
+            // Clamp Newton step to maximum step length (Autoware behavior)
+            // step_size is the MAXIMUM allowed step length, not a damping factor
             let delta_norm = delta.norm();
+
+            // Check convergence before clamping
             if delta_norm < self.config.ndt.trans_epsilon {
                 let final_pose = pose_vector_to_isometry(&pose);
                 let nvtl = self.compute_nvtl(source_points, target_grid, &final_pose);
@@ -178,14 +181,17 @@ impl NdtOptimizer {
                 };
             }
 
-            // Apply step (with optional line search)
-            let step_size = if self.config.ndt.use_line_search {
+            // Apply step (with optional line search to find optimal step length)
+            let step_length = if self.config.ndt.use_line_search {
                 self.line_search(source_points, target_grid, &pose, &delta, &derivatives)
             } else {
-                self.config.ndt.step_size
+                // Autoware behavior: step_length = min(newton_step_norm, step_size)
+                delta_norm.min(self.config.ndt.step_size)
             };
 
-            pose = apply_pose_delta(&pose, &delta, step_size);
+            // Normalize direction and scale by step length
+            let delta_normalized = delta / delta_norm;
+            pose = apply_pose_delta(&pose, &delta_normalized, step_length);
         }
 
         // Reached max iterations

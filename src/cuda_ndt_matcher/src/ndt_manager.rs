@@ -6,6 +6,12 @@ use geometry_msgs::msg::{Point, Pose, Quaternion};
 use nalgebra::{Isometry3, Matrix6, Quaternion as NaQuaternion, Translation3, UnitQuaternion};
 use ndt_cuda::NdtScanMatcher;
 
+/// Extract yaw from quaternion for debug logging
+fn quaternion_to_yaw(q: &Quaternion) -> f64 {
+    let unit_q = UnitQuaternion::new_normalize(NaQuaternion::new(q.w, q.x, q.y, q.z));
+    unit_q.euler_angles().2
+}
+
 /// Result of NDT alignment with Hessian for covariance estimation
 pub struct AlignResult {
     pub pose: Pose,
@@ -34,6 +40,7 @@ impl NdtManager {
             .resolution(params.ndt.resolution as f32)
             .max_iterations(params.ndt.max_iterations as usize)
             .transformation_epsilon(params.ndt.trans_epsilon)
+            .step_size(params.ndt.step_size) // From config (default 0.1)
             .outlier_ratio(0.55) // Autoware default
             .build()?;
 

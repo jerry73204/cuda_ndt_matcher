@@ -370,9 +370,10 @@ impl NdtScanMatcherNode {
             }
         };
 
+        // Log warning if not converged, but still use the result
+        // (Autoware publishes even when max iterations reached)
         if !result.converged {
             log_warn!(NODE_NAME, "NDT did not converge, score={:.3}", result.score);
-            return;
         }
 
         // Estimate covariance based on configured mode

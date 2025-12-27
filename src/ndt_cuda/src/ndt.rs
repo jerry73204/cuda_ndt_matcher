@@ -41,7 +41,13 @@ pub struct NdtScanMatcherConfig {
     /// Convergence threshold for translation change.
     pub trans_epsilon: f64,
 
-    /// Step size for Newton updates.
+    /// Maximum step length for Newton update (Autoware default: 0.1).
+    ///
+    /// The Newton step direction is normalized, then scaled by
+    /// `min(newton_step_norm, step_size)`. This prevents large steps
+    /// when far from the optimum while allowing full steps when close.
+    ///
+    /// NOTE: This is NOT a damping factor - it's the maximum allowed step length.
     pub step_size: f64,
 
     /// Outlier ratio for Gaussian parameters (0.0 to 1.0).
@@ -65,7 +71,7 @@ impl Default for NdtScanMatcherConfig {
             resolution: 2.0,
             max_iterations: 30,
             trans_epsilon: 0.01,
-            step_size: 0.1,
+            step_size: 0.1, // Autoware default: maximum step length (NOT a damping factor)
             outlier_ratio: 0.55,
             regularization: 0.001,
             use_line_search: false,

@@ -58,7 +58,7 @@ pub fn estimate_initial_pose(
     let stddev_z = covariance[14].sqrt().max(0.1); // [2,2]
     let stddev_roll = covariance[21].sqrt().max(0.01); // [3,3]
     let stddev_pitch = covariance[28].sqrt().max(0.01); // [4,4]
-                                                        // Yaw stddev not used - yaw is sampled uniformly
+    let stddev_yaw = covariance[35].sqrt().max(0.01); // [5,5]
 
     // Extract initial pose components
     let initial_pose = &initial_pose_with_cov.pose.pose;
@@ -83,7 +83,7 @@ pub fn estimate_initial_pose(
         stddev_z,
         stddev_roll,
         stddev_pitch,
-        std::f64::consts::PI, // Yaw uses uniform distribution
+        stddev_yaw, // Use yaw stddev from covariance instead of uniform sampling
     ];
 
     // Initialize TPE
