@@ -42,8 +42,8 @@ format:
 lint:
     #!/usr/bin/env bash
     source {{local_setup}}
-    cargo clippy --manifest-path {{manifest}} --config {{cargo_config}} --all-targets
     cargo +nightly fmt --check --manifest-path {{manifest}} --all
+    cargo clippy --manifest-path {{manifest}} --config {{cargo_config}} --all-targets
 
 # Run all tests
 test:
@@ -77,7 +77,10 @@ run-cuda:
 enable-ndt:
     #!/usr/bin/env bash
     source {{autoware_setup}}
-    ros2 service call /localization/pose_estimator/trigger_node_srv std_srvs/srv/SetBool "{data: true}"
+    ros2 service call \
+        /localization/pose_estimator/trigger_node_srv \
+        std_srvs/srv/SetBool \
+        "{data: true}"
 
 # Monitor NDT pose output
 monitor-ndt:
