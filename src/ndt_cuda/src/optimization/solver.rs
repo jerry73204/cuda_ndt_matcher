@@ -303,6 +303,238 @@ impl NdtOptimizer {
     pub fn hessian_condition_number(&self, hessian: &Matrix6<f64>) -> f64 {
         condition_number(hessian)
     }
+
+    /// Align source points to target voxel grid with debug output.
+    ///
+    /// This is the same as `align()` but also returns detailed debug information
+    /// about each iteration for comparison with Autoware's implementation.
+    pub fn align_with_debug(
+        &self,
+        source_points: &[[f32; 3]],
+        target_grid: &VoxelGrid,
+        initial_guess: Isometry3<f64>,
+        timestamp_ns: u64,
+    ) -> (NdtResult, super::debug::AlignmentDebug) {
+        use super::debug::{AlignmentDebug, IterationDebug};
+
+        let mut debug = AlignmentDebug::new(timestamp_ns);
+        debug.num_source_points = source_points.len();
+
+        // Convert initial guess to pose vector
+        let mut pose = isometry_to_pose_vector(&initial_guess);
+        debug.set_initial_pose(&pose);
+
+        // Track best result
+        let mut best_score = f64::NEG_INFINITY;
+        let mut best_pose = pose;
+        let mut last_hessian = Matrix6::zeros();
+        let mut last_correspondences = 0;
+
+        // Main optimization loop
+        for iteration in 0..self.config.ndt.max_iterations {
+            let mut iter_debug = IterationDebug::new(iteration);
+            iter_debug.set_pose(&pose);
+
+            // Compute derivatives at current pose
+            let derivatives = compute_derivatives_cpu(
+                source_points,
+                target_grid,
+                &pose,
+                &self.gauss,
+                true, // compute_hessian
+            );
+
+            iter_debug.score = derivatives.score;
+            iter_debug.set_gradient(&derivatives.gradient);
+            iter_debug.set_hessian(&derivatives.hessian);
+            iter_debug.num_correspondences = derivatives.num_correspondences;
+            iter_debug.used_line_search = self.config.ndt.use_line_search;
+
+            // Check for sufficient correspondences
+            if derivatives.num_correspondences < self.config.min_correspondences {
+                debug.iterations.push(iter_debug);
+                if iteration == 0 {
+                    debug.convergence_status = "NoCorrespondences".to_string();
+                    debug.total_iterations = iteration;
+                    debug.set_final_pose(&pose);
+                    debug.final_score = derivatives.score;
+                    return (NdtResult::no_correspondences(initial_guess), debug);
+                }
+                break;
+            }
+
+            last_correspondences = derivatives.num_correspondences;
+            last_hessian = derivatives.hessian;
+
+            // Track best score
+            if derivatives.score > best_score {
+                best_score = derivatives.score;
+                best_pose = pose;
+            }
+
+            // Compute Newton step
+            let delta = match newton_step_regularized(
+                &derivatives.gradient,
+                &derivatives.hessian,
+                self.config.ndt.regularization,
+                self.config.svd_tolerance,
+            ) {
+                Some(d) => d,
+                None => {
+                    debug.iterations.push(iter_debug);
+                    debug.convergence_status = "SingularHessian".to_string();
+                    debug.total_iterations = iteration;
+                    debug.set_final_pose(&best_pose);
+                    debug.final_score = best_score;
+
+                    let final_pose = pose_vector_to_isometry(&best_pose);
+                    let nvtl = self.compute_nvtl(source_points, target_grid, &final_pose);
+                    debug.final_nvtl = nvtl;
+                    return (
+                        NdtResult {
+                            pose: final_pose,
+                            status: ConvergenceStatus::SingularHessian,
+                            score: best_score,
+                            transform_probability: self.compute_transform_probability(best_score),
+                            nvtl,
+                            iterations: iteration,
+                            hessian: last_hessian,
+                            num_correspondences: last_correspondences,
+                        },
+                        debug,
+                    );
+                }
+            };
+
+            iter_debug.set_newton_step(&delta);
+            let delta_norm = delta.norm();
+
+            // Check convergence before clamping
+            if delta_norm < self.config.ndt.trans_epsilon {
+                iter_debug.step_length = delta_norm;
+                iter_debug.set_pose_after(&pose);
+                debug.iterations.push(iter_debug);
+                debug.convergence_status = "Converged".to_string();
+                debug.total_iterations = iteration + 1;
+                debug.set_final_pose(&pose);
+                debug.final_score = derivatives.score;
+
+                let final_pose = pose_vector_to_isometry(&pose);
+                let nvtl = self.compute_nvtl(source_points, target_grid, &final_pose);
+                debug.final_nvtl = nvtl;
+                return (
+                    NdtResult {
+                        pose: final_pose,
+                        status: ConvergenceStatus::Converged,
+                        score: derivatives.score,
+                        transform_probability: self.compute_transform_probability(derivatives.score),
+                        nvtl,
+                        iterations: iteration + 1,
+                        hessian: derivatives.hessian,
+                        num_correspondences: derivatives.num_correspondences,
+                    },
+                    debug,
+                );
+            }
+
+            // Check if Newton step is an ascent direction
+            let mut step_dir = delta / delta_norm;
+            let grad_dot_step = derivatives.gradient.dot(&step_dir);
+            if grad_dot_step <= 0.0 {
+                step_dir = -step_dir;
+                iter_debug.direction_reversed = true;
+            }
+            iter_debug.set_step_direction(&step_dir);
+            iter_debug.directional_derivative = derivatives.gradient.dot(&step_dir);
+
+            // Apply step (with optional line search)
+            let (step_length, line_search_converged) = if self.config.ndt.use_line_search {
+                let result = self.line_search_with_result(
+                    source_points,
+                    target_grid,
+                    &pose,
+                    &step_dir,
+                    &derivatives,
+                );
+                (result.0, result.1)
+            } else {
+                (delta_norm.min(self.config.ndt.step_size), true)
+            };
+
+            iter_debug.step_length = step_length;
+            iter_debug.line_search_converged = line_search_converged;
+
+            pose = apply_pose_delta(&pose, &step_dir, step_length);
+            iter_debug.set_pose_after(&pose);
+            debug.iterations.push(iter_debug);
+        }
+
+        // Reached max iterations
+        debug.convergence_status = "MaxIterations".to_string();
+        debug.total_iterations = self.config.ndt.max_iterations;
+        debug.set_final_pose(&best_pose);
+        debug.final_score = best_score;
+
+        let final_pose = pose_vector_to_isometry(&best_pose);
+        let nvtl = self.compute_nvtl(source_points, target_grid, &final_pose);
+        debug.final_nvtl = nvtl;
+
+        (
+            NdtResult {
+                pose: final_pose,
+                status: ConvergenceStatus::MaxIterations,
+                score: best_score,
+                transform_probability: self.compute_transform_probability(best_score),
+                nvtl,
+                iterations: self.config.ndt.max_iterations,
+                hessian: last_hessian,
+                num_correspondences: last_correspondences,
+            },
+            debug,
+        )
+    }
+
+    /// Line search that also returns convergence status.
+    fn line_search_with_result(
+        &self,
+        source_points: &[[f32; 3]],
+        target_grid: &VoxelGrid,
+        pose: &[f64; 6],
+        delta: &Vector6<f64>,
+        current: &crate::derivatives::AggregatedDerivatives,
+    ) -> (f64, bool) {
+        let initial_derivative = directional_derivative(&current.gradient, delta);
+
+        if initial_derivative <= 0.0 {
+            return (self.config.ndt.step_size, false);
+        }
+
+        let gauss = &self.gauss;
+        let pose_copy = *pose;
+        let delta_copy = *delta;
+
+        let score_and_derivative = |alpha: f64| {
+            let test_pose = apply_pose_delta(&pose_copy, &delta_copy, alpha);
+            let result =
+                compute_derivatives_cpu(source_points, target_grid, &test_pose, gauss, false);
+            let deriv = directional_derivative(&result.gradient, &delta_copy);
+            (result.score, deriv)
+        };
+
+        let result = more_thuente_search(
+            score_and_derivative,
+            current.score,
+            initial_derivative,
+            self.config.ndt.step_size,
+            &self.config.more_thuente,
+        );
+
+        if result.converged {
+            (result.step_length, true)
+        } else {
+            (self.config.more_thuente.step_max, false)
+        }
+    }
 }
 
 /// Check if the optimization has converged.

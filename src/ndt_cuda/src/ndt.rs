@@ -303,6 +303,55 @@ impl NdtScanMatcher {
         })
     }
 
+    /// Align source points to target with debug output.
+    ///
+    /// This is the same as `align()` but also returns detailed debug information
+    /// about each iteration for comparison with Autoware's implementation.
+    ///
+    /// # Arguments
+    /// * `source_points` - Source point cloud (sensor scan)
+    /// * `initial_guess` - Initial pose estimate
+    /// * `timestamp_ns` - Timestamp in nanoseconds (for debug correlation)
+    ///
+    /// # Returns
+    /// Tuple of (alignment result, debug info).
+    pub fn align_with_debug(
+        &self,
+        source_points: &[[f32; 3]],
+        initial_guess: Isometry3<f64>,
+        timestamp_ns: u64,
+    ) -> Result<(AlignResult, crate::optimization::AlignmentDebug)> {
+        let grid = self
+            .target_grid
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No target set. Call set_target() first."))?;
+
+        if source_points.is_empty() {
+            bail!("Source point cloud is empty");
+        }
+
+        // Create optimizer with current config
+        let opt_config = self.build_optimizer_config();
+        let optimizer = NdtOptimizer::new(opt_config);
+
+        // Run alignment with debug
+        let (result, debug) = optimizer.align_with_debug(source_points, grid, initial_guess, timestamp_ns);
+
+        Ok((
+            AlignResult {
+                pose: result.pose,
+                converged: result.status.is_converged(),
+                score: result.score,
+                transform_probability: result.transform_probability,
+                nvtl: result.nvtl,
+                iterations: result.iterations,
+                hessian: result.hessian,
+                num_correspondences: result.num_correspondences,
+            },
+            debug,
+        ))
+    }
+
     /// Evaluate NVTL at a given pose without running optimization.
     ///
     /// Useful for pose quality assessment.

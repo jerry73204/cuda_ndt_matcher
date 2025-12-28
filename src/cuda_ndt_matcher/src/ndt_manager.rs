@@ -4,6 +4,7 @@ use crate::params::NdtParams;
 use anyhow::{bail, Result};
 use geometry_msgs::msg::{Point, Pose, Quaternion};
 use nalgebra::{Isometry3, Matrix6, Quaternion as NaQuaternion, Translation3, UnitQuaternion};
+pub use ndt_cuda::AlignmentDebug;
 use ndt_cuda::NdtScanMatcher;
 use rclrs::log_debug;
 
@@ -118,6 +119,49 @@ impl NdtManager {
             transform_probability: result.transform_probability,
             num_correspondences: result.num_correspondences,
         })
+    }
+
+    /// Align source points to target with initial guess and debug output.
+    ///
+    /// This is the same as `align()` but also returns detailed iteration debug info.
+    pub fn align_with_debug(
+        &mut self,
+        source_points: &[[f32; 3]],
+        _target_points: &[[f32; 3]], // Not needed, we use stored target
+        initial_pose: &Pose,
+        timestamp_ns: u64,
+    ) -> Result<(AlignResult, AlignmentDebug)> {
+        if source_points.is_empty() {
+            bail!("Source point cloud is empty");
+        }
+
+        // Convert initial pose to isometry
+        let initial_guess = pose_to_isometry(initial_pose);
+
+        // Run alignment with debug
+        let (result, debug) = self
+            .matcher
+            .align_with_debug(source_points, initial_guess, timestamp_ns)?;
+
+        // Convert result to ROS pose
+        let pose = isometry_to_pose(&result.pose);
+
+        // Convert Hessian from nalgebra to array
+        let hessian = matrix6_to_array(&result.hessian);
+
+        Ok((
+            AlignResult {
+                pose,
+                converged: result.converged,
+                score: result.score,
+                iterations: result.iterations as i32,
+                hessian,
+                nvtl: result.nvtl,
+                transform_probability: result.transform_probability,
+                num_correspondences: result.num_correspondences,
+            },
+            debug,
+        ))
     }
 
     /// Evaluate NVTL score at a given pose

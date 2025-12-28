@@ -20,6 +20,8 @@ use rclrs::{
     QoSProfile, RclrsErrorFilter, Service, SpinOptions, Subscription, SubscriptionOptions,
 };
 use sensor_msgs::msg::PointCloud2;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -360,13 +362,47 @@ impl NdtScanMatcherNode {
             return;
         }
 
-        // Run NDT alignment
+        // Run NDT alignment (with optional debug output)
+        let debug_enabled = std::env::var("NDT_DEBUG").is_ok();
+        let timestamp_ns = msg.header.stamp.sec as u64 * 1_000_000_000
+            + msg.header.stamp.nanosec as u64;
+
         let mut manager = ndt_manager.lock();
-        let result = match manager.align(&sensor_points, map, &initial_pose.pose.pose) {
-            Ok(r) => r,
-            Err(e) => {
-                log_error!(NODE_NAME, "NDT alignment failed: {e}");
-                return;
+        let result = if debug_enabled {
+            // Use debug variant and write to file
+            match manager.align_with_debug(
+                &sensor_points,
+                map,
+                &initial_pose.pose.pose,
+                timestamp_ns,
+            ) {
+                Ok((r, debug)) => {
+                    // Write debug JSON to file
+                    if let Ok(json) = debug.to_json() {
+                        let debug_file = std::env::var("NDT_DEBUG_FILE")
+                            .unwrap_or_else(|_| "/tmp/ndt_cuda_debug.jsonl".to_string());
+                        if let Ok(mut file) = OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&debug_file)
+                        {
+                            let _ = writeln!(file, "{json}");
+                        }
+                    }
+                    r
+                }
+                Err(e) => {
+                    log_error!(NODE_NAME, "NDT alignment failed: {e}");
+                    return;
+                }
+            }
+        } else {
+            match manager.align(&sensor_points, map, &initial_pose.pose.pose) {
+                Ok(r) => r,
+                Err(e) => {
+                    log_error!(NODE_NAME, "NDT alignment failed: {e}");
+                    return;
+                }
             }
         };
 
