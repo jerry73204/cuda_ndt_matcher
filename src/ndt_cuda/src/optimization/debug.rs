@@ -201,16 +201,24 @@ impl AlignmentDebug {
         ));
         lines.push(format!(
             "  initial=[{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}]",
-            self.initial_pose[0], self.initial_pose[1], self.initial_pose[2],
-            self.initial_pose[3], self.initial_pose[4], self.initial_pose[5],
+            self.initial_pose[0],
+            self.initial_pose[1],
+            self.initial_pose[2],
+            self.initial_pose[3],
+            self.initial_pose[4],
+            self.initial_pose[5],
         ));
         for iter in &self.iterations {
             lines.push(format!("  {}", iter.to_log_line()));
         }
         lines.push(format!(
             "  final=[{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}]",
-            self.final_pose[0], self.final_pose[1], self.final_pose[2],
-            self.final_pose[3], self.final_pose[4], self.final_pose[5],
+            self.final_pose[0],
+            self.final_pose[1],
+            self.final_pose[2],
+            self.final_pose[3],
+            self.final_pose[4],
+            self.final_pose[5],
         ));
         lines.join("\n")
     }

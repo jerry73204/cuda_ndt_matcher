@@ -43,12 +43,7 @@ pub const DERIVATIVE_OUTPUT_SIZE: u32 = 28;
 /// # Returns
 /// Transformed point (tx, ty, tz)
 #[cube]
-fn transform_point_inline<F: Float>(
-    px: F,
-    py: F,
-    pz: F,
-    transform: &Array<F>,
-) -> (F, F, F) {
+fn transform_point_inline<F: Float>(px: F, py: F, pz: F, transform: &Array<F>) -> (F, F, F) {
     let tx = transform[0] * px + transform[1] * py + transform[2] * pz + transform[3];
     let ty = transform[4] * px + transform[5] * py + transform[6] * pz + transform[7];
     let tz = transform[8] * px + transform[9] * py + transform[10] * pz + transform[11];
@@ -349,8 +344,8 @@ pub fn compute_ndt_gradient_kernel<F: Float>(
                     // J[row, col] = point_jacobians[jbase + row*6 + col]
 
                     // Column 0: (x'Σ⁻¹) * J[:,0]
-                    let j0_0 = point_jacobians[jbase + 0];  // J[0,0]
-                    let j1_0 = point_jacobians[jbase + 6];  // J[1,0]
+                    let j0_0 = point_jacobians[jbase + 0]; // J[0,0]
+                    let j1_0 = point_jacobians[jbase + 6]; // J[1,0]
                     let j2_0 = point_jacobians[jbase + 12]; // J[2,0]
                     grad0 += e_x_cov_x * (cx0 * j0_0 + cx1 * j1_0 + cx2 * j2_0);
 
@@ -404,10 +399,7 @@ pub fn compute_ndt_gradient_kernel<F: Float>(
 /// and pose is [tx, ty, tz, roll, pitch, yaw].
 ///
 /// The Jacobian is a 3x6 matrix stored row-major (18 elements per point).
-pub fn compute_point_jacobians_cpu(
-    source_points: &[[f32; 3]],
-    pose: &[f64; 6],
-) -> Vec<f32> {
+pub fn compute_point_jacobians_cpu(source_points: &[[f32; 3]], pose: &[f64; 6]) -> Vec<f32> {
     let (roll, pitch, yaw) = (pose[3], pose[4], pose[5]);
 
     // Precompute trig values
@@ -425,32 +417,36 @@ pub fn compute_point_jacobians_cpu(
         // Columns 3-5: rotation derivatives
 
         // Row 0: ∂x'/∂(tx, ty, tz, r, p, y)
-        jacobians.push(1.0_f32);  // ∂x'/∂tx
-        jacobians.push(0.0_f32);  // ∂x'/∂ty
-        jacobians.push(0.0_f32);  // ∂x'/∂tz
-        // ∂x'/∂roll = 0
+        jacobians.push(1.0_f32); // ∂x'/∂tx
+        jacobians.push(0.0_f32); // ∂x'/∂ty
+        jacobians.push(0.0_f32); // ∂x'/∂tz
+                                 // ∂x'/∂roll = 0
         jacobians.push(0.0_f32);
         // ∂x'/∂pitch = -cy*sp*cr*z - cy*sp*sr*y - cy*cp*x + ... simplified
         jacobians.push((cy * cp * sr * y - cy * cp * cr * z - cy * sp * x) as f32);
         // ∂x'/∂yaw = -sy*cp*x - sy*sp*sr*y - sy*sp*cr*z - cy*cr*y + cy*sr*z
-        jacobians.push((-sy * cp * x + (-sy * sp * sr - cy * cr) * y + (-sy * sp * cr + cy * sr) * z) as f32);
+        jacobians.push(
+            (-sy * cp * x + (-sy * sp * sr - cy * cr) * y + (-sy * sp * cr + cy * sr) * z) as f32,
+        );
 
         // Row 1: ∂y'/∂(tx, ty, tz, r, p, y)
-        jacobians.push(0.0_f32);  // ∂y'/∂tx
-        jacobians.push(1.0_f32);  // ∂y'/∂ty
-        jacobians.push(0.0_f32);  // ∂y'/∂tz
-        // ∂y'/∂roll
+        jacobians.push(0.0_f32); // ∂y'/∂tx
+        jacobians.push(1.0_f32); // ∂y'/∂ty
+        jacobians.push(0.0_f32); // ∂y'/∂tz
+                                 // ∂y'/∂roll
         jacobians.push(((sy * sp * cr + cy * sr) * y + (-sy * sp * sr + cy * cr) * z) as f32);
         // ∂y'/∂pitch
         jacobians.push((sy * cp * sr * y - sy * cp * cr * z - sy * sp * x) as f32);
         // ∂y'/∂yaw
-        jacobians.push((cy * cp * x + (cy * sp * sr - sy * cr) * y + (cy * sp * cr + sy * sr) * z) as f32);
+        jacobians.push(
+            (cy * cp * x + (cy * sp * sr - sy * cr) * y + (cy * sp * cr + sy * sr) * z) as f32,
+        );
 
         // Row 2: ∂z'/∂(tx, ty, tz, r, p, y)
-        jacobians.push(0.0_f32);  // ∂z'/∂tx
-        jacobians.push(0.0_f32);  // ∂z'/∂ty
-        jacobians.push(1.0_f32);  // ∂z'/∂tz
-        // ∂z'/∂roll
+        jacobians.push(0.0_f32); // ∂z'/∂tx
+        jacobians.push(0.0_f32); // ∂z'/∂ty
+        jacobians.push(1.0_f32); // ∂z'/∂tz
+                                 // ∂z'/∂roll
         jacobians.push((cp * cr * y - cp * sr * z) as f32);
         // ∂z'/∂pitch
         jacobians.push((-sp * sr * y - sp * cr * z - cp * x) as f32);
@@ -568,13 +564,10 @@ pub fn pose_to_transform_matrix(pose: &[f64; 6]) -> [f32; 16] {
 
     // Row-major 4x4 matrix
     [
-        r00 as f32, r01 as f32, r02 as f32, tx as f32,
-        r10 as f32, r11 as f32, r12 as f32, ty as f32,
-        r20 as f32, r21 as f32, r22 as f32, tz as f32,
-        0.0, 0.0, 0.0, 1.0,
+        r00 as f32, r01 as f32, r02 as f32, tx as f32, r10 as f32, r11 as f32, r12 as f32,
+        ty as f32, r20 as f32, r21 as f32, r22 as f32, tz as f32, 0.0, 0.0, 0.0, 1.0,
     ]
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -593,11 +586,11 @@ mod tests {
 
         // First point [1, 0, 0]:
         // Translation block should be identity
-        assert_eq!(jacobians[0], 1.0);  // ∂x'/∂tx
-        assert_eq!(jacobians[1], 0.0);  // ∂x'/∂ty
-        assert_eq!(jacobians[2], 0.0);  // ∂x'/∂tz
-        assert_eq!(jacobians[6], 0.0);  // ∂y'/∂tx
-        assert_eq!(jacobians[7], 1.0);  // ∂y'/∂ty
+        assert_eq!(jacobians[0], 1.0); // ∂x'/∂tx
+        assert_eq!(jacobians[1], 0.0); // ∂x'/∂ty
+        assert_eq!(jacobians[2], 0.0); // ∂x'/∂tz
+        assert_eq!(jacobians[6], 0.0); // ∂y'/∂tx
+        assert_eq!(jacobians[7], 1.0); // ∂y'/∂ty
     }
 
     #[test]

@@ -381,9 +381,13 @@ where
 
         // Update interval
         let interval_converged = if open_interval {
-            update_interval(&mut a_l, &mut f_l, &mut g_l, &mut a_u, &mut f_u, &mut g_u, a_t, psi_t, dpsi_t)
+            update_interval(
+                &mut a_l, &mut f_l, &mut g_l, &mut a_u, &mut f_u, &mut g_u, a_t, psi_t, dpsi_t,
+            )
         } else {
-            update_interval(&mut a_l, &mut f_l, &mut g_l, &mut a_u, &mut f_u, &mut g_u, a_t, phi_t, dphi_t)
+            update_interval(
+                &mut a_l, &mut f_l, &mut g_l, &mut a_u, &mut f_u, &mut g_u, a_t, phi_t, dphi_t,
+            )
         };
 
         if interval_converged {

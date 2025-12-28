@@ -206,7 +206,9 @@ fn compute_point_score(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{make_default_half_cubic_pcd, make_half_cubic_pcd_offset, voxelize_pcd};
+    use crate::test_utils::{
+        make_default_half_cubic_pcd, make_half_cubic_pcd_offset, voxelize_pcd,
+    };
     use approx::assert_relative_eq;
 
     fn create_test_grid() -> VoxelGrid {
@@ -364,12 +366,8 @@ mod tests {
         let sensor_scan = voxelize_pcd(&map_points, 1.0);
         let gauss = GaussianParams::default();
 
-        let result = compute_transform_probability(
-            &sensor_scan,
-            &grid,
-            &Isometry3::identity(),
-            &gauss,
-        );
+        let result =
+            compute_transform_probability(&sensor_scan, &grid, &Isometry3::identity(), &gauss);
 
         // Should have many correspondences
         assert!(
@@ -399,13 +397,9 @@ mod tests {
         let sensor_scan = voxelize_pcd(&map_points, 1.0);
         let gauss = GaussianParams::default();
 
-        let tp_at_0 = compute_transform_probability(
-            &sensor_scan,
-            &grid,
-            &Isometry3::identity(),
-            &gauss,
-        )
-        .transform_probability;
+        let tp_at_0 =
+            compute_transform_probability(&sensor_scan, &grid, &Isometry3::identity(), &gauss)
+                .transform_probability;
 
         let tp_at_far = compute_transform_probability(
             &sensor_scan,
@@ -416,7 +410,11 @@ mod tests {
         .transform_probability;
 
         // TP at origin should be positive
-        assert!(tp_at_0 > 0.0, "TP at origin should be positive, got {}", tp_at_0);
+        assert!(
+            tp_at_0 > 0.0,
+            "TP at origin should be positive, got {}",
+            tp_at_0
+        );
 
         // TP far outside map should be lower
         assert!(
@@ -464,12 +462,8 @@ mod tests {
         let gauss = GaussianParams::default();
 
         // Without offset: no overlap
-        let result_no_offset = compute_transform_probability(
-            &sensor_scan,
-            &grid,
-            &Isometry3::identity(),
-            &gauss,
-        );
+        let result_no_offset =
+            compute_transform_probability(&sensor_scan, &grid, &Isometry3::identity(), &gauss);
 
         // With correct offset: should overlap
         let result_with_offset = compute_transform_probability(
@@ -502,12 +496,7 @@ mod tests {
         let sensor_scan = voxelize_pcd(&map_points, 1.0);
         let gauss = GaussianParams::default();
 
-        let scores = compute_per_point_scores(
-            &sensor_scan,
-            &grid,
-            &Isometry3::identity(),
-            &gauss,
-        );
+        let scores = compute_per_point_scores(&sensor_scan, &grid, &Isometry3::identity(), &gauss);
 
         assert_eq!(scores.len(), sensor_scan.len());
 
@@ -530,18 +519,10 @@ mod tests {
         let sensor_scan = voxelize_pcd(&map_points, 1.0);
         let gauss = GaussianParams::default();
 
-        let result = compute_transform_probability(
-            &sensor_scan,
-            &grid,
-            &Isometry3::identity(),
-            &gauss,
-        );
-        let per_point = compute_per_point_scores(
-            &sensor_scan,
-            &grid,
-            &Isometry3::identity(),
-            &gauss,
-        );
+        let result =
+            compute_transform_probability(&sensor_scan, &grid, &Isometry3::identity(), &gauss);
+        let per_point =
+            compute_per_point_scores(&sensor_scan, &grid, &Isometry3::identity(), &gauss);
 
         // Total score from per-point should match
         let per_point_total: f64 = per_point.iter().sum();

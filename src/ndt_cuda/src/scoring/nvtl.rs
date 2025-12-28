@@ -268,7 +268,9 @@ pub fn compute_nvtl_simple(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{make_default_half_cubic_pcd, make_half_cubic_pcd_offset, voxelize_pcd};
+    use crate::test_utils::{
+        make_default_half_cubic_pcd, make_half_cubic_pcd_offset, voxelize_pcd,
+    };
     use approx::assert_relative_eq;
 
     fn create_test_grid() -> VoxelGrid {
@@ -488,14 +490,8 @@ mod tests {
         let config = NvtlConfig::default();
 
         // Compute NVTL at origin and far outside
-        let nvtl_at_0 = compute_nvtl(
-            &sensor_scan,
-            &grid,
-            &Isometry3::identity(),
-            &gauss,
-            &config,
-        )
-        .nvtl;
+        let nvtl_at_0 =
+            compute_nvtl(&sensor_scan, &grid, &Isometry3::identity(), &gauss, &config).nvtl;
         let nvtl_at_far = compute_nvtl(
             &sensor_scan,
             &grid,
@@ -560,13 +556,8 @@ mod tests {
         let config = NvtlConfig::default();
 
         // Without translation: should have low/zero NVTL (no overlap)
-        let result_no_offset = compute_nvtl(
-            &sensor_scan,
-            &grid,
-            &Isometry3::identity(),
-            &gauss,
-            &config,
-        );
+        let result_no_offset =
+            compute_nvtl(&sensor_scan, &grid, &Isometry3::identity(), &gauss, &config);
 
         // With correct translation: should have high NVTL
         let result_with_offset = compute_nvtl(
@@ -598,15 +589,11 @@ mod tests {
             ..Default::default()
         };
 
-        let result = compute_nvtl(
-            &sensor_scan,
-            &grid,
-            &Isometry3::identity(),
-            &gauss,
-            &config,
-        );
+        let result = compute_nvtl(&sensor_scan, &grid, &Isometry3::identity(), &gauss, &config);
 
-        let scores = result.per_point_scores.expect("Should have per-point scores");
+        let scores = result
+            .per_point_scores
+            .expect("Should have per-point scores");
         assert_eq!(scores.len(), sensor_scan.len());
 
         // Count points with positive scores
@@ -640,19 +627,9 @@ mod tests {
         let gauss = GaussianParams::default();
         let config = NvtlConfig::default();
 
-        let full_result = compute_nvtl(
-            &sensor_scan,
-            &grid,
-            &Isometry3::identity(),
-            &gauss,
-            &config,
-        );
-        let simple_nvtl = compute_nvtl_simple(
-            &sensor_scan,
-            &grid,
-            &Isometry3::identity(),
-            &gauss,
-        );
+        let full_result =
+            compute_nvtl(&sensor_scan, &grid, &Isometry3::identity(), &gauss, &config);
+        let simple_nvtl = compute_nvtl_simple(&sensor_scan, &grid, &Isometry3::identity(), &gauss);
 
         // Both should give positive values
         assert!(full_result.nvtl > 0.0, "Full NVTL should be positive");

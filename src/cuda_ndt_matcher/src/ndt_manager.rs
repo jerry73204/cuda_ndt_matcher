@@ -139,9 +139,9 @@ impl NdtManager {
         let initial_guess = pose_to_isometry(initial_pose);
 
         // Run alignment with debug
-        let (result, debug) = self
-            .matcher
-            .align_with_debug(source_points, initial_guess, timestamp_ns)?;
+        let (result, debug) =
+            self.matcher
+                .align_with_debug(source_points, initial_guess, timestamp_ns)?;
 
         // Convert result to ROS pose
         let pose = isometry_to_pose(&result.pose);

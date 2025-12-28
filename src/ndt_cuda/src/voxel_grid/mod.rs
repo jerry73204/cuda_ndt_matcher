@@ -563,7 +563,10 @@ mod tests {
         assert!(grid.len() > 0, "Should have at least some voxels");
 
         for (_, voxel) in grid.iter() {
-            assert!(voxel.point_count >= 6, "Should have enough points per voxel");
+            assert!(
+                voxel.point_count >= 6,
+                "Should have enough points per voxel"
+            );
         }
     }
 
@@ -889,8 +892,14 @@ mod tests {
         let gpu_valid = gpu_grid.num_valid_voxels();
 
         // Both should produce a reasonable number of voxels
-        assert!(cpu_valid > 100, "CPU should have >100 voxels from half-cubic");
-        assert!(gpu_valid > 100, "GPU should have >100 voxels from half-cubic");
+        assert!(
+            cpu_valid > 100,
+            "CPU should have >100 voxels from half-cubic"
+        );
+        assert!(
+            gpu_valid > 100,
+            "GPU should have >100 voxels from half-cubic"
+        );
 
         // Point counts should sum to similar totals
         let cpu_total_points: u64 = cpu_grid.iter().map(|(_, v)| v.point_count as u64).sum();

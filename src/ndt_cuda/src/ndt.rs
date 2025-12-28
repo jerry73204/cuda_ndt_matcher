@@ -335,7 +335,8 @@ impl NdtScanMatcher {
         let optimizer = NdtOptimizer::new(opt_config);
 
         // Run alignment with debug
-        let (result, debug) = optimizer.align_with_debug(source_points, grid, initial_guess, timestamp_ns);
+        let (result, debug) =
+            optimizer.align_with_debug(source_points, grid, initial_guess, timestamp_ns);
 
         Ok((
             AlignResult {
@@ -728,9 +729,10 @@ mod tests {
 
         // Result should be closer to identity than initial guess
         let final_translation = result.pose.translation.vector;
-        let final_offset =
-            (final_translation.x.powi(2) + final_translation.y.powi(2) + final_translation.z.powi(2))
-                .sqrt();
+        let final_offset = (final_translation.x.powi(2)
+            + final_translation.y.powi(2)
+            + final_translation.z.powi(2))
+        .sqrt();
         let initial_offset = (0.5_f64.powi(2) + 0.3_f64.powi(2) + 0.1_f64.powi(2)).sqrt();
 
         assert!(

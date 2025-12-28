@@ -427,7 +427,8 @@ impl NdtOptimizer {
                         pose: final_pose,
                         status: ConvergenceStatus::Converged,
                         score: derivatives.score,
-                        transform_probability: self.compute_transform_probability(derivatives.score),
+                        transform_probability: self
+                            .compute_transform_probability(derivatives.score),
                         nvtl,
                         iterations: iteration + 1,
                         hessian: derivatives.hessian,

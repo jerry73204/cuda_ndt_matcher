@@ -172,8 +172,6 @@ pub fn make_random_sphere(
     num_points: usize,
     seed: u64,
 ) -> Vec<[f32; 3]> {
-    
-
     // Simple LCG for reproducibility
     let mut rng_state = seed;
     let mut next_random = || -> f32 {
@@ -355,9 +353,18 @@ mod tests {
 
         // Each plane's interior (excluding 2 edges) = (n-1) × (n-1) = 100 × 100 = 10,000
         let expected_interior = (n - 1) * (n - 1);
-        assert_eq!(xy_strict, expected_interior, "XY plane interior point count");
-        assert_eq!(yz_strict, expected_interior, "YZ plane interior point count");
-        assert_eq!(zx_strict, expected_interior, "ZX plane interior point count");
+        assert_eq!(
+            xy_strict, expected_interior,
+            "XY plane interior point count"
+        );
+        assert_eq!(
+            yz_strict, expected_interior,
+            "YZ plane interior point count"
+        );
+        assert_eq!(
+            zx_strict, expected_interior,
+            "ZX plane interior point count"
+        );
 
         // Total should be 3 × n² (each plane generates n² points)
         assert_eq!(pcd.len(), 3 * n * n);

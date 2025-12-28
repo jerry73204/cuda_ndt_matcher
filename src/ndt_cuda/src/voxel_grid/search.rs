@@ -130,7 +130,7 @@ impl VoxelSearch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     use nalgebra::{Matrix3, Vector3};
 
     fn make_test_voxel(mean: [f32; 3]) -> Voxel {

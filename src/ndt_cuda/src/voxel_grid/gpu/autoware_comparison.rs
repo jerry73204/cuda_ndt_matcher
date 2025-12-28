@@ -74,7 +74,9 @@ pub fn build_autoware_voxel_grid(
         }
 
         let voxel_id = compute_voxel_id(p[0], p[1], p[2], params.resolution);
-        let acc = voxel_map.entry(voxel_id).or_insert_with(VoxelAccumulator::new);
+        let acc = voxel_map
+            .entry(voxel_id)
+            .or_insert_with(VoxelAccumulator::new);
 
         let pt = [p[0] as f64, p[1] as f64, p[2] as f64];
         acc.add_point(&pt);
@@ -181,7 +183,10 @@ impl VoxelAccumulator {
 /// - Compute eigenvalues/eigenvectors
 /// - Clamp eigenvalues < min_covar_eigvalue_mult * max_eigenvalue
 /// - Reconstruct covariance
-fn regularize_covariance(cov: &[[f64; 3]; 3], min_covar_eigvalue_mult: f64) -> ([[f64; 3]; 3], bool) {
+fn regularize_covariance(
+    cov: &[[f64; 3]; 3],
+    min_covar_eigvalue_mult: f64,
+) -> ([[f64; 3]; 3], bool) {
     // Compute eigenvalues using characteristic polynomial
     let eigenvalues = compute_eigenvalues_3x3_f64(cov);
 
@@ -198,7 +203,11 @@ fn regularize_covariance(cov: &[[f64; 3]; 3], min_covar_eigvalue_mult: f64) -> (
     }
 
     // Find max eigenvalue (treating small negatives as zero)
-    let max_eigenvalue = eigenvalues.iter().cloned().map(|e| e.max(0.0)).fold(0.0f64, f64::max);
+    let max_eigenvalue = eigenvalues
+        .iter()
+        .cloned()
+        .map(|e| e.max(0.0))
+        .fold(0.0f64, f64::max);
 
     // If all eigenvalues are effectively zero, add minimum regularization
     if max_eigenvalue < tolerance {
@@ -583,20 +592,23 @@ mod tests {
             autoware_count > 0,
             "Autoware should produce at least one valid voxel"
         );
-        assert!(
-            gpu_count > 0,
-            "GPU should produce at least one valid voxel"
-        );
+        assert!(gpu_count > 0, "GPU should produce at least one valid voxel");
 
         // Verify that both produce voxels with reasonable statistics
         for leaf in &autoware_leaves {
             assert!(leaf.nr_points >= 3, "Voxel should have enough points");
-            assert!(leaf.cov[0][0] >= 0.0, "Covariance diagonal should be non-negative");
+            assert!(
+                leaf.cov[0][0] >= 0.0,
+                "Covariance diagonal should be non-negative"
+            );
         }
 
         for voxel in gpu_grid.iter_valid_voxels() {
             assert!(voxel.point_count >= 3, "Voxel should have enough points");
-            assert!(voxel.covariance[0] >= 0.0, "Covariance diagonal should be non-negative");
+            assert!(
+                voxel.covariance[0] >= 0.0,
+                "Covariance diagonal should be non-negative"
+            );
         }
     }
 
