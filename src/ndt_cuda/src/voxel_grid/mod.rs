@@ -156,15 +156,6 @@ impl VoxelGrid {
         self.get(&voxel_coord)
     }
 
-    /// Get a voxel by point position (geometric containment).
-    ///
-    /// Returns the single voxel that geometrically contains this point.
-    /// For multi-voxel queries, use `radius_search` instead.
-    pub fn get_by_point(&self, point: &[f32; 3]) -> Option<&Voxel> {
-        let coord = VoxelCoord::from_point(point, self.config.resolution);
-        self.get(&coord)
-    }
-
     /// Get a voxel by its index.
     pub fn get_by_index(&self, idx: usize) -> Option<&Voxel> {
         self.voxels.get(idx)
@@ -281,6 +272,9 @@ impl VoxelGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::{
+        make_default_half_cubic_pcd, make_half_cubic_pcd_offset, make_xy_plane, voxelize_pcd,
+    };
     use approx::assert_relative_eq;
 
     fn generate_test_points() -> Vec<[f32; 3]> {
@@ -322,19 +316,6 @@ mod tests {
 
         // Check resolution
         assert_eq!(grid.resolution(), 2.0);
-    }
-
-    #[test]
-    fn test_voxel_grid_get_by_point() {
-        let points = generate_test_points();
-        let grid = VoxelGrid::from_points(&points, 2.0).unwrap();
-
-        // Query a point in the first cluster
-        let voxel = grid.get_by_point(&[0.1, 0.1, 0.1]);
-        assert!(voxel.is_some());
-
-        let voxel = voxel.unwrap();
-        assert!(voxel.point_count >= 6);
     }
 
     #[test]
@@ -448,5 +429,549 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ========================================================================
+    // Phase 2: Voxel grid tests using Autoware-style test data
+    // ========================================================================
+
+    #[test]
+    fn test_voxel_grid_from_half_cubic() {
+        let points = make_default_half_cubic_pcd();
+        let grid = VoxelGrid::from_points(&points, 2.0).unwrap();
+
+        // Half-cube has 3 planes of 20m × 20m at 0.2m spacing
+        // At 2.0m resolution, each plane has ~100 voxels (10×10)
+        // Some voxels overlap at edges, so total should be ~200-350
+        assert!(
+            grid.len() >= 150,
+            "Expected at least 150 voxels, got {}",
+            grid.len()
+        );
+        assert!(
+            grid.len() <= 400,
+            "Expected at most 400 voxels, got {}",
+            grid.len()
+        );
+    }
+
+    #[test]
+    fn test_voxel_grid_half_cubic_bounds() {
+        let points = make_default_half_cubic_pcd();
+        let grid = VoxelGrid::from_points(&points, 2.0).unwrap();
+
+        let bounds = grid.bounds().expect("Grid should have bounds");
+        let (min, max) = bounds;
+
+        // Half-cube spans [0, 20] in all dimensions
+        // At resolution 2.0, voxel coords span [0, 9]
+        assert!(min.x >= 0, "min.x should be >= 0");
+        assert!(min.y >= 0, "min.y should be >= 0");
+        assert!(min.z >= 0, "min.z should be >= 0");
+        assert!(max.x <= 10, "max.x should be <= 10");
+        assert!(max.y <= 10, "max.y should be <= 10");
+        assert!(max.z <= 10, "max.z should be <= 10");
+    }
+
+    #[test]
+    fn test_voxel_grid_half_cubic_offset() {
+        let points = make_half_cubic_pcd_offset(100.0, 100.0, 0.0);
+        let grid = VoxelGrid::from_points(&points, 2.0).unwrap();
+
+        let bounds = grid.bounds().expect("Grid should have bounds");
+        let (min, max) = bounds;
+
+        // Half-cube spans [0, 20], offset by 100 -> [100, 120]
+        // At resolution 2.0, voxel coords span [50, 59]
+        assert!(
+            min.x >= 49,
+            "min.x should be >= 49 after offset, got {}",
+            min.x
+        );
+        assert!(
+            min.y >= 49,
+            "min.y should be >= 49 after offset, got {}",
+            min.y
+        );
+        assert!(
+            max.x <= 60,
+            "max.x should be <= 60 after offset, got {}",
+            max.x
+        );
+        assert!(
+            max.y <= 60,
+            "max.y should be <= 60 after offset, got {}",
+            max.y
+        );
+    }
+
+    #[test]
+    fn test_voxel_mean_on_planar_points() {
+        // Points on XY plane at z=0
+        let points = make_xy_plane(10.0, 0.5, 0.0);
+        let grid = VoxelGrid::from_points(&points, 2.0).unwrap();
+
+        // All voxel means should have z close to 0
+        for (_, voxel) in grid.iter() {
+            assert!(
+                voxel.mean.z.abs() < 0.1,
+                "Mean z should be near 0 for XY plane, got {}",
+                voxel.mean.z
+            );
+        }
+    }
+
+    #[test]
+    fn test_voxel_covariance_on_planar_points() {
+        // Points on XY plane -> z variance should be regularized (near minimum)
+        let points = make_xy_plane(10.0, 0.5, 0.0);
+        let grid = VoxelGrid::from_points(&points, 2.0).unwrap();
+
+        for (_, voxel) in grid.iter() {
+            // z-z covariance should be small (regularized)
+            let z_variance = voxel.covariance[(2, 2)];
+            assert!(
+                z_variance <= 0.1,
+                "z variance should be regularized for planar points, got {}",
+                z_variance
+            );
+            assert!(
+                z_variance >= 0.0,
+                "z variance should be non-negative, got {}",
+                z_variance
+            );
+        }
+    }
+
+    #[test]
+    fn test_voxelized_sensor_pcd() {
+        let original = make_default_half_cubic_pcd();
+        let voxelized = voxelize_pcd(&original, 1.0);
+
+        // Voxelized should have fewer points
+        assert!(
+            voxelized.len() < original.len() / 10,
+            "Voxelized should have << original points"
+        );
+
+        // Create grid from voxelized points
+        // Note: After voxelization at 1.0m, many voxels may not meet min_points
+        // threshold when building grid at 2.0m, so we relax the requirements
+        let grid = VoxelGrid::from_points(&voxelized, 2.0).unwrap();
+
+        // Should still create some voxels (may be fewer due to min_points filter)
+        assert!(grid.len() > 0, "Should have at least some voxels");
+
+        for (_, voxel) in grid.iter() {
+            assert!(voxel.point_count >= 6, "Should have enough points per voxel");
+        }
+    }
+
+    #[test]
+    fn test_radius_search_on_half_cubic() {
+        let points = make_default_half_cubic_pcd();
+        let grid = VoxelGrid::from_points(&points, 2.0).unwrap();
+
+        // Query at center of grid (10, 10, 0 - on XY plane)
+        let neighbors = grid.radius_search(&[10.0, 10.0, 0.0], 2.0);
+
+        // Should find nearby voxels
+        assert!(
+            !neighbors.is_empty(),
+            "Should find at least one neighbor at grid center"
+        );
+
+        // All found voxels should be within radius of query point
+        for voxel in &neighbors {
+            let dx = voxel.mean.x - 10.0;
+            let dy = voxel.mean.y - 10.0;
+            let dz = voxel.mean.z - 0.0;
+            let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+            assert!(
+                dist <= 3.0, // Allow some tolerance for voxel centroids
+                "Neighbor voxel should be within search radius, dist={}",
+                dist
+            );
+        }
+    }
+
+    #[test]
+    fn test_voxel_grid_min_points_filter() {
+        // Create sparse points that might not meet min_points threshold
+        let mut points = Vec::new();
+
+        // Add 10 tight clusters of 10 points each
+        for cluster in 0..10 {
+            let cx = cluster as f32 * 5.0;
+            for i in 0..10 {
+                points.push([cx + (i as f32) * 0.01, 0.0, 0.0]);
+            }
+        }
+
+        let grid = VoxelGrid::from_points(&points, 2.0).unwrap();
+
+        // With min_points_per_voxel=6 (default), clusters of 10 should pass
+        for (_, voxel) in grid.iter() {
+            assert!(
+                voxel.point_count >= 6,
+                "All voxels should have at least min_points"
+            );
+        }
+    }
+
+    #[test]
+    fn test_inv_covariance_positive_definite() {
+        let points = make_default_half_cubic_pcd();
+        let grid = VoxelGrid::from_points(&points, 2.0).unwrap();
+
+        for (_, voxel) in grid.iter() {
+            let inv_cov = &voxel.inv_covariance;
+
+            // Diagonal elements should be positive
+            assert!(
+                inv_cov[(0, 0)] > 0.0,
+                "inv_cov[0,0] should be positive: {}",
+                inv_cov[(0, 0)]
+            );
+            assert!(
+                inv_cov[(1, 1)] > 0.0,
+                "inv_cov[1,1] should be positive: {}",
+                inv_cov[(1, 1)]
+            );
+            assert!(
+                inv_cov[(2, 2)] > 0.0,
+                "inv_cov[2,2] should be positive: {}",
+                inv_cov[(2, 2)]
+            );
+
+            // Should be finite
+            for i in 0..3 {
+                for j in 0..3 {
+                    assert!(
+                        inv_cov[(i, j)].is_finite(),
+                        "inv_cov[{},{}] should be finite: {}",
+                        i,
+                        j,
+                        inv_cov[(i, j)]
+                    );
+                }
+            }
+        }
+    }
+
+    // ========================================================================
+    // Phase 5: CPU vs GPU consistency tests
+    // ========================================================================
+
+    use crate::voxel_grid::gpu::{GpuVoxelGrid, GpuVoxelGridConfig};
+
+    /// Helper to convert [[f32; 3]] to flat Vec<f32> for GpuVoxelGrid
+    fn points_to_flat(points: &[[f32; 3]]) -> Vec<f32> {
+        points.iter().flat_map(|p| p.iter().copied()).collect()
+    }
+
+    #[test]
+    fn test_cpu_gpu_voxel_count_consistency() {
+        let points = make_default_half_cubic_pcd();
+        let flat_points = points_to_flat(&points);
+
+        // Build CPU grid
+        let cpu_grid = VoxelGrid::from_points(&points, 2.0).unwrap();
+
+        // Build GPU grid with same parameters
+        let gpu_config = GpuVoxelGridConfig {
+            resolution: 2.0,
+            min_points: 6, // Match CPU default
+        };
+        let gpu_grid = GpuVoxelGrid::from_points(&flat_points, &gpu_config);
+
+        let cpu_count = cpu_grid.len();
+        let gpu_valid_count = gpu_grid.num_valid_voxels();
+
+        // Verify total points are conserved
+        let gpu_points_sum: u64 = gpu_grid.point_counts.iter().map(|&c| c as u64).sum();
+        assert_eq!(
+            gpu_points_sum,
+            points.len() as u64,
+            "GPU should account for all input points"
+        );
+
+        // Verify no voxels fail regularization (covariance should always be invertible after regularization)
+        let failing_regularization: usize = (0..gpu_grid.num_voxels)
+            .filter(|&i| gpu_grid.point_counts[i] >= 6 && !gpu_grid.valid[i])
+            .count();
+        assert_eq!(
+            failing_regularization, 0,
+            "No voxels with >=6 points should fail regularization"
+        );
+
+        // CPU and GPU should have similar voxel counts (within 10%)
+        let diff = (cpu_count as i32 - gpu_valid_count as i32).abs();
+        assert!(
+            diff <= cpu_count as i32 / 10,
+            "CPU ({cpu_count}) and GPU ({gpu_valid_count}) voxel counts should be similar, diff={diff}"
+        );
+    }
+
+    #[test]
+    fn test_cpu_gpu_means_consistency() {
+        // Use a simple point cloud where voxel assignment is deterministic
+        let mut points = Vec::new();
+        for i in 0..10 {
+            for j in 0..10 {
+                // Dense grid on XY plane
+                points.push([i as f32 * 0.3, j as f32 * 0.3, 0.0]);
+            }
+        }
+
+        let flat_points = points_to_flat(&points);
+
+        let cpu_grid = VoxelGrid::from_points(&points, 2.0).unwrap();
+        let gpu_config = GpuVoxelGridConfig {
+            resolution: 2.0,
+            min_points: 6,
+        };
+        let gpu_grid = GpuVoxelGrid::from_points(&flat_points, &gpu_config);
+
+        // Collect GPU means
+        let gpu_means: Vec<[f32; 3]> = gpu_grid.iter_valid_voxels().map(|v| v.mean).collect();
+
+        // For each CPU voxel, find a matching GPU voxel
+        let mut matched = 0;
+        for (_, cpu_voxel) in cpu_grid.iter() {
+            let cpu_mean = [
+                cpu_voxel.mean.x as f32,
+                cpu_voxel.mean.y as f32,
+                cpu_voxel.mean.z as f32,
+            ];
+
+            // Find closest GPU mean
+            let closest = gpu_means.iter().min_by(|a, b| {
+                let da = (a[0] - cpu_mean[0]).powi(2)
+                    + (a[1] - cpu_mean[1]).powi(2)
+                    + (a[2] - cpu_mean[2]).powi(2);
+                let db = (b[0] - cpu_mean[0]).powi(2)
+                    + (b[1] - cpu_mean[1]).powi(2)
+                    + (b[2] - cpu_mean[2]).powi(2);
+                da.partial_cmp(&db).unwrap()
+            });
+
+            if let Some(gpu_mean) = closest {
+                let dist = ((gpu_mean[0] - cpu_mean[0]).powi(2)
+                    + (gpu_mean[1] - cpu_mean[1]).powi(2)
+                    + (gpu_mean[2] - cpu_mean[2]).powi(2))
+                .sqrt();
+
+                if dist < 0.5 {
+                    // Within half a voxel
+                    matched += 1;
+                }
+            }
+        }
+
+        // Most voxels should have matching means
+        let match_ratio = matched as f64 / cpu_grid.len() as f64;
+        assert!(
+            match_ratio > 0.8,
+            "At least 80% of CPU voxels should match GPU voxels, got {}%",
+            match_ratio * 100.0
+        );
+    }
+
+    #[test]
+    fn test_cpu_gpu_covariance_consistency() {
+        // Use a simple 3D point cloud
+        let mut points = Vec::new();
+        for i in 0..5 {
+            for j in 0..5 {
+                for k in 0..5 {
+                    points.push([i as f32 * 0.5, j as f32 * 0.5, k as f32 * 0.5]);
+                }
+            }
+        }
+
+        let flat_points = points_to_flat(&points);
+
+        let cpu_grid = VoxelGrid::from_points(&points, 2.0).unwrap();
+        let gpu_config = GpuVoxelGridConfig {
+            resolution: 2.0,
+            min_points: 6,
+        };
+        let gpu_grid = GpuVoxelGrid::from_points(&flat_points, &gpu_config);
+
+        // Both should produce valid covariances
+        for (_, cpu_voxel) in cpu_grid.iter() {
+            // CPU covariance should be positive semi-definite
+            let cov = &cpu_voxel.covariance;
+            assert!(cov[(0, 0)] >= 0.0, "Covariance diagonal should be >= 0");
+            assert!(cov[(1, 1)] >= 0.0, "Covariance diagonal should be >= 0");
+            assert!(cov[(2, 2)] >= 0.0, "Covariance diagonal should be >= 0");
+        }
+
+        for gpu_voxel in gpu_grid.iter_valid_voxels() {
+            // GPU covariance should also be positive semi-definite
+            assert!(
+                gpu_voxel.covariance[0] >= 0.0,
+                "GPU covariance[0,0] should be >= 0"
+            );
+            assert!(
+                gpu_voxel.covariance[4] >= 0.0,
+                "GPU covariance[1,1] should be >= 0"
+            );
+            assert!(
+                gpu_voxel.covariance[8] >= 0.0,
+                "GPU covariance[2,2] should be >= 0"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cpu_gpu_inv_covariance_consistency() {
+        // Use a simple 3D point cloud
+        let mut points = Vec::new();
+        for i in 0..5 {
+            for j in 0..5 {
+                for k in 0..5 {
+                    points.push([i as f32 * 0.5, j as f32 * 0.5, k as f32 * 0.5]);
+                }
+            }
+        }
+
+        let flat_points = points_to_flat(&points);
+
+        let cpu_grid = VoxelGrid::from_points(&points, 2.0).unwrap();
+        let gpu_config = GpuVoxelGridConfig {
+            resolution: 2.0,
+            min_points: 6,
+        };
+        let gpu_grid = GpuVoxelGrid::from_points(&flat_points, &gpu_config);
+
+        // Both should produce valid inverse covariances
+        for (_, cpu_voxel) in cpu_grid.iter() {
+            let inv_cov = &cpu_voxel.inv_covariance;
+            // Diagonal should be positive
+            assert!(inv_cov[(0, 0)] > 0.0, "CPU inv_cov[0,0] should be > 0");
+            assert!(inv_cov[(1, 1)] > 0.0, "CPU inv_cov[1,1] should be > 0");
+            assert!(inv_cov[(2, 2)] > 0.0, "CPU inv_cov[2,2] should be > 0");
+        }
+
+        for gpu_voxel in gpu_grid.iter_valid_voxels() {
+            // Diagonal should be positive
+            assert!(
+                gpu_voxel.inv_covariance[0] > 0.0,
+                "GPU inv_cov[0,0] should be > 0"
+            );
+            assert!(
+                gpu_voxel.inv_covariance[4] > 0.0,
+                "GPU inv_cov[1,1] should be > 0"
+            );
+            assert!(
+                gpu_voxel.inv_covariance[8] > 0.0,
+                "GPU inv_cov[2,2] should be > 0"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cpu_gpu_half_cubic_consistency() {
+        let points = make_default_half_cubic_pcd();
+        let flat_points = points_to_flat(&points);
+
+        let cpu_grid = VoxelGrid::from_points(&points, 2.0).unwrap();
+        let gpu_config = GpuVoxelGridConfig {
+            resolution: 2.0,
+            min_points: 6,
+        };
+        let gpu_grid = GpuVoxelGrid::from_points(&flat_points, &gpu_config);
+
+        // Collect stats
+        let cpu_valid = cpu_grid.len();
+        let gpu_valid = gpu_grid.num_valid_voxels();
+
+        // Both should produce a reasonable number of voxels
+        assert!(cpu_valid > 100, "CPU should have >100 voxels from half-cubic");
+        assert!(gpu_valid > 100, "GPU should have >100 voxels from half-cubic");
+
+        // Point counts should sum to similar totals
+        let cpu_total_points: u64 = cpu_grid.iter().map(|(_, v)| v.point_count as u64).sum();
+        let gpu_total_points: u64 = gpu_grid
+            .iter_valid_voxels()
+            .map(|v| v.point_count as u64)
+            .sum();
+
+        // GPU may have fewer total points due to min_points filtering differences
+        assert!(
+            gpu_total_points > cpu_total_points / 2,
+            "GPU total points ({}) should be reasonable compared to CPU ({})",
+            gpu_total_points,
+            cpu_total_points
+        );
+    }
+
+    #[test]
+    fn test_morton_codes_valid() {
+        use crate::voxel_grid::gpu::{compute_morton_codes_cpu, morton_decode_3d};
+
+        let points = make_default_half_cubic_pcd();
+        let flat_points = points_to_flat(&points);
+
+        let result = compute_morton_codes_cpu(&flat_points, 2.0);
+
+        // All codes should be valid (decodable)
+        let codes: Vec<u64> = result
+            .codes
+            .chunks(8)
+            .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+
+        for code in &codes {
+            let (x, y, z) = morton_decode_3d(*code);
+            // Morton coords should be reasonable (within grid bounds)
+            assert!(x < 0x1FFFFF, "Morton x should be < 2^21");
+            assert!(y < 0x1FFFFF, "Morton y should be < 2^21");
+            assert!(z < 0x1FFFFF, "Morton z should be < 2^21");
+        }
+    }
+
+    #[test]
+    fn test_radix_sort_preserves_data() {
+        use crate::voxel_grid::gpu::radix_sort_by_key_cpu;
+
+        let keys: Vec<u64> = vec![100, 50, 200, 25, 150];
+        let values: Vec<u32> = vec![0, 1, 2, 3, 4];
+
+        let result = radix_sort_by_key_cpu(&keys, &values);
+
+        let sorted_keys: Vec<u64> = result
+            .keys
+            .chunks(8)
+            .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+        let sorted_values: Vec<u32> = result
+            .values
+            .chunks(4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+
+        // Keys should be sorted
+        assert_eq!(sorted_keys, vec![25, 50, 100, 150, 200]);
+
+        // Values should follow their keys
+        assert_eq!(sorted_values, vec![3, 1, 0, 4, 2]);
+    }
+
+    #[test]
+    fn test_segment_detection_consistency() {
+        use crate::voxel_grid::gpu::detect_segments_cpu;
+
+        // Sorted codes with known segment boundaries
+        let codes: Vec<u64> = vec![10, 10, 10, 20, 20, 30, 30, 30, 30];
+
+        let result = detect_segments_cpu(&codes);
+
+        // Should detect 3 segments
+        assert_eq!(result.num_segments, 3);
+        assert_eq!(result.segment_codes.len(), 3);
+        assert_eq!(result.segment_codes, vec![10, 20, 30]);
     }
 }

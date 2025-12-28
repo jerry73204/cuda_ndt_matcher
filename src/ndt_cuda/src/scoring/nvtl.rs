@@ -268,6 +268,7 @@ pub fn compute_nvtl_simple(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::{make_default_half_cubic_pcd, make_half_cubic_pcd_offset, voxelize_pcd};
     use approx::assert_relative_eq;
 
     fn create_test_grid() -> VoxelGrid {
@@ -437,6 +438,237 @@ mod tests {
             nvtl_result.nvtl,
             tp_result.transform_probability,
             epsilon = 0.1
+        );
+    }
+
+    // ========================================================================
+    // Phase 4: Scoring tests using Autoware-style test data
+    // ========================================================================
+
+    /// Test NVTL on half-cubic point cloud (Autoware test data).
+    #[test]
+    fn test_nvtl_half_cubic_perfect_alignment() {
+        let map_points = make_default_half_cubic_pcd();
+        let grid = VoxelGrid::from_points(&map_points, 2.0).unwrap();
+
+        // Sensor scan matches map exactly
+        let sensor_scan = voxelize_pcd(&map_points, 1.0);
+
+        let pose = Isometry3::identity();
+        let gauss = GaussianParams::default();
+        let config = NvtlConfig::default();
+
+        let result = compute_nvtl(&sensor_scan, &grid, &pose, &gauss, &config);
+
+        // Perfect alignment should have high NVTL
+        assert!(
+            result.nvtl > 0.5,
+            "Perfect alignment should have high NVTL, got {}",
+            result.nvtl
+        );
+
+        // Most points should have neighbors
+        assert!(
+            result.num_with_neighbors > result.num_no_neighbors,
+            "Most points should have neighbors"
+        );
+    }
+
+    /// Test NVTL at origin is higher than far outside map.
+    ///
+    /// Note: With multi-voxel radius search, NVTL ordering can be non-monotonic
+    /// for small offsets, but large offsets (outside map) should score lower.
+    #[test]
+    fn test_nvtl_decreases_with_offset() {
+        let map_points = make_default_half_cubic_pcd();
+        let grid = VoxelGrid::from_points(&map_points, 2.0).unwrap();
+
+        let sensor_scan = voxelize_pcd(&map_points, 1.0);
+        let gauss = GaussianParams::default();
+        let config = NvtlConfig::default();
+
+        // Compute NVTL at origin and far outside
+        let nvtl_at_0 = compute_nvtl(
+            &sensor_scan,
+            &grid,
+            &Isometry3::identity(),
+            &gauss,
+            &config,
+        )
+        .nvtl;
+        let nvtl_at_far = compute_nvtl(
+            &sensor_scan,
+            &grid,
+            &Isometry3::translation(50.0, 50.0, 0.0),
+            &gauss,
+            &config,
+        )
+        .nvtl;
+
+        // NVTL at origin should be positive
+        assert!(
+            nvtl_at_0 > 0.0,
+            "NVTL at origin should be positive, got {}",
+            nvtl_at_0
+        );
+
+        // NVTL far outside map should be lower
+        assert!(
+            nvtl_at_far < nvtl_at_0,
+            "NVTL far from map ({}) should be < NVTL at origin ({})",
+            nvtl_at_far,
+            nvtl_at_0
+        );
+    }
+
+    /// Test NVTL is non-negative and finite.
+    ///
+    /// Note: With multi-voxel radius search, NVTL can exceed 1.0 because
+    /// each point can contribute to multiple voxels' scores.
+    #[test]
+    fn test_nvtl_valid_range() {
+        let map_points = make_default_half_cubic_pcd();
+        let grid = VoxelGrid::from_points(&map_points, 2.0).unwrap();
+
+        let sensor_scan = voxelize_pcd(&map_points, 1.0);
+        let gauss = GaussianParams::default();
+        let config = NvtlConfig::default();
+
+        for offset in [0.0, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0] {
+            let pose = Isometry3::translation(offset, 0.0, 0.0);
+            let result = compute_nvtl(&sensor_scan, &grid, &pose, &gauss, &config);
+
+            assert!(
+                result.nvtl >= 0.0 && result.nvtl.is_finite(),
+                "NVTL should be >= 0 and finite, got {} at offset {}",
+                result.nvtl,
+                offset
+            );
+        }
+    }
+
+    /// Test NVTL with map at offset (like Autoware's test setup).
+    #[test]
+    fn test_nvtl_with_offset_map() {
+        // Map at offset (100, 100)
+        let map_points = make_half_cubic_pcd_offset(100.0, 100.0, 0.0);
+        let grid = VoxelGrid::from_points(&map_points, 2.0).unwrap();
+
+        // Sensor scan at origin
+        let sensor_scan = voxelize_pcd(&make_default_half_cubic_pcd(), 1.0);
+        let gauss = GaussianParams::default();
+        let config = NvtlConfig::default();
+
+        // Without translation: should have low/zero NVTL (no overlap)
+        let result_no_offset = compute_nvtl(
+            &sensor_scan,
+            &grid,
+            &Isometry3::identity(),
+            &gauss,
+            &config,
+        );
+
+        // With correct translation: should have high NVTL
+        let result_with_offset = compute_nvtl(
+            &sensor_scan,
+            &grid,
+            &Isometry3::translation(100.0, 100.0, 0.0),
+            &gauss,
+            &config,
+        );
+
+        assert!(
+            result_with_offset.nvtl > result_no_offset.nvtl,
+            "NVTL with correct offset ({}) should be > without ({})",
+            result_with_offset.nvtl,
+            result_no_offset.nvtl
+        );
+    }
+
+    /// Test per-point scores on half-cubic.
+    #[test]
+    fn test_per_point_scores_half_cubic() {
+        let map_points = make_default_half_cubic_pcd();
+        let grid = VoxelGrid::from_points(&map_points, 2.0).unwrap();
+
+        let sensor_scan = voxelize_pcd(&map_points, 1.0);
+        let gauss = GaussianParams::default();
+        let config = NvtlConfig {
+            compute_per_point: true,
+            ..Default::default()
+        };
+
+        let result = compute_nvtl(
+            &sensor_scan,
+            &grid,
+            &Isometry3::identity(),
+            &gauss,
+            &config,
+        );
+
+        let scores = result.per_point_scores.expect("Should have per-point scores");
+        assert_eq!(scores.len(), sensor_scan.len());
+
+        // Count points with positive scores
+        let positive_count = scores.iter().filter(|&&s| s > 0.0).count();
+        assert!(
+            positive_count > sensor_scan.len() / 2,
+            "Most points should have positive scores: {} out of {}",
+            positive_count,
+            sensor_scan.len()
+        );
+
+        // All scores should be non-negative and finite
+        // Note: With multi-voxel radius search, scores can exceed 1.0
+        for (i, &score) in scores.iter().enumerate() {
+            assert!(
+                score >= 0.0 && score.is_finite(),
+                "Score[{}] should be >= 0 and finite, got {}",
+                i,
+                score
+            );
+        }
+    }
+
+    /// Test NVTL simple vs full on half-cubic.
+    #[test]
+    fn test_nvtl_simple_vs_full_half_cubic() {
+        let map_points = make_default_half_cubic_pcd();
+        let grid = VoxelGrid::from_points(&map_points, 2.0).unwrap();
+
+        let sensor_scan = voxelize_pcd(&map_points, 1.0);
+        let gauss = GaussianParams::default();
+        let config = NvtlConfig::default();
+
+        let full_result = compute_nvtl(
+            &sensor_scan,
+            &grid,
+            &Isometry3::identity(),
+            &gauss,
+            &config,
+        );
+        let simple_nvtl = compute_nvtl_simple(
+            &sensor_scan,
+            &grid,
+            &Isometry3::identity(),
+            &gauss,
+        );
+
+        // Both should give positive values
+        assert!(full_result.nvtl > 0.0, "Full NVTL should be positive");
+        assert!(simple_nvtl > 0.0, "Simple NVTL should be positive");
+
+        // Values should be in same ballpark (within 50%)
+        let ratio = if full_result.nvtl > simple_nvtl {
+            full_result.nvtl / simple_nvtl
+        } else {
+            simple_nvtl / full_result.nvtl
+        };
+        assert!(
+            ratio < 2.0,
+            "Full ({}) and simple ({}) NVTL should be similar",
+            full_result.nvtl,
+            simple_nvtl
         );
     }
 }

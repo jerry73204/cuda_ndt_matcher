@@ -26,8 +26,11 @@ use kiddo::SquaredEuclidean;
 
 use super::Voxel;
 
-/// Bucket size for the KD-tree (default from Kiddo).
-const BUCKET_SIZE: usize = 32;
+/// Bucket size for the KD-tree.
+///
+/// Increased from default 32 to handle planar point clouds where many
+/// voxel centroids may have similar coordinates on one axis.
+const BUCKET_SIZE: usize = 256;
 
 /// KD-tree based search structure for voxel centroids.
 ///
@@ -127,7 +130,7 @@ impl VoxelSearch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::voxel_grid::VoxelGridConfig;
+    
     use nalgebra::{Matrix3, Vector3};
 
     fn make_test_voxel(mean: [f32; 3]) -> Voxel {

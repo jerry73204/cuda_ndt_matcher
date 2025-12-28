@@ -9,7 +9,8 @@
 
 use nalgebra::{Isometry3, Matrix6, Vector6};
 
-use super::line_search::{backtracking_line_search, directional_derivative, LineSearchConfig};
+use super::line_search::{directional_derivative, LineSearchConfig};
+use super::more_thuente::{more_thuente_search, MoreThuenteConfig};
 use super::newton::{condition_number, newton_step_regularized};
 use super::types::{
     apply_pose_delta, isometry_to_pose_vector, pose_vector_to_isometry, ConvergenceStatus,
@@ -25,8 +26,11 @@ pub struct OptimizationConfig {
     /// NDT-specific configuration.
     pub ndt: NdtConfig,
 
-    /// Line search configuration.
+    /// Line search configuration (legacy backtracking).
     pub line_search: LineSearchConfig,
+
+    /// More-Thuente line search configuration.
+    pub more_thuente: MoreThuenteConfig,
 
     /// Tolerance for Newton step SVD.
     pub svd_tolerance: f64,
@@ -43,6 +47,7 @@ impl Default for OptimizationConfig {
         Self {
             ndt: NdtConfig::default(),
             line_search: LineSearchConfig::default(),
+            more_thuente: MoreThuenteConfig::default(),
             svd_tolerance: 1e-10,
             min_correspondences: 10,
             condition_warning_threshold: 1e10,
@@ -230,7 +235,10 @@ impl NdtOptimizer {
         result.nvtl
     }
 
-    /// Perform line search to find optimal step size.
+    /// Perform More-Thuente line search to find optimal step size.
+    ///
+    /// This implements the More-Thuente algorithm which guarantees both sufficient decrease
+    /// (Armijo condition) and curvature condition (strong Wolfe condition).
     fn line_search(
         &self,
         source_points: &[[f32; 3]],
@@ -241,30 +249,39 @@ impl NdtOptimizer {
     ) -> f64 {
         let initial_derivative = directional_derivative(&current.gradient, delta);
 
-        // If derivative is not positive, don't use line search
+        // If derivative is not positive, the step direction is not an ascent direction
         if initial_derivative <= 0.0 {
             return self.config.ndt.step_size;
         }
 
         let gauss = &self.gauss;
-        let config = &self.config.line_search;
         let pose_copy = *pose;
         let delta_copy = *delta;
 
-        // Score function for line search
-        let score_fn = |alpha: f64| {
+        // Score and derivative function for line search
+        // More-Thuente needs both value and directional derivative at each trial point
+        let score_and_derivative = |alpha: f64| {
             let test_pose = apply_pose_delta(&pose_copy, &delta_copy, alpha);
             let result =
                 compute_derivatives_cpu(source_points, target_grid, &test_pose, gauss, false);
-            result.score
+            let deriv = directional_derivative(&result.gradient, &delta_copy);
+            (result.score, deriv)
         };
 
-        let result = backtracking_line_search(score_fn, current.score, initial_derivative, config);
+        // Use More-Thuente line search
+        let result = more_thuente_search(
+            score_and_derivative,
+            current.score,
+            initial_derivative,
+            self.config.ndt.step_size, // Initial step (will be clamped by step_max)
+            &self.config.more_thuente,
+        );
 
         if result.converged {
-            result.alpha
+            result.step_length
         } else {
-            self.config.ndt.step_size
+            // Fallback to max step if line search didn't converge
+            self.config.more_thuente.step_max
         }
     }
 

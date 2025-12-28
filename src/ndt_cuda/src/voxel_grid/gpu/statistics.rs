@@ -237,135 +237,91 @@ pub fn finalize_voxels_cpu(
 /// 2. Reconstruct the regularized covariance
 /// 3. Invert the matrix
 ///
+/// Uses f64 internally for numerical stability with planar point clouds
+/// that have near-zero eigenvalues.
+///
 /// Returns (inverse_covariance, is_valid).
 fn regularize_and_invert(cov: &[f32]) -> ([f32; 9], bool) {
-    // Extract 3x3 matrix
-    let a = [
-        [cov[0], cov[1], cov[2]],
-        [cov[3], cov[4], cov[5]],
-        [cov[6], cov[7], cov[8]],
+    // Use f64 for numerical stability (matching CPU implementation)
+    let cov64: [f64; 9] = [
+        cov[0] as f64,
+        cov[1] as f64,
+        cov[2] as f64,
+        cov[3] as f64,
+        cov[4] as f64,
+        cov[5] as f64,
+        cov[6] as f64,
+        cov[7] as f64,
+        cov[8] as f64,
     ];
 
-    // Compute eigenvalues using characteristic polynomial
-    // For symmetric 3x3, use Cardano's formula
-    let eigenvalues = compute_eigenvalues_3x3(&a);
+    // Check for any NaN/Inf in input covariance
+    if cov64.iter().any(|e| !e.is_finite()) {
+        return ([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], false);
+    }
 
-    // Check for non-finite values (NaN, Inf)
+    // Use nalgebra for robust eigenvalue decomposition (matching CPU types.rs)
+    let cov_matrix = nalgebra::Matrix3::new(
+        cov64[0], cov64[1], cov64[2], cov64[3], cov64[4], cov64[5], cov64[6], cov64[7], cov64[8],
+    );
+
+    // Symmetric eigenvalue decomposition
+    let eigen = cov_matrix.symmetric_eigen();
+    let mut eigenvalues = eigen.eigenvalues;
+
+    // Check for non-finite eigenvalues
     if eigenvalues.iter().any(|e| !e.is_finite()) {
         return ([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], false);
     }
 
-    // Find max eigenvalue (treat small negatives as numerical noise)
-    let max_eigenvalue = eigenvalues.iter().cloned().fold(0.0f32, f32::max);
+    // Find max eigenvalue
+    let max_eigenvalue = eigenvalues.iter().cloned().fold(0.0f64, f64::max);
 
-    // Minimum allowed eigenvalue (Autoware uses 0.01 ratio, with a floor)
-    let min_allowed = (0.01 * max_eigenvalue).max(1e-6);
+    // Handle degenerate case where all eigenvalues are near zero
+    if max_eigenvalue <= 0.0 {
+        // Return identity inverse for degenerate covariance
+        return ([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], true);
+    }
 
-    // Regularize by adding identity scaled to ensure all eigenvalues are >= min_allowed
-    // For very small covariances, this adds a baseline regularization
-    let min_eigenvalue = eigenvalues.iter().cloned().fold(f32::MAX, f32::min);
-    let reg_amount = if min_eigenvalue < min_allowed {
-        (min_allowed - min_eigenvalue).max(1e-6)
-    } else {
-        0.0
-    };
+    // Minimum allowed eigenvalue (Autoware uses 0.01 ratio)
+    let min_eigenvalue = 0.01 * max_eigenvalue;
 
-    let final_cov = if reg_amount > 0.0 {
+    // Clamp small eigenvalues
+    for ev in eigenvalues.iter_mut() {
+        if *ev < min_eigenvalue {
+            *ev = min_eigenvalue;
+        }
+    }
+
+    // Compute inverse: V * D^{-1} * V^T
+    let eigenvectors = &eigen.eigenvectors;
+    let inv_eigenvalues = nalgebra::Vector3::new(
+        1.0 / eigenvalues[0],
+        1.0 / eigenvalues[1],
+        1.0 / eigenvalues[2],
+    );
+    let inv_diag = nalgebra::Matrix3::from_diagonal(&inv_eigenvalues);
+    let inverse = eigenvectors * inv_diag * eigenvectors.transpose();
+
+    // Check for non-finite values in result
+    if inverse.iter().any(|e| !e.is_finite()) {
+        return ([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], false);
+    }
+
+    (
         [
-            cov[0] + reg_amount,
-            cov[1],
-            cov[2],
-            cov[3],
-            cov[4] + reg_amount,
-            cov[5],
-            cov[6],
-            cov[7],
-            cov[8] + reg_amount,
-        ]
-    } else {
-        [
-            cov[0], cov[1], cov[2], cov[3], cov[4], cov[5], cov[6], cov[7], cov[8],
-        ]
-    };
-
-    // Invert the 3x3 matrix
-    match invert_3x3(&final_cov) {
-        Some(inv) => (inv, true),
-        None => ([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], false),
-    }
-}
-
-/// Compute eigenvalues of a symmetric 3x3 matrix using Cardano's formula.
-fn compute_eigenvalues_3x3(a: &[[f32; 3]; 3]) -> [f32; 3] {
-    // Characteristic polynomial: det(A - λI) = 0
-    // For symmetric matrix: -λ³ + tr(A)λ² - (sum of 2x2 minors)λ + det(A) = 0
-
-    let trace = a[0][0] + a[1][1] + a[2][2];
-
-    // Sum of principal 2x2 minors
-    let m01 = a[0][0] * a[1][1] - a[0][1] * a[1][0];
-    let m02 = a[0][0] * a[2][2] - a[0][2] * a[2][0];
-    let m12 = a[1][1] * a[2][2] - a[1][2] * a[2][1];
-    let sum_minors = m01 + m02 + m12;
-
-    // Determinant
-    let det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
-        - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
-        + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
-
-    // Solve: λ³ - trace*λ² + sum_minors*λ - det = 0
-    // Using Cardano's formula for depressed cubic
-    let p = sum_minors - trace * trace / 3.0;
-    let q = 2.0 * trace * trace * trace / 27.0 - trace * sum_minors / 3.0 + det;
-
-    let discriminant = q * q / 4.0 + p * p * p / 27.0;
-
-    if discriminant < 0.0 {
-        // Three real roots (typical for covariance matrices)
-        let r = (-p * p * p / 27.0).sqrt();
-        let phi = (-q / (2.0 * r)).clamp(-1.0, 1.0).acos();
-        let cube_root_r = r.powf(1.0 / 3.0);
-
-        let offset = trace / 3.0;
-        let e1 = 2.0 * cube_root_r * (phi / 3.0).cos() + offset;
-        let e2 = 2.0 * cube_root_r * ((phi + 2.0 * std::f32::consts::PI) / 3.0).cos() + offset;
-        let e3 = 2.0 * cube_root_r * ((phi + 4.0 * std::f32::consts::PI) / 3.0).cos() + offset;
-
-        [e1, e2, e3]
-    } else {
-        // One or two real roots - degenerate case
-        let sqrt_disc = discriminant.sqrt();
-        let u = (-q / 2.0 + sqrt_disc).cbrt();
-        let v = (-q / 2.0 - sqrt_disc).cbrt();
-        let e1 = u + v + trace / 3.0;
-        [e1, e1, e1] // Simplified - returns same value for degenerate case
-    }
-}
-
-/// Invert a 3x3 matrix. Returns None if singular.
-fn invert_3x3(m: &[f32; 9]) -> Option<[f32; 9]> {
-    // Compute determinant
-    let det = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6])
-        + m[2] * (m[3] * m[7] - m[4] * m[6]);
-
-    if det.abs() < 1e-10 {
-        return None;
-    }
-
-    let inv_det = 1.0 / det;
-
-    // Adjugate matrix transposed
-    Some([
-        (m[4] * m[8] - m[5] * m[7]) * inv_det,
-        (m[2] * m[7] - m[1] * m[8]) * inv_det,
-        (m[1] * m[5] - m[2] * m[4]) * inv_det,
-        (m[5] * m[6] - m[3] * m[8]) * inv_det,
-        (m[0] * m[8] - m[2] * m[6]) * inv_det,
-        (m[2] * m[3] - m[0] * m[5]) * inv_det,
-        (m[3] * m[7] - m[4] * m[6]) * inv_det,
-        (m[1] * m[6] - m[0] * m[7]) * inv_det,
-        (m[0] * m[4] - m[1] * m[3]) * inv_det,
-    ])
+            inverse[(0, 0)] as f32,
+            inverse[(0, 1)] as f32,
+            inverse[(0, 2)] as f32,
+            inverse[(1, 0)] as f32,
+            inverse[(1, 1)] as f32,
+            inverse[(1, 2)] as f32,
+            inverse[(2, 0)] as f32,
+            inverse[(2, 1)] as f32,
+            inverse[(2, 2)] as f32,
+        ],
+        true,
+    )
 }
 
 /// Compute complete voxel statistics from sorted points and segments.
@@ -474,42 +430,6 @@ mod tests {
         for &val in cov_sums.iter().take(9) {
             assert!(val.abs() < 1e-10);
         }
-    }
-
-    #[test]
-    fn test_invert_3x3_identity() {
-        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-        let inv = invert_3x3(&identity).unwrap();
-
-        // Inverse of identity is identity
-        for i in 0..9 {
-            assert!((inv[i] - identity[i]).abs() < 1e-6);
-        }
-    }
-
-    #[test]
-    fn test_invert_3x3_diagonal() {
-        let diag = [2.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 8.0];
-        let inv = invert_3x3(&diag).unwrap();
-
-        let expected = [0.5, 0.0, 0.0, 0.0, 0.25, 0.0, 0.0, 0.0, 0.125];
-        for i in 0..9 {
-            assert!((inv[i] - expected[i]).abs() < 1e-6);
-        }
-    }
-
-    #[test]
-    fn test_eigenvalues_diagonal() {
-        let diag = [[3.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 1.0]];
-        let eigenvalues = compute_eigenvalues_3x3(&diag);
-
-        // For diagonal matrix, eigenvalues are the diagonal entries
-        let mut sorted = eigenvalues;
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-
-        assert!((sorted[0] - 1.0).abs() < 1e-4);
-        assert!((sorted[1] - 2.0).abs() < 1e-4);
-        assert!((sorted[2] - 3.0).abs() < 1e-4);
     }
 
     #[test]

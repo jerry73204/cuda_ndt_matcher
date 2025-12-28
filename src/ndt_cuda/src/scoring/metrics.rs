@@ -206,6 +206,7 @@ fn compute_point_score(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::{make_default_half_cubic_pcd, make_half_cubic_pcd_offset, voxelize_pcd};
     use approx::assert_relative_eq;
 
     fn create_test_grid() -> VoxelGrid {
@@ -348,5 +349,202 @@ mod tests {
         // After translation, point should be at [1, 1, 1] where grid is
         assert_eq!(result.num_correspondences, 1);
         assert!(result.transform_probability > 0.0);
+    }
+
+    // ========================================================================
+    // Phase 4: Transform probability tests using Autoware-style test data
+    // ========================================================================
+
+    /// Test transform probability on half-cubic point cloud.
+    #[test]
+    fn test_transform_probability_half_cubic() {
+        let map_points = make_default_half_cubic_pcd();
+        let grid = VoxelGrid::from_points(&map_points, 2.0).unwrap();
+
+        let sensor_scan = voxelize_pcd(&map_points, 1.0);
+        let gauss = GaussianParams::default();
+
+        let result = compute_transform_probability(
+            &sensor_scan,
+            &grid,
+            &Isometry3::identity(),
+            &gauss,
+        );
+
+        // Should have many correspondences
+        assert!(
+            result.num_correspondences > sensor_scan.len() / 2,
+            "Should have many correspondences: {} out of {}",
+            result.num_correspondences,
+            sensor_scan.len()
+        );
+
+        // Transform probability should be positive
+        assert!(
+            result.transform_probability > 0.0,
+            "Transform probability should be positive, got {}",
+            result.transform_probability
+        );
+    }
+
+    /// Test transform probability is higher at origin than far outside map.
+    ///
+    /// Note: With multi-voxel radius search, score ordering can be non-monotonic
+    /// for small offsets, but large offsets (outside map) should score lower.
+    #[test]
+    fn test_transform_probability_decreases_with_offset() {
+        let map_points = make_default_half_cubic_pcd();
+        let grid = VoxelGrid::from_points(&map_points, 2.0).unwrap();
+
+        let sensor_scan = voxelize_pcd(&map_points, 1.0);
+        let gauss = GaussianParams::default();
+
+        let tp_at_0 = compute_transform_probability(
+            &sensor_scan,
+            &grid,
+            &Isometry3::identity(),
+            &gauss,
+        )
+        .transform_probability;
+
+        let tp_at_far = compute_transform_probability(
+            &sensor_scan,
+            &grid,
+            &Isometry3::translation(50.0, 50.0, 0.0),
+            &gauss,
+        )
+        .transform_probability;
+
+        // TP at origin should be positive
+        assert!(tp_at_0 > 0.0, "TP at origin should be positive, got {}", tp_at_0);
+
+        // TP far outside map should be lower
+        assert!(
+            tp_at_far < tp_at_0,
+            "TP far from map ({}) should be < TP at origin ({})",
+            tp_at_far,
+            tp_at_0
+        );
+    }
+
+    /// Test transform probability is non-negative and finite.
+    ///
+    /// Note: With multi-voxel radius search, TP can exceed 1.0 because
+    /// each point can contribute to multiple voxels' scores.
+    #[test]
+    fn test_transform_probability_valid_range() {
+        let map_points = make_default_half_cubic_pcd();
+        let grid = VoxelGrid::from_points(&map_points, 2.0).unwrap();
+
+        let sensor_scan = voxelize_pcd(&map_points, 1.0);
+        let gauss = GaussianParams::default();
+
+        for offset in [0.0, 0.5, 1.0, 2.0, 5.0, 10.0] {
+            let pose = Isometry3::translation(offset, 0.0, 0.0);
+            let result = compute_transform_probability(&sensor_scan, &grid, &pose, &gauss);
+
+            assert!(
+                result.transform_probability >= 0.0 && result.transform_probability.is_finite(),
+                "TP should be >= 0 and finite, got {} at offset {}",
+                result.transform_probability,
+                offset
+            );
+        }
+    }
+
+    /// Test transform probability with offset map.
+    #[test]
+    fn test_transform_probability_with_offset_map() {
+        // Map at (100, 100)
+        let map_points = make_half_cubic_pcd_offset(100.0, 100.0, 0.0);
+        let grid = VoxelGrid::from_points(&map_points, 2.0).unwrap();
+
+        // Sensor at origin
+        let sensor_scan = voxelize_pcd(&make_default_half_cubic_pcd(), 1.0);
+        let gauss = GaussianParams::default();
+
+        // Without offset: no overlap
+        let result_no_offset = compute_transform_probability(
+            &sensor_scan,
+            &grid,
+            &Isometry3::identity(),
+            &gauss,
+        );
+
+        // With correct offset: should overlap
+        let result_with_offset = compute_transform_probability(
+            &sensor_scan,
+            &grid,
+            &Isometry3::translation(100.0, 100.0, 0.0),
+            &gauss,
+        );
+
+        assert!(
+            result_with_offset.transform_probability > result_no_offset.transform_probability,
+            "TP with offset ({}) should be > without ({})",
+            result_with_offset.transform_probability,
+            result_no_offset.transform_probability
+        );
+        assert!(
+            result_with_offset.num_correspondences > result_no_offset.num_correspondences,
+            "Correspondences with offset ({}) should be > without ({})",
+            result_with_offset.num_correspondences,
+            result_no_offset.num_correspondences
+        );
+    }
+
+    /// Test per-point scores on half-cubic.
+    #[test]
+    fn test_per_point_scores_half_cubic() {
+        let map_points = make_default_half_cubic_pcd();
+        let grid = VoxelGrid::from_points(&map_points, 2.0).unwrap();
+
+        let sensor_scan = voxelize_pcd(&map_points, 1.0);
+        let gauss = GaussianParams::default();
+
+        let scores = compute_per_point_scores(
+            &sensor_scan,
+            &grid,
+            &Isometry3::identity(),
+            &gauss,
+        );
+
+        assert_eq!(scores.len(), sensor_scan.len());
+
+        // Most points should have positive scores
+        let positive_count = scores.iter().filter(|&&s| s > 0.0).count();
+        assert!(
+            positive_count > sensor_scan.len() / 2,
+            "Most points should have positive scores: {} out of {}",
+            positive_count,
+            sensor_scan.len()
+        );
+    }
+
+    /// Test total score consistency.
+    #[test]
+    fn test_total_score_consistency() {
+        let map_points = make_default_half_cubic_pcd();
+        let grid = VoxelGrid::from_points(&map_points, 2.0).unwrap();
+
+        let sensor_scan = voxelize_pcd(&map_points, 1.0);
+        let gauss = GaussianParams::default();
+
+        let result = compute_transform_probability(
+            &sensor_scan,
+            &grid,
+            &Isometry3::identity(),
+            &gauss,
+        );
+        let per_point = compute_per_point_scores(
+            &sensor_scan,
+            &grid,
+            &Isometry3::identity(),
+            &gauss,
+        );
+
+        // Total score from per-point should match
+        let per_point_total: f64 = per_point.iter().sum();
+        assert_relative_eq!(result.total_score, per_point_total, epsilon = 1e-6);
     }
 }

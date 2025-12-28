@@ -36,6 +36,7 @@ pub mod derivatives;
 pub mod ndt;
 pub mod optimization;
 pub mod scoring;
+pub mod test_utils;
 pub mod voxel_grid;
 
 pub use derivatives::{

@@ -42,7 +42,7 @@ impl Default for NdtConfig {
             trans_epsilon: 0.01,
             step_size: 0.1, // Autoware default: max step length (NOT a damping factor)
             outlier_ratio: 0.55,
-            use_line_search: false,
+            use_line_search: true, // Enable More-Thuente line search (matches Autoware)
             regularization: 1e-6,
         }
     }
@@ -191,7 +191,7 @@ mod tests {
         let config = NdtConfig::default();
         assert_eq!(config.resolution, 2.0);
         assert_eq!(config.max_iterations, 30);
-        assert!(!config.use_line_search);
+        assert!(config.use_line_search); // More-Thuente is now default
     }
 
     #[test]
