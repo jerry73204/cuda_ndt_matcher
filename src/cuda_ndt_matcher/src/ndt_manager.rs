@@ -5,6 +5,9 @@ use anyhow::{bail, Result};
 use geometry_msgs::msg::{Point, Pose, Quaternion};
 use nalgebra::{Isometry3, Matrix6, Quaternion as NaQuaternion, Translation3, UnitQuaternion};
 use ndt_cuda::NdtScanMatcher;
+use rclrs::log_debug;
+
+const LOGGER_NAME: &str = "ndt_scan_matcher.ndt_manager";
 
 /// Extract yaw from quaternion for debug logging
 fn quaternion_to_yaw(q: &Quaternion) -> f64 {
@@ -68,6 +71,17 @@ impl NdtManager {
             bail!("Source point cloud is empty");
         }
 
+        // Debug: log initial pose
+        let initial_yaw = quaternion_to_yaw(&initial_pose.orientation);
+        log_debug!(
+            LOGGER_NAME,
+            "Initial: pos=({:.2}, {:.2}, {:.2}), yaw={:.1}°",
+            initial_pose.position.x,
+            initial_pose.position.y,
+            initial_pose.position.z,
+            initial_yaw.to_degrees()
+        );
+
         // Convert initial pose to isometry
         let initial_guess = pose_to_isometry(initial_pose);
 
@@ -76,6 +90,20 @@ impl NdtManager {
 
         // Convert result to ROS pose
         let pose = isometry_to_pose(&result.pose);
+
+        // Debug: log result pose
+        let result_yaw = quaternion_to_yaw(&pose.orientation);
+        log_debug!(
+            LOGGER_NAME,
+            "Result:  pos=({:.2}, {:.2}, {:.2}), yaw={:.1}°, iter={}, score={:.3}, converged={}",
+            pose.position.x,
+            pose.position.y,
+            pose.position.z,
+            result_yaw.to_degrees(),
+            result.iterations,
+            result.score,
+            result.converged
+        );
 
         // Convert Hessian from nalgebra to array
         let hessian = matrix6_to_array(&result.hessian);

@@ -13,6 +13,9 @@ use crate::tpe::{
 };
 use geometry_msgs::msg::{Point, Pose, PoseWithCovariance, PoseWithCovarianceStamped, Quaternion};
 use nalgebra::{Quaternion as NaQuaternion, UnitQuaternion};
+use rclrs::log_debug;
+
+const LOGGER_NAME: &str = "ndt_scan_matcher.initial_pose";
 
 /// Result of initial pose estimation
 #[derive(Debug, Clone)]
@@ -64,6 +67,17 @@ pub fn estimate_initial_pose(
     let initial_pose = &initial_pose_with_cov.pose.pose;
     let (roll, pitch, yaw) = quaternion_to_rpy(&initial_pose.orientation);
 
+    // Log the input pose for debugging
+    log_debug!(
+        LOGGER_NAME,
+        "Input: pos=({:.1}, {:.1}, {:.1}), yaw={:.1}°, stddev_yaw={:.1}°",
+        initial_pose.position.x,
+        initial_pose.position.y,
+        initial_pose.position.z,
+        yaw.to_degrees(),
+        stddev_yaw.to_degrees()
+    );
+
     // Use GPU NVTL scoring via fast_gicp
     let outlier_ratio = 0.55; // Autoware default
 
@@ -111,7 +125,7 @@ pub fn estimate_initial_pose(
             Ok(result) => result,
             Err(e) => {
                 // Skip failed alignments
-                eprintln!("NDT alignment failed: {e}");
+                log_debug!(LOGGER_NAME, "NDT alignment failed: {e}");
                 continue;
             }
         };
@@ -182,8 +196,9 @@ pub fn estimate_initial_pose(
 
     // Log selected best particle
     let (_, _, best_yaw) = quaternion_to_rpy(&best_particle.result_pose.orientation);
-    eprintln!(
-        "[INIT POSE] Best: pos=({:.1}, {:.1}, {:.1}), yaw={:.1}°, score={:.2}",
+    log_debug!(
+        LOGGER_NAME,
+        "Best: pos=({:.1}, {:.1}, {:.1}), yaw={:.1}°, score={:.2}",
         best_particle.result_pose.position.x,
         best_particle.result_pose.position.y,
         best_particle.result_pose.position.z,
