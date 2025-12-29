@@ -26,3 +26,4 @@ builtin_interfaces.workspace = true
 tier4_localization_msgs.workspace = true
 visualization_msgs = "*"
 tier4_debug_msgs = "*"
+autoware_map_msgs = "*"

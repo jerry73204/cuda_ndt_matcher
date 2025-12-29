@@ -11,13 +11,14 @@ mod tpe;
 use anyhow::Result;
 use arc_swap::ArcSwap;
 use geometry_msgs::msg::{Point, Pose, PoseStamped, PoseWithCovariance, PoseWithCovarianceStamped};
-use map_module::MapUpdateModule;
+use map_module::{DynamicMapLoader, MapUpdateModule};
 use ndt_manager::NdtManager;
 use params::NdtParams;
 use parking_lot::Mutex;
 use rclrs::{
-    log_error, log_info, log_warn, Context, CreateBasicExecutor, Node, Publisher, QoSHistoryPolicy,
-    QoSProfile, RclrsErrorFilter, Service, SpinOptions, Subscription, SubscriptionOptions,
+    log_debug, log_error, log_info, log_warn, Context, CreateBasicExecutor, Node, Publisher,
+    QoSHistoryPolicy, QoSProfile, RclrsErrorFilter, Service, SpinOptions, Subscription,
+    SubscriptionOptions,
 };
 use sensor_msgs::msg::PointCloud2;
 use std::fs::OpenOptions;
@@ -87,6 +88,7 @@ struct NdtScanMatcherNode {
     // State
     ndt_manager: Arc<Mutex<NdtManager>>,
     map_module: Arc<MapUpdateModule>,
+    map_loader: Arc<DynamicMapLoader>,
     map_points: Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
     latest_pose: Arc<ArcSwap<Option<PoseWithCovarianceStamped>>>,
     latest_sensor_points: Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
@@ -127,6 +129,13 @@ impl NdtScanMatcherNode {
             params.dynamic_map.lidar_radius
         );
 
+        // Initialize dynamic map loader (service client for pcd_loader_service)
+        let map_loader = Arc::new(DynamicMapLoader::new(
+            node,
+            "pcd_loader_service",
+            Arc::clone(&map_module),
+        )?);
+
         // QoS for sensor data
         let sensor_qos = QoSProfile {
             history: QoSHistoryPolicy::KeepLast { depth: 1 },
@@ -157,6 +166,8 @@ impl NdtScanMatcherNode {
         // Points subscription
         let points_sub = {
             let ndt_manager = Arc::clone(&ndt_manager);
+            let map_module = Arc::clone(&map_module);
+            let map_loader = Arc::clone(&map_loader);
             let map_points = Arc::clone(&map_points);
             let latest_pose = Arc::clone(&latest_pose);
             let latest_sensor_points = Arc::clone(&latest_sensor_points);
@@ -173,6 +184,8 @@ impl NdtScanMatcherNode {
                 Self::on_points(
                     msg,
                     &ndt_manager,
+                    &map_module,
+                    &map_loader,
                     &map_points,
                     &latest_pose,
                     &latest_sensor_points,
@@ -293,6 +306,7 @@ impl NdtScanMatcherNode {
             _map_update_srv: map_update_srv,
             ndt_manager,
             map_module,
+            map_loader,
             map_points,
             latest_pose,
             latest_sensor_points,
@@ -305,6 +319,8 @@ impl NdtScanMatcherNode {
     fn on_points(
         msg: PointCloud2,
         ndt_manager: &Arc<Mutex<NdtManager>>,
+        map_module: &Arc<MapUpdateModule>,
+        map_loader: &Arc<DynamicMapLoader>,
         map_points: &Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
         latest_pose: &Arc<ArcSwap<Option<PoseWithCovarianceStamped>>>,
         latest_sensor_points: &Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
@@ -333,22 +349,60 @@ impl NdtScanMatcherNode {
             return;
         }
 
-        // Get map points
-        let map = map_points.load();
-        let map = match map.as_ref() {
-            Some(m) => m,
-            None => {
-                log_warn!(NODE_NAME, "No map loaded, skipping alignment");
-                return;
-            }
-        };
-
-        // Get initial pose
+        // Get initial pose (needed for map update check and NDT alignment)
         let initial_pose = latest_pose.load();
         let initial_pose = match initial_pose.as_ref() {
             Some(p) => p,
             None => {
                 log_warn!(NODE_NAME, "No initial pose, skipping alignment");
+                return;
+            }
+        };
+
+        // Check if map needs updating based on current position
+        // This implements Autoware's dynamic map loading behavior
+        let current_position = Point {
+            x: initial_pose.pose.pose.position.x,
+            y: initial_pose.pose.pose.position.y,
+            z: initial_pose.pose.pose.position.z,
+        };
+
+        // Check if we should request new map tiles via service
+        // This is non-blocking - the callback will update map_module when response arrives
+        if map_module.should_update(&current_position) {
+            if let Err(e) = map_loader
+                .request_map_update(&current_position, params.dynamic_map.map_radius as f32)
+            {
+                log_error!(NODE_NAME, "Failed to request map update: {e}");
+            }
+        }
+
+        // Check and apply any pending updates from the map module (local filtering)
+        if let Some(filtered_map) = map_module.check_and_update(&current_position) {
+            // Map was updated - refresh the shared map points and NDT target
+            map_points.store(Arc::new(Some(filtered_map.clone())));
+
+            let mut manager = ndt_manager.lock();
+            if let Err(e) = manager.set_target(&filtered_map) {
+                log_error!(
+                    NODE_NAME,
+                    "Failed to update NDT target after map update: {e}"
+                );
+            } else {
+                log_debug!(
+                    NODE_NAME,
+                    "NDT target updated with {} points",
+                    filtered_map.len()
+                );
+            }
+        }
+
+        // Get map points (may have been updated above)
+        let map = map_points.load();
+        let map = match map.as_ref() {
+            Some(m) => m,
+            None => {
+                log_warn!(NODE_NAME, "No map loaded, skipping alignment");
                 return;
             }
         };
