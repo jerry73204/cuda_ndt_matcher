@@ -25,8 +25,10 @@ use anyhow::{bail, Result};
 use nalgebra::{Isometry3, Matrix6};
 use rayon::prelude::*;
 
+use crate::derivatives::gpu::GpuVoxelData;
 use crate::derivatives::GaussianParams;
 use crate::optimization::{NdtOptimizer, OptimizationConfig};
+use crate::runtime::{is_cuda_available, GpuRuntime};
 use crate::scoring::{compute_nvtl, compute_transform_probability, NvtlConfig};
 use crate::voxel_grid::{VoxelGrid, VoxelGridConfig};
 
@@ -64,6 +66,10 @@ pub struct NdtScanMatcherConfig {
 
     /// Minimum points required per voxel.
     pub min_points_per_voxel: usize,
+
+    /// Whether to use GPU acceleration (requires CUDA).
+    /// Falls back to CPU if GPU is not available.
+    pub use_gpu: bool,
 }
 
 impl Default for NdtScanMatcherConfig {
@@ -77,6 +83,7 @@ impl Default for NdtScanMatcherConfig {
             regularization: 0.001,
             use_line_search: false,
             min_points_per_voxel: 6,
+            use_gpu: false, // CPU by default for compatibility
         }
     }
 }
@@ -143,6 +150,15 @@ impl NdtScanMatcherBuilder {
         self
     }
 
+    /// Enable or disable GPU acceleration.
+    ///
+    /// When enabled, GPU will be used for scoring and NVTL evaluation.
+    /// Falls back to CPU if CUDA is not available.
+    pub fn use_gpu(mut self, use_gpu: bool) -> Self {
+        self.config.use_gpu = use_gpu;
+        self
+    }
+
     /// Build the NDT scan matcher.
     pub fn build(self) -> Result<NdtScanMatcher> {
         NdtScanMatcher::with_config(self.config)
@@ -197,6 +213,12 @@ pub struct NdtScanMatcher {
 
     /// Gaussian parameters for NDT score.
     gauss_params: GaussianParams,
+
+    /// GPU runtime for accelerated scoring (None if GPU not available/enabled).
+    gpu_runtime: Option<GpuRuntime>,
+
+    /// GPU voxel data (cached for GPU scoring).
+    gpu_voxel_data: Option<GpuVoxelData>,
 }
 
 impl NdtScanMatcher {
@@ -211,10 +233,28 @@ impl NdtScanMatcher {
     pub fn with_config(config: NdtScanMatcherConfig) -> Result<Self> {
         let gauss_params = GaussianParams::new(config.resolution as f64, config.outlier_ratio);
 
+        // Initialize GPU runtime if enabled and available
+        let gpu_runtime = if config.use_gpu && is_cuda_available() {
+            match GpuRuntime::new() {
+                Ok(runtime) => {
+                    eprintln!("[ndt_cuda] GPU runtime initialized successfully");
+                    Some(runtime)
+                }
+                Err(e) => {
+                    eprintln!("[ndt_cuda] Failed to initialize GPU runtime: {e}. Falling back to CPU.");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Ok(Self {
             config,
             target_grid: None,
             gauss_params,
+            gpu_runtime,
+            gpu_voxel_data: None,
         })
     }
 
@@ -257,6 +297,11 @@ impl NdtScanMatcher {
 
         if grid.is_empty() {
             bail!("No voxels created from target points (too sparse?)");
+        }
+
+        // Prepare GPU voxel data if GPU runtime is available
+        if self.gpu_runtime.is_some() {
+            self.gpu_voxel_data = Some(GpuVoxelData::from_voxel_grid(&grid));
         }
 
         self.target_grid = Some(grid);
@@ -500,6 +545,46 @@ impl NdtScanMatcher {
             .collect();
 
         Ok(results)
+    }
+
+    /// Check if GPU acceleration is active.
+    ///
+    /// Returns true if GPU runtime was successfully initialized and is being used.
+    pub fn is_gpu_active(&self) -> bool {
+        self.gpu_runtime.is_some()
+    }
+
+    /// Evaluate scores using GPU if available, otherwise CPU.
+    ///
+    /// This is an internal method used by evaluate_nvtl and evaluate_transform_probability
+    /// when GPU is available.
+    fn evaluate_scores_gpu(
+        &self,
+        source_points: &[[f32; 3]],
+        pose: &Isometry3<f64>,
+    ) -> Option<(f64, usize)> {
+        let runtime = self.gpu_runtime.as_ref()?;
+        let voxel_data = self.gpu_voxel_data.as_ref()?;
+
+        // Convert pose to transform matrix
+        use crate::derivatives::gpu::pose_to_transform_matrix;
+        use crate::optimization::types::isometry_to_pose_vector;
+
+        let pose_vec = isometry_to_pose_vector(pose);
+        let transform = pose_to_transform_matrix(&pose_vec);
+
+        // Use GPU for score computation
+        match runtime.compute_scores(
+            source_points,
+            voxel_data,
+            &transform,
+            self.gauss_params.d1 as f32,
+            self.gauss_params.d2 as f32,
+            self.config.resolution,
+        ) {
+            Ok(result) => Some((result.total_score, result.total_correspondences)),
+            Err(_) => None,
+        }
     }
 
     /// Build optimizer configuration from current settings.

@@ -35,6 +35,7 @@
 pub mod derivatives;
 pub mod ndt;
 pub mod optimization;
+pub mod runtime;
 pub mod scoring;
 pub mod test_utils;
 pub mod voxel_grid;
@@ -54,3 +55,6 @@ pub use voxel_grid::{Voxel, VoxelGrid, VoxelGridConfig};
 
 // High-level API (recommended for most users)
 pub use ndt::{AlignResult, NdtScanMatcher, NdtScanMatcherBuilder, NdtScanMatcherConfig};
+
+// GPU runtime (optional, for direct GPU access)
+pub use runtime::{is_cuda_available, GpuDerivativeResult, GpuRuntime, GpuScoreResult};
