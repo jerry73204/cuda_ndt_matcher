@@ -344,7 +344,7 @@ pub fn compute_ndt_gradient_kernel<F: Float>(
                     // J[row, col] = point_jacobians[jbase + row*6 + col]
 
                     // Column 0: (x'Σ⁻¹) * J[:,0]
-                    let j0_0 = point_jacobians[jbase + 0]; // J[0,0]
+                    let j0_0 = point_jacobians[jbase]; // J[0,0]
                     let j1_0 = point_jacobians[jbase + 6]; // J[1,0]
                     let j2_0 = point_jacobians[jbase + 12]; // J[2,0]
                     grad0 += e_x_cov_x * (cx0 * j0_0 + cx1 * j1_0 + cx2 * j2_0);
@@ -385,7 +385,7 @@ pub fn compute_ndt_gradient_kernel<F: Float>(
 
     // Write output
     let gbase = point_idx * 6;
-    gradients[gbase + 0] = grad0;
+    gradients[gbase] = grad0;
     gradients[gbase + 1] = grad1;
     gradients[gbase + 2] = grad2;
     gradients[gbase + 3] = grad3;

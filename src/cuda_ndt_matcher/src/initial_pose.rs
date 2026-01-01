@@ -49,7 +49,7 @@ pub fn estimate_initial_pose(
     source_points: &[[f32; 3]],
     target_points: &[[f32; 3]],
     params: &InitialPoseParams,
-    resolution: f64,
+    _resolution: f64,
     _score_threshold: f64,
 ) -> Result<InitialPoseResult, String> {
     // Extract covariance to determine sampling distributions

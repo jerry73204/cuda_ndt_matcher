@@ -104,7 +104,7 @@ impl GpuRuntime {
             .empty(num_points * 3 * std::mem::size_of::<f32>());
 
         // Step 1: Transform points
-        let cube_count = ((num_points + 255) / 256) as u32;
+        let cube_count = num_points.div_ceil(256) as u32;
         unsafe {
             transform_points_kernel::launch_unchecked::<f32, CudaRuntime>(
                 &self.client,
@@ -240,7 +240,7 @@ impl GpuRuntime {
             .empty(num_points * 3 * std::mem::size_of::<f32>());
 
         // Step 1: Transform points
-        let cube_count = ((num_points + 255) / 256) as u32;
+        let cube_count = num_points.div_ceil(256) as u32;
         unsafe {
             transform_points_kernel::launch_unchecked::<f32, CudaRuntime>(
                 &self.client,
@@ -382,7 +382,7 @@ impl GpuRuntime {
             .client
             .empty(num_points * 3 * std::mem::size_of::<f32>());
 
-        let cube_count = ((num_points + 255) / 256) as u32;
+        let cube_count = num_points.div_ceil(256) as u32;
         unsafe {
             transform_points_kernel::launch_unchecked::<f32, CudaRuntime>(
                 &self.client,

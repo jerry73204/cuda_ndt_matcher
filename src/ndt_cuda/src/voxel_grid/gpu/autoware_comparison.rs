@@ -141,9 +141,11 @@ impl VoxelAccumulator {
         // Single-pass covariance: cov = (sum_xx - sum * mean') / (n-1)
         // Equivalent to: cov = (sum_xx - n * mean * mean') / (n-1)
         let mut cov = [[0.0; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                cov[i][j] = (self.sum_xx[i][j] - self.sum[i] * mean[j]) / (n - 1.0);
+        for (cov_row, (sum_xx_row, &sum_i)) in
+            cov.iter_mut().zip(self.sum_xx.iter().zip(self.sum.iter()))
+        {
+            for (j, cov_ij) in cov_row.iter_mut().enumerate() {
+                *cov_ij = (sum_xx_row[j] - sum_i * mean[j]) / (n - 1.0);
             }
         }
 
@@ -154,18 +156,11 @@ impl VoxelAccumulator {
         }
 
         // Invert covariance
-        let icov = match invert_matrix_3x3(&regularized_cov) {
-            Some(inv) => inv,
-            None => return None,
-        };
+        let icov = invert_matrix_3x3(&regularized_cov)?;
 
         // Check for infinity
-        for i in 0..3 {
-            for j in 0..3 {
-                if !icov[i][j].is_finite() {
-                    return None;
-                }
-            }
+        if !icov.iter().flatten().all(|x| x.is_finite()) {
+            return None;
         }
 
         Some(AutowareLeaf {
@@ -364,7 +359,7 @@ mod tests {
         let leaves = build_autoware_voxel_grid(&points, &params);
 
         // Should have 3 voxels (one per cluster)
-        assert!(leaves.len() >= 1, "Should have at least one valid voxel");
+        assert!(!leaves.is_empty(), "Should have at least one valid voxel");
 
         for leaf in &leaves {
             // Check valid point count
@@ -483,9 +478,8 @@ mod tests {
         let gpu_voxel = gpu_grid.iter_valid_voxels().next().unwrap();
 
         // Compare covariances (with tolerance for f32 vs f64)
-        for i in 0..3 {
-            for j in 0..3 {
-                let autoware_val = autoware_cov[i][j];
+        for (i, row) in autoware_cov.iter().enumerate() {
+            for (j, &autoware_val) in row.iter().enumerate() {
                 let gpu_val = gpu_voxel.covariance[i * 3 + j] as f64;
                 let diff = (autoware_val - gpu_val).abs();
                 let relative_diff = if autoware_val.abs() > 1e-6 {
@@ -541,9 +535,8 @@ mod tests {
         let gpu_voxel = gpu_grid.iter_valid_voxels().next().unwrap();
 
         // Compare inverse covariances
-        for i in 0..3 {
-            for j in 0..3 {
-                let autoware_val = autoware_icov[i][j];
+        for (i, row) in autoware_icov.iter().enumerate() {
+            for (j, &autoware_val) in row.iter().enumerate() {
                 let gpu_val = gpu_voxel.inv_covariance[i * 3 + j] as f64;
 
                 // Inverse covariance can have larger values, use relative tolerance
@@ -651,42 +644,47 @@ mod tests {
 
         let mut cov_two_pass = [[0.0; 3]; 3];
         for p in &points {
-            for i in 0..3 {
-                for j in 0..3 {
-                    cov_two_pass[i][j] += (p[i] - mean[i]) * (p[j] - mean[j]);
+            for (i, cov_row) in cov_two_pass.iter_mut().enumerate() {
+                for (j, cov_ij) in cov_row.iter_mut().enumerate() {
+                    *cov_ij += (p[i] - mean[i]) * (p[j] - mean[j]);
                 }
             }
         }
-        for i in 0..3 {
-            for j in 0..3 {
-                cov_two_pass[i][j] /= n - 1.0;
-            }
+        for val in cov_two_pass.iter_mut().flatten() {
+            *val /= n - 1.0;
         }
 
         // Single-pass method (Autoware)
         let mut sum = [0.0; 3];
         let mut sum_xx = [[0.0; 3]; 3];
         for p in &points {
-            for i in 0..3 {
-                sum[i] += p[i];
-                for j in 0..3 {
-                    sum_xx[i][j] += p[i] * p[j];
+            for (i, (sum_i, sum_xx_row)) in sum.iter_mut().zip(sum_xx.iter_mut()).enumerate() {
+                *sum_i += p[i];
+                for (j, sum_xx_ij) in sum_xx_row.iter_mut().enumerate() {
+                    *sum_xx_ij += p[i] * p[j];
                 }
             }
         }
 
         let mut cov_single_pass = [[0.0; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                cov_single_pass[i][j] = (sum_xx[i][j] - sum[i] * mean[j]) / (n - 1.0);
+        for (cov_row, (sum_xx_row, &sum_i)) in cov_single_pass
+            .iter_mut()
+            .zip(sum_xx.iter().zip(sum.iter()))
+        {
+            for (j, cov_ij) in cov_row.iter_mut().enumerate() {
+                *cov_ij = (sum_xx_row[j] - sum_i * mean[j]) / (n - 1.0);
             }
         }
 
         // Compare
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, (two_pass_row, single_pass_row)) in
+            cov_two_pass.iter().zip(cov_single_pass.iter()).enumerate()
+        {
+            for (j, (&two_pass_val, &single_pass_val)) in
+                two_pass_row.iter().zip(single_pass_row.iter()).enumerate()
+            {
                 assert!(
-                    (cov_two_pass[i][j] - cov_single_pass[i][j]).abs() < 1e-10,
+                    (two_pass_val - single_pass_val).abs() < 1e-10,
                     "Single-pass should match two-pass: [{i}][{j}]"
                 );
             }

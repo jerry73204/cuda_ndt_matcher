@@ -18,7 +18,7 @@ const INVERSION_VECTOR_THRESHOLD: f64 = -0.9;
 pub const DEFAULT_OSCILLATION_THRESHOLD: usize = 10;
 
 /// Result of oscillation analysis.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct OscillationResult {
     /// Maximum consecutive oscillation count detected.
     pub max_oscillation_count: usize,
@@ -26,16 +26,6 @@ pub struct OscillationResult {
     pub is_oscillating: bool,
     /// Indices where oscillation was detected.
     pub oscillation_indices: Vec<usize>,
-}
-
-impl Default for OscillationResult {
-    fn default() -> Self {
-        Self {
-            max_oscillation_count: 0,
-            is_oscillating: false,
-            oscillation_indices: Vec::new(),
-        }
-    }
 }
 
 /// Count oscillations in a sequence of poses.

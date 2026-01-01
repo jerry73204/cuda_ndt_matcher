@@ -165,7 +165,7 @@ pub fn compute_derivative_single(
     let mut e_x_cov_x = gauss.d2 * e_x_cov_x_raw;
 
     // Error checking for invalid values
-    if e_x_cov_x > 1.0 || e_x_cov_x < 0.0 || !e_x_cov_x.is_finite() {
+    if !(0.0..=1.0).contains(&e_x_cov_x) || !e_x_cov_x.is_finite() {
         return DerivativeResult::zeros();
     }
 

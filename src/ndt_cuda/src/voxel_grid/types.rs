@@ -196,7 +196,7 @@ mod tests {
         let mut sum_sq = Matrix3::zeros();
 
         for p in &points {
-            let v = Vector3::new(p[0] as f64, p[1] as f64, p[2] as f64);
+            let v = Vector3::new(p[0], p[1], p[2]);
             sum += v;
             sum_sq += v * v.transpose();
         }

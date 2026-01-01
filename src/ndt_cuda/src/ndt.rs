@@ -256,8 +256,10 @@ pub struct NdtScanMatcher {
 impl NdtScanMatcher {
     /// Create a new NDT scan matcher with default settings and given resolution.
     pub fn new(resolution: f32) -> Result<Self> {
-        let mut config = NdtScanMatcherConfig::default();
-        config.resolution = resolution;
+        let config = NdtScanMatcherConfig {
+            resolution,
+            ..Default::default()
+        };
         Self::with_config(config)
     }
 

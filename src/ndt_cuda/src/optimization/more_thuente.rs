@@ -85,6 +85,7 @@ fn auxiliary_dpsi(dphi_alpha: f64, dphi_0: f64, mu: f64) -> f64 {
 ///
 /// Implements the trial value selection algorithm from More-Thuente (1994),
 /// Section 4, with interpolation formulas from Sun & Yuan (2006).
+#[allow(clippy::too_many_arguments)]
 fn trial_value_selection(
     a_l: f64,
     f_l: f64,
@@ -199,6 +200,7 @@ fn trial_value_selection(
 /// Update interval endpoints according to More-Thuente algorithm.
 ///
 /// Returns true if the interval has converged (degenerated to a point).
+#[allow(clippy::too_many_arguments)]
 fn update_interval(
     a_l: &mut f64,
     f_l: &mut f64,
@@ -254,7 +256,7 @@ fn update_interval(
 /// # Arguments
 ///
 /// * `score_and_derivative` - Function that computes (score, directional_derivative) at a step length.
-///                           The score should be MAXIMIZED (NDT convention).
+///   The score should be MAXIMIZED (NDT convention).
 /// * `initial_score` - Score at step length 0 (phi(0) = -score for minimization)
 /// * `initial_derivative` - Directional derivative at step length 0 (should be positive for ascent)
 /// * `initial_step` - Initial step length to try
@@ -374,9 +376,9 @@ where
 
             // Convert f_l, g_l, f_u, g_u from psi to phi
             f_l = f_l + phi_0 - config.mu * dphi_0 * a_l;
-            g_l = g_l + config.mu * dphi_0;
+            g_l += config.mu * dphi_0;
             f_u = f_u + phi_0 - config.mu * dphi_0 * a_u;
-            g_u = g_u + config.mu * dphi_0;
+            g_u += config.mu * dphi_0;
         }
 
         // Update interval

@@ -72,6 +72,7 @@ pub fn make_half_cubic_pcd_offset(offset_x: f32, offset_y: f32, offset_z: f32) -
 ///
 /// # Returns
 /// Downsampled point cloud with one point per occupied voxel.
+#[allow(clippy::type_complexity)]
 pub fn voxelize_pcd(points: &[[f32; 3]], leaf_size: f32) -> Vec<[f32; 3]> {
     use std::collections::HashMap;
 
@@ -475,14 +476,12 @@ mod tests {
         let mat = pose.to_matrix();
 
         // Should be identity matrix
-        for i in 0..4 {
-            for j in 0..4 {
+        for (i, row) in mat.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (mat[i][j] - expected).abs() < 1e-10,
-                    "mat[{i}][{j}] = {}, expected {}",
-                    mat[i][j],
-                    expected
+                    (val - expected).abs() < 1e-10,
+                    "mat[{i}][{j}] = {val}, expected {expected}"
                 );
             }
         }

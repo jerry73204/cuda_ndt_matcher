@@ -208,7 +208,7 @@ impl AlignmentDebug {
             .map(|iter| {
                 let p = &iter.pose;
                 [
-                    p.get(0).copied().unwrap_or(0.0),
+                    p.first().copied().unwrap_or(0.0),
                     p.get(1).copied().unwrap_or(0.0),
                     p.get(2).copied().unwrap_or(0.0),
                     p.get(3).copied().unwrap_or(0.0),

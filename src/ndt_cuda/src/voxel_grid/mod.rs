@@ -560,7 +560,7 @@ mod tests {
         let grid = VoxelGrid::from_points(&voxelized, 2.0).unwrap();
 
         // Should still create some voxels (may be fewer due to min_points filter)
-        assert!(grid.len() > 0, "Should have at least some voxels");
+        assert!(!grid.is_empty(), "Should have at least some voxels");
 
         for (_, voxel) in grid.iter() {
             assert!(
@@ -742,11 +742,7 @@ mod tests {
         // For each CPU voxel, find a matching GPU voxel
         let mut matched = 0;
         for (_, cpu_voxel) in cpu_grid.iter() {
-            let cpu_mean = [
-                cpu_voxel.mean.x as f32,
-                cpu_voxel.mean.y as f32,
-                cpu_voxel.mean.z as f32,
-            ];
+            let cpu_mean = [cpu_voxel.mean.x, cpu_voxel.mean.y, cpu_voxel.mean.z];
 
             // Find closest GPU mean
             let closest = gpu_means.iter().min_by(|a, b| {
