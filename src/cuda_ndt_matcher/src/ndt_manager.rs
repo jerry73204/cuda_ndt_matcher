@@ -1,5 +1,9 @@
 //! NDT alignment manager using our CubeCL implementation.
 
+// Allow dead_code: NdtManager methods are called from main.rs callbacks.
+// Rust doesn't track usage through Arc<Mutex<T>> and closure captures.
+#![allow(dead_code)]
+
 use crate::params::NdtParams;
 use anyhow::{bail, Result};
 use geometry_msgs::msg::{Point, Pose, Quaternion};

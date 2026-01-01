@@ -10,6 +10,10 @@
 //! 4. Compute Gaussian score using Mahalanobis distance to each voxel
 //! 5. Take max score per point, average across all points
 
+// Allow dead_code: This is an alternative CPU-only NVTL implementation kept for
+// reference and testing. The primary implementation is in ndt_cuda::scoring::nvtl.
+#![allow(dead_code)]
+
 use nalgebra::{Matrix3, Vector3};
 use std::collections::HashMap;
 
@@ -32,7 +36,6 @@ impl Default for NvtlConfig {
 
 /// Gaussian fitting parameters from Autoware's NDT implementation
 /// Based on [Magnusson 2009] equations
-#[allow(dead_code)]
 struct GaussParams {
     d1: f64,
     d2: f64,
@@ -58,7 +61,6 @@ impl GaussParams {
 }
 
 /// Voxel with Gaussian distribution (mean and covariance)
-#[allow(dead_code)]
 struct GaussianVoxel {
     /// Mean of points in this voxel
     mean: Vector3<f64>,
@@ -111,7 +113,6 @@ impl GaussianVoxel {
 }
 
 /// NDT voxel grid with Gaussian distributions
-#[allow(dead_code)]
 struct NdtVoxelGrid {
     /// Map from voxel key to Gaussian voxel
     voxels: HashMap<(i64, i64, i64), GaussianVoxel>,
@@ -189,13 +190,11 @@ impl NdtVoxelGrid {
 ///
 /// Build this once for the target (map) point cloud, then reuse for
 /// scoring multiple candidate poses.
-#[allow(dead_code)]
 pub struct NvtlVoxelGrid {
     grid: NdtVoxelGrid,
     gauss: GaussParams,
 }
 
-#[allow(dead_code)]
 impl NvtlVoxelGrid {
     /// Create a new NVTL voxel grid from target points
     pub fn new(target_points: &[[f32; 3]], config: &NvtlConfig) -> Self {
@@ -248,7 +247,6 @@ impl NvtlVoxelGrid {
 ///
 /// # Returns
 /// * NVTL score (higher = better alignment), typically in range [0, ~5]
-#[allow(dead_code)]
 pub fn compute_nvtl(
     transformed_source: &[[f32; 3]],
     target_points: &[[f32; 3]],
@@ -285,7 +283,6 @@ pub fn compute_nvtl(
 /// * `pose` - Transformation pose
 /// * `target_points` - Target (map) points
 /// * `config` - NVTL configuration
-#[allow(dead_code)]
 pub fn compute_nvtl_with_pose(
     source_points: &[[f32; 3]],
     pose: &geometry_msgs::msg::Pose,

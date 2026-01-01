@@ -1,5 +1,9 @@
 //! Particle representation for Monte Carlo initial pose estimation.
 
+// Allow dead_code: Particle struct is used in initial_pose.rs for Monte Carlo
+// sampling. Rust doesn't track usage across module boundaries with generics.
+#![allow(dead_code)]
+
 use geometry_msgs::msg::Pose;
 
 /// A particle represents a candidate pose hypothesis for initial pose estimation.

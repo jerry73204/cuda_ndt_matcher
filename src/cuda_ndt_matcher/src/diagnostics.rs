@@ -2,6 +2,13 @@
 //!
 //! Mirrors Autoware's DiagnosticsInterface pattern for publishing diagnostic
 //! status to `/diagnostics` topic.
+//!
+//! Note: Some methods/fields are public API for future use (e.g., additional
+//! diagnostic categories beyond scan_matching_status).
+
+// Allow dead_code: DiagnosticsInterface methods are called from main.rs.
+// Some diagnostic categories are defined for future expansion.
+#![allow(dead_code)]
 
 use diagnostic_msgs::msg::{DiagnosticArray, DiagnosticStatus, KeyValue};
 use rclrs::{Node, Publisher};

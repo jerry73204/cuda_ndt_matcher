@@ -311,6 +311,10 @@ impl NdtOptimizer {
     ///
     /// This implements the More-Thuente algorithm which guarantees both sufficient decrease
     /// (Armijo condition) and curvature condition (strong Wolfe condition).
+    ///
+    /// Note: This is superseded by `line_search_with_regularization` which handles
+    /// both with and without regularization cases. Kept for reference.
+    #[allow(dead_code)]
     fn line_search(
         &self,
         source_points: &[[f32; 3]],

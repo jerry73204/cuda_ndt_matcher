@@ -18,6 +18,10 @@
 //! | Update Trigger | Timer callback | Position-based check on each alignment |
 //! | Secondary NDT | Yes (non-blocking updates) | No (direct update with lock) |
 
+// Allow dead_code: MapUpdateModule and DynamicMapLoader are used from main.rs
+// but Rust doesn't track field usage through Arc<ArcSwap<T>> patterns.
+#![allow(dead_code)]
+
 use crate::params::DynamicMapParams;
 use crate::pointcloud;
 use autoware_map_msgs::msg::{AreaInfo, PointCloudMapCellWithID};

@@ -602,6 +602,10 @@ impl NdtScanMatcher {
     ///
     /// This is an internal method used by evaluate_nvtl and evaluate_transform_probability
     /// when GPU is available.
+    ///
+    /// TODO: Integrate this into evaluate_nvtl() and evaluate_transform_probability()
+    /// for GPU acceleration. Currently CPU path is always used.
+    #[allow(dead_code)]
     fn evaluate_scores_gpu(
         &self,
         source_points: &[[f32; 3]],

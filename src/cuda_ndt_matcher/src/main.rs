@@ -54,6 +54,8 @@ struct DebugPublishers {
     // Visualization
     ndt_marker_pub: Publisher<MarkerArray>,
     points_aligned_pub: Publisher<PointCloud2>,
+    // TODO: Implement Monte Carlo particle visualization (see roadmap Phase 7.7)
+    #[allow(dead_code)]
     monte_carlo_marker_pub: Publisher<MarkerArray>,
 
     // Debug metrics
@@ -69,6 +71,10 @@ struct DebugPublishers {
     initial_to_result_relative_pose_pub: Publisher<PoseStamped>,
 }
 
+// Note: Many fields appear "unused" but are actually used via cloned references
+// passed to subscription/service callbacks. Rust's dead code analysis doesn't
+// track usage through closures.
+#[allow(dead_code)]
 struct NdtScanMatcherNode {
     // Subscriptions (stored to keep alive)
     _points_sub: Subscription<PointCloud2>,

@@ -1,5 +1,9 @@
 //! NDT scan matcher parameters
 
+// Allow dead_code: Parameter structs are loaded from ROS config and accessed
+// by various modules. Some fields are for future features or optional modes.
+#![allow(dead_code)]
+
 use anyhow::Result;
 use rclrs::Node;
 use std::sync::Arc;

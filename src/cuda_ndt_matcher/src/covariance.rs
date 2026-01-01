@@ -6,6 +6,10 @@
 //! - MULTI_NDT: Run alignments from offset poses, compute sample covariance
 //! - MULTI_NDT_SCORE: Compute NVTL at offset poses, use softmax-weighted covariance
 
+// Allow dead_code: Functions are called from main.rs via dynamic covariance estimation
+// mode selection. Rust's analysis doesn't track usage through config-driven dispatch.
+#![allow(dead_code)]
+
 use crate::ndt_manager::NdtManager;
 use crate::params::{CovarianceEstimationParams, CovarianceEstimationType, CovarianceParams};
 use geometry_msgs::msg::Pose;
