@@ -84,17 +84,24 @@ impl GpuRuntime {
         let num_voxels = voxel_data.num_voxels;
 
         // Flatten source points
-        let source_flat: Vec<f32> = source_points.iter().flat_map(|p| p.iter().copied()).collect();
+        let source_flat: Vec<f32> = source_points
+            .iter()
+            .flat_map(|p| p.iter().copied())
+            .collect();
 
         // Upload data to GPU
         let source_gpu = self.client.create(f32::as_bytes(&source_flat));
         let transform_gpu = self.client.create(f32::as_bytes(transform));
         let voxel_means_gpu = self.client.create(f32::as_bytes(&voxel_data.means));
-        let voxel_inv_covs_gpu = self.client.create(f32::as_bytes(&voxel_data.inv_covariances));
+        let voxel_inv_covs_gpu = self
+            .client
+            .create(f32::as_bytes(&voxel_data.inv_covariances));
         let voxel_valid_gpu = self.client.create(u32::as_bytes(&voxel_data.valid));
 
         // Allocate transformed points buffer
-        let transformed_gpu = self.client.empty(num_points * 3 * std::mem::size_of::<f32>());
+        let transformed_gpu = self
+            .client
+            .empty(num_points * 3 * std::mem::size_of::<f32>());
 
         // Step 1: Transform points
         let cube_count = ((num_points + 255) / 256) as u32;
@@ -128,7 +135,11 @@ impl GpuRuntime {
                 ScalarArg::new(radius_sq),
                 ScalarArg::new(num_points as u32),
                 ScalarArg::new(num_voxels as u32),
-                ArrayArg::from_raw_parts::<i32>(&neighbor_indices_gpu, num_points * MAX_NEIGHBORS as usize, 1),
+                ArrayArg::from_raw_parts::<i32>(
+                    &neighbor_indices_gpu,
+                    num_points * MAX_NEIGHBORS as usize,
+                    1,
+                ),
                 ArrayArg::from_raw_parts::<u32>(&neighbor_counts_gpu, num_points, 1),
             );
         }
@@ -146,7 +157,11 @@ impl GpuRuntime {
                 ArrayArg::from_raw_parts::<f32>(&transform_gpu, 16, 1),
                 ArrayArg::from_raw_parts::<f32>(&voxel_means_gpu, num_voxels * 3, 1),
                 ArrayArg::from_raw_parts::<f32>(&voxel_inv_covs_gpu, num_voxels * 9, 1),
-                ArrayArg::from_raw_parts::<i32>(&neighbor_indices_gpu, num_points * MAX_NEIGHBORS as usize, 1),
+                ArrayArg::from_raw_parts::<i32>(
+                    &neighbor_indices_gpu,
+                    num_points * MAX_NEIGHBORS as usize,
+                    1,
+                ),
                 ArrayArg::from_raw_parts::<u32>(&neighbor_counts_gpu, num_points, 1),
                 ScalarArg::new(gauss_d1),
                 ScalarArg::new(gauss_d2),
@@ -204,18 +219,25 @@ impl GpuRuntime {
         let jacobians = compute_point_jacobians_cpu(source_points, pose);
 
         // Flatten source points
-        let source_flat: Vec<f32> = source_points.iter().flat_map(|p| p.iter().copied()).collect();
+        let source_flat: Vec<f32> = source_points
+            .iter()
+            .flat_map(|p| p.iter().copied())
+            .collect();
 
         // Upload data to GPU
         let source_gpu = self.client.create(f32::as_bytes(&source_flat));
         let transform_gpu = self.client.create(f32::as_bytes(&transform));
         let jacobians_gpu = self.client.create(f32::as_bytes(&jacobians));
         let voxel_means_gpu = self.client.create(f32::as_bytes(&voxel_data.means));
-        let voxel_inv_covs_gpu = self.client.create(f32::as_bytes(&voxel_data.inv_covariances));
+        let voxel_inv_covs_gpu = self
+            .client
+            .create(f32::as_bytes(&voxel_data.inv_covariances));
         let voxel_valid_gpu = self.client.create(u32::as_bytes(&voxel_data.valid));
 
         // Allocate transformed points buffer
-        let transformed_gpu = self.client.empty(num_points * 3 * std::mem::size_of::<f32>());
+        let transformed_gpu = self
+            .client
+            .empty(num_points * 3 * std::mem::size_of::<f32>());
 
         // Step 1: Transform points
         let cube_count = ((num_points + 255) / 256) as u32;
@@ -249,7 +271,11 @@ impl GpuRuntime {
                 ScalarArg::new(radius_sq),
                 ScalarArg::new(num_points as u32),
                 ScalarArg::new(num_voxels as u32),
-                ArrayArg::from_raw_parts::<i32>(&neighbor_indices_gpu, num_points * MAX_NEIGHBORS as usize, 1),
+                ArrayArg::from_raw_parts::<i32>(
+                    &neighbor_indices_gpu,
+                    num_points * MAX_NEIGHBORS as usize,
+                    1,
+                ),
                 ArrayArg::from_raw_parts::<u32>(&neighbor_counts_gpu, num_points, 1),
             );
         }
@@ -267,7 +293,11 @@ impl GpuRuntime {
                 ArrayArg::from_raw_parts::<f32>(&transform_gpu, 16, 1),
                 ArrayArg::from_raw_parts::<f32>(&voxel_means_gpu, num_voxels * 3, 1),
                 ArrayArg::from_raw_parts::<f32>(&voxel_inv_covs_gpu, num_voxels * 9, 1),
-                ArrayArg::from_raw_parts::<i32>(&neighbor_indices_gpu, num_points * MAX_NEIGHBORS as usize, 1),
+                ArrayArg::from_raw_parts::<i32>(
+                    &neighbor_indices_gpu,
+                    num_points * MAX_NEIGHBORS as usize,
+                    1,
+                ),
                 ArrayArg::from_raw_parts::<u32>(&neighbor_counts_gpu, num_points, 1),
                 ScalarArg::new(gauss_d1),
                 ScalarArg::new(gauss_d2),
@@ -278,7 +308,9 @@ impl GpuRuntime {
         }
 
         // Step 4: Compute gradients
-        let gradients_gpu = self.client.empty(num_points * 6 * std::mem::size_of::<f32>());
+        let gradients_gpu = self
+            .client
+            .empty(num_points * 6 * std::mem::size_of::<f32>());
 
         unsafe {
             compute_ndt_gradient_kernel::launch_unchecked::<f32, CudaRuntime>(
@@ -290,7 +322,11 @@ impl GpuRuntime {
                 ArrayArg::from_raw_parts::<f32>(&jacobians_gpu, num_points * 18, 1),
                 ArrayArg::from_raw_parts::<f32>(&voxel_means_gpu, num_voxels * 3, 1),
                 ArrayArg::from_raw_parts::<f32>(&voxel_inv_covs_gpu, num_voxels * 9, 1),
-                ArrayArg::from_raw_parts::<i32>(&neighbor_indices_gpu, num_points * MAX_NEIGHBORS as usize, 1),
+                ArrayArg::from_raw_parts::<i32>(
+                    &neighbor_indices_gpu,
+                    num_points * MAX_NEIGHBORS as usize,
+                    1,
+                ),
                 ArrayArg::from_raw_parts::<u32>(&neighbor_counts_gpu, num_points, 1),
                 ScalarArg::new(gauss_d1),
                 ScalarArg::new(gauss_d2),
@@ -342,7 +378,9 @@ impl GpuRuntime {
 
         let points_gpu = self.client.create(f32::as_bytes(&points_flat));
         let transform_gpu = self.client.create(f32::as_bytes(transform));
-        let output_gpu = self.client.empty(num_points * 3 * std::mem::size_of::<f32>());
+        let output_gpu = self
+            .client
+            .empty(num_points * 3 * std::mem::size_of::<f32>());
 
         let cube_count = ((num_points + 255) / 256) as u32;
         unsafe {

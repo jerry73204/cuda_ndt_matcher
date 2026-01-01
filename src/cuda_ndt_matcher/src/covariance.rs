@@ -214,12 +214,12 @@ pub struct MultiNdtResult {
 ///
 /// The offsets are rotated by the result pose orientation so they are
 /// in the vehicle's local coordinate frame.
-pub fn propose_offset_poses(
-    result_pose: &Pose,
-    offset_x: &[f64],
-    offset_y: &[f64],
-) -> Vec<Pose> {
-    assert_eq!(offset_x.len(), offset_y.len(), "Offset arrays must have same length");
+pub fn propose_offset_poses(result_pose: &Pose, offset_x: &[f64], offset_y: &[f64]) -> Vec<Pose> {
+    assert_eq!(
+        offset_x.len(),
+        offset_y.len(),
+        "Offset arrays must have same length"
+    );
 
     // Extract 2D rotation from result pose quaternion
     let q = &result_pose.orientation;
@@ -359,10 +359,7 @@ pub fn estimate_xy_covariance_by_multi_ndt_score(
 }
 
 /// Calculate weighted mean and covariance from 2D points.
-fn calculate_weighted_covariance(
-    points: &[Vector2<f64>],
-    weights: &[f64],
-) -> [[f64; 2]; 2] {
+fn calculate_weighted_covariance(points: &[Vector2<f64>], weights: &[f64]) -> [[f64; 2]; 2] {
     assert_eq!(points.len(), weights.len());
 
     if points.is_empty() {
@@ -434,8 +431,10 @@ pub fn estimate_covariance_full(
                         result_pose,
                         &params.estimation,
                     );
-                    let scaled =
-                        scale_covariance_2d(&multi_result.covariance, params.estimation.scale_factor);
+                    let scaled = scale_covariance_2d(
+                        &multi_result.covariance,
+                        params.estimation.scale_factor,
+                    );
                     let adjusted = adjust_diagonal_covariance(
                         &scaled,
                         params.output_pose_covariance[0],
@@ -480,8 +479,10 @@ pub fn estimate_covariance_full(
                         result_pose,
                         &params.estimation,
                     );
-                    let scaled =
-                        scale_covariance_2d(&multi_result.covariance, params.estimation.scale_factor);
+                    let scaled = scale_covariance_2d(
+                        &multi_result.covariance,
+                        params.estimation.scale_factor,
+                    );
                     let adjusted = adjust_diagonal_covariance(
                         &scaled,
                         params.output_pose_covariance[0],
