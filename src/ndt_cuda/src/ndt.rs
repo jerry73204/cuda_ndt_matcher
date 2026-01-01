@@ -1148,4 +1148,214 @@ mod tests {
         let has_diagonal = (0..6).any(|i| result.hessian[(i, i)].abs() > 1e-10);
         assert!(has_diagonal, "Hessian diagonal should have non-zero values");
     }
+
+    // ========================================================================
+    // GPU vs CPU comparison tests
+    // ========================================================================
+
+    /// Skip test at runtime if CUDA is not available.
+    macro_rules! require_cuda {
+        () => {
+            if !crate::runtime::is_cuda_available() {
+                eprintln!("Skipping test: CUDA not available");
+                return;
+            }
+        };
+    }
+
+    // NOTE: GPU scoring tests are temporarily disabled due to a CubeCL optimizer
+    // bug in uniformity analysis. The `radius_search_kernel` has complex control
+    // flow (dynamic loop + break + conditional) that causes "no entry found for
+    // key" panic in cubecl-opt-0.8.1.
+    //
+    // TODO: Re-enable once CubeCL is updated or we simplify the kernels.
+
+    /// Test that GPU and CPU NVTL computations produce consistent results.
+    ///
+    /// This verifies that `compute_ndt_nvtl_kernel` (max-per-point) matches
+    /// the CPU `compute_nvtl` implementation.
+    #[test]
+    fn test_gpu_cpu_nvtl_consistency() {
+        require_cuda!();
+
+        let map_points = make_default_half_cubic_pcd();
+
+        // Create matcher with GPU enabled
+        let mut matcher_gpu = NdtScanMatcher::builder()
+            .resolution(2.0)
+            .use_gpu(true)
+            .build()
+            .unwrap();
+
+        // Create matcher with GPU disabled (CPU only)
+        let mut matcher_cpu = NdtScanMatcher::builder()
+            .resolution(2.0)
+            .use_gpu(false)
+            .build()
+            .unwrap();
+
+        matcher_gpu.set_target(&map_points).unwrap();
+        matcher_cpu.set_target(&map_points).unwrap();
+
+        // Verify GPU is actually being used
+        assert!(
+            matcher_gpu.is_gpu_active(),
+            "GPU matcher should have GPU active"
+        );
+        assert!(
+            !matcher_cpu.is_gpu_active(),
+            "CPU matcher should not have GPU active"
+        );
+
+        let sensor_scan = voxelize_pcd(&map_points, 1.0);
+
+        // Test at various poses
+        let test_poses = [
+            Isometry3::identity(),
+            Isometry3::translation(0.5, 0.0, 0.0),
+            Isometry3::translation(1.0, 1.0, 0.0),
+        ];
+
+        for pose in &test_poses {
+            let nvtl_gpu = matcher_gpu.evaluate_nvtl(&sensor_scan, pose).unwrap();
+            let nvtl_cpu = matcher_cpu.evaluate_nvtl(&sensor_scan, pose).unwrap();
+
+            println!(
+                "NVTL comparison at {:?}: GPU={:.6}, CPU={:.6}, diff={:.6}",
+                pose.translation.vector,
+                nvtl_gpu,
+                nvtl_cpu,
+                (nvtl_gpu - nvtl_cpu).abs()
+            );
+
+            // Allow tolerance for GPU (f32) vs CPU (f64) floating point differences
+            // and different radius search voxel ordering. The GPU brute-force search
+            // may find voxels in different order than CPU KD-tree, affecting which
+            // voxel's score is selected as max for NVTL. ~5% relative tolerance.
+            let relative_diff = (nvtl_gpu - nvtl_cpu).abs() / nvtl_cpu.abs().max(1.0);
+            assert!(
+                relative_diff < 0.05,
+                "GPU NVTL ({}) should match CPU NVTL ({}) within 5% relative tolerance (got {}%)",
+                nvtl_gpu,
+                nvtl_cpu,
+                relative_diff * 100.0
+            );
+        }
+    }
+
+    /// Test that GPU and CPU transform probability computations produce consistent results.
+    ///
+    /// This verifies that `compute_ndt_score_kernel` (sum-based) matches
+    /// the CPU `compute_transform_probability` implementation.
+    #[test]
+    fn test_gpu_cpu_transform_probability_consistency() {
+        require_cuda!();
+
+        let map_points = make_default_half_cubic_pcd();
+
+        // Create matcher with GPU enabled
+        let mut matcher_gpu = NdtScanMatcher::builder()
+            .resolution(2.0)
+            .use_gpu(true)
+            .build()
+            .unwrap();
+
+        // Create matcher with GPU disabled (CPU only)
+        let mut matcher_cpu = NdtScanMatcher::builder()
+            .resolution(2.0)
+            .use_gpu(false)
+            .build()
+            .unwrap();
+
+        matcher_gpu.set_target(&map_points).unwrap();
+        matcher_cpu.set_target(&map_points).unwrap();
+
+        let sensor_scan = voxelize_pcd(&map_points, 1.0);
+
+        // Test at various poses
+        let test_poses = [
+            Isometry3::identity(),
+            Isometry3::translation(0.5, 0.0, 0.0),
+            Isometry3::translation(1.0, 1.0, 0.0),
+        ];
+
+        for pose in &test_poses {
+            let tp_gpu = matcher_gpu
+                .evaluate_transform_probability(&sensor_scan, pose)
+                .unwrap();
+            let tp_cpu = matcher_cpu
+                .evaluate_transform_probability(&sensor_scan, pose)
+                .unwrap();
+
+            println!(
+                "Transform probability at {:?}: GPU={:.6}, CPU={:.6}, diff={:.6}",
+                pose.translation.vector,
+                tp_gpu,
+                tp_cpu,
+                (tp_gpu - tp_cpu).abs()
+            );
+
+            // Allow small tolerance for floating point differences
+            assert!(
+                (tp_gpu - tp_cpu).abs() < 0.01,
+                "GPU transform probability ({}) should match CPU ({}) within tolerance",
+                tp_gpu,
+                tp_cpu
+            );
+        }
+    }
+
+    /// Test that GPU-enabled alignment produces similar results to CPU-only alignment.
+    #[test]
+    fn test_gpu_cpu_alignment_consistency() {
+        require_cuda!();
+
+        let map_points = make_half_cubic_pcd_offset(100.0, 100.0, 0.0);
+
+        // Create matcher with GPU enabled
+        let mut matcher_gpu = NdtScanMatcher::builder()
+            .resolution(2.0)
+            .max_iterations(30)
+            .use_gpu(true)
+            .build()
+            .unwrap();
+
+        // Create matcher with GPU disabled
+        let mut matcher_cpu = NdtScanMatcher::builder()
+            .resolution(2.0)
+            .max_iterations(30)
+            .use_gpu(false)
+            .build()
+            .unwrap();
+
+        matcher_gpu.set_target(&map_points).unwrap();
+        matcher_cpu.set_target(&map_points).unwrap();
+
+        let sensor_scan = voxelize_pcd(&make_default_half_cubic_pcd(), 1.0);
+        let initial_guess = Isometry3::translation(100.0, 100.0, 0.0);
+
+        let result_gpu = matcher_gpu.align(&sensor_scan, initial_guess).unwrap();
+        let result_cpu = matcher_cpu.align(&sensor_scan, initial_guess).unwrap();
+
+        println!(
+            "Alignment comparison:\n  GPU: pos=({:.3}, {:.3}, {:.3}), score={:.4}, nvtl={:.4}\n  CPU: pos=({:.3}, {:.3}, {:.3}), score={:.4}, nvtl={:.4}",
+            result_gpu.pose.translation.x, result_gpu.pose.translation.y, result_gpu.pose.translation.z,
+            result_gpu.score, result_gpu.nvtl,
+            result_cpu.pose.translation.x, result_cpu.pose.translation.y, result_cpu.pose.translation.z,
+            result_cpu.score, result_cpu.nvtl,
+        );
+
+        // Both should converge to similar positions
+        let pos_diff =
+            (result_gpu.pose.translation.vector - result_cpu.pose.translation.vector).norm();
+        assert!(
+            pos_diff < 1.0,
+            "GPU and CPU should converge to similar positions, diff={:.3}m",
+            pos_diff
+        );
+
+        // Both should have good scores
+        assert!(result_gpu.score > 0.0, "GPU score should be positive");
+        assert!(result_cpu.score > 0.0, "CPU score should be positive");
+    }
 }

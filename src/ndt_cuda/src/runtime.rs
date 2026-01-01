@@ -608,16 +608,28 @@ pub fn is_cuda_available() -> bool {
 mod tests {
     use super::*;
 
+    /// Skip test at runtime if CUDA is not available.
+    /// This allows GPU tests to run on machines with CUDA while
+    /// gracefully skipping on machines without GPU.
+    macro_rules! require_cuda {
+        () => {
+            if !is_cuda_available() {
+                eprintln!("Skipping test: CUDA not available");
+                return;
+            }
+        };
+    }
+
     #[test]
     fn test_cuda_availability() {
-        // This test just checks if we can query CUDA availability
         let available = is_cuda_available();
         println!("CUDA available: {available}");
     }
 
     #[test]
-    #[ignore = "Requires CUDA GPU"]
     fn test_transform_points_gpu() {
+        require_cuda!();
+
         let runtime = GpuRuntime::new().expect("Failed to create GPU runtime");
 
         let points = vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
@@ -644,8 +656,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Requires CUDA GPU"]
     fn test_transform_points_translation() {
+        require_cuda!();
+
         let runtime = GpuRuntime::new().expect("Failed to create GPU runtime");
 
         let points = vec![[0.0, 0.0, 0.0]];
@@ -664,5 +677,105 @@ mod tests {
         assert!((result[0][0] - 1.0).abs() < 1e-5);
         assert!((result[0][1] - 2.0).abs() < 1e-5);
         assert!((result[0][2] - 3.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_compute_scores_gpu() {
+        require_cuda!();
+
+        let runtime = GpuRuntime::new().expect("Failed to create GPU runtime");
+
+        // Create simple voxel data: one voxel at origin
+        let voxel_data = GpuVoxelData {
+            means: vec![0.0, 0.0, 0.0], // One voxel at origin
+            inv_covariances: vec![
+                1.0, 0.0, 0.0, // Identity inverse covariance
+                0.0, 1.0, 0.0, //
+                0.0, 0.0, 1.0, //
+            ],
+            valid: vec![1], // One valid voxel
+            num_voxels: 1,
+        };
+
+        // Source point at origin (should have high score)
+        let source_points = vec![[0.0, 0.0, 0.0]];
+
+        // Identity transform
+        let transform = [
+            1.0, 0.0, 0.0, 0.0, //
+            0.0, 1.0, 0.0, 0.0, //
+            0.0, 0.0, 1.0, 0.0, //
+            0.0, 0.0, 0.0, 1.0, //
+        ];
+
+        let result = runtime
+            .compute_scores(
+                &source_points,
+                &voxel_data,
+                &transform,
+                1.0,  // gauss_d1
+                1.0,  // gauss_d2
+                10.0, // search_radius (large enough to find the voxel)
+            )
+            .expect("compute_scores failed");
+
+        println!("GPU score result: {:?}", result);
+
+        // Should have one correspondence
+        assert_eq!(result.total_correspondences, 1);
+        // Score should be negative (NDT score formula: -d1 * exp(...))
+        assert!(result.total_score < 0.0);
+    }
+
+    #[test]
+    fn test_compute_nvtl_scores_gpu() {
+        require_cuda!();
+
+        let runtime = GpuRuntime::new().expect("Failed to create GPU runtime");
+
+        // Create two voxels at different positions
+        let voxel_data = GpuVoxelData {
+            means: vec![
+                0.0, 0.0, 0.0, // Voxel 0 at origin
+                1.0, 0.0, 0.0, // Voxel 1 at (1, 0, 0)
+            ],
+            inv_covariances: vec![
+                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, // Voxel 0
+                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, // Voxel 1
+            ],
+            valid: vec![1, 1],
+            num_voxels: 2,
+        };
+
+        // Source point between the two voxels
+        let source_points = vec![[0.5, 0.0, 0.0]];
+
+        // Identity transform
+        let transform = [
+            1.0, 0.0, 0.0, 0.0, //
+            0.0, 1.0, 0.0, 0.0, //
+            0.0, 0.0, 1.0, 0.0, //
+            0.0, 0.0, 0.0, 1.0, //
+        ];
+
+        let result = runtime
+            .compute_nvtl_scores(
+                &source_points,
+                &voxel_data,
+                &transform,
+                1.0,  // gauss_d1
+                1.0,  // gauss_d2
+                10.0, // search_radius
+            )
+            .expect("compute_nvtl_scores failed");
+
+        println!("GPU NVTL result: {:?}", result);
+
+        // Should have one point with neighbors
+        assert_eq!(result.num_with_neighbors, 1);
+        // NVTL should be negative (max of negative scores)
+        assert!(result.nvtl < 0.0);
+        // max_scores should have one entry
+        assert_eq!(result.max_scores.len(), 1);
     }
 }

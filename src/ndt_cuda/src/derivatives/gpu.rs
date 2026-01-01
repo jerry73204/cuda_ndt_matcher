@@ -97,28 +97,32 @@ pub fn radius_search_kernel<F: Float>(
     let mut count = 0u32;
 
     // Search all voxels
+    // NOTE: We avoid using `break` here because it triggers a CubeCL optimizer bug
+    // in uniformity analysis ("no entry found for key"). Instead, we use a
+    // conditional flag to skip processing once we've found enough neighbors.
     for v in 0..num_voxels {
-        if count >= MAX_NEIGHBORS {
-            break;
-        }
+        // Only process if we haven't reached MAX_NEIGHBORS yet
+        let should_process = count < MAX_NEIGHBORS;
 
-        // Skip invalid voxels (use conditional instead of continue)
-        let is_valid = voxel_valid[v];
-        if is_valid != 0u32 {
-            let vbase = v * 3;
-            let vx = voxel_means[vbase];
-            let vy = voxel_means[vbase + 1];
-            let vz = voxel_means[vbase + 2];
+        if should_process {
+            // Skip invalid voxels (use conditional instead of continue)
+            let is_valid = voxel_valid[v];
+            if is_valid != 0u32 {
+                let vbase = v * 3;
+                let vx = voxel_means[vbase];
+                let vy = voxel_means[vbase + 1];
+                let vz = voxel_means[vbase + 2];
 
-            // Inline distance calculation (CubeCL type inference issue with helpers)
-            let dx = qx - vx;
-            let dy = qy - vy;
-            let dz = qz - vz;
-            let dist_sq = dx * dx + dy * dy + dz * dz;
+                // Inline distance calculation (CubeCL type inference issue with helpers)
+                let dx = qx - vx;
+                let dy = qy - vy;
+                let dz = qz - vz;
+                let dist_sq = dx * dx + dy * dy + dz * dz;
 
-            if dist_sq <= radius_sq {
-                neighbor_indices[out_base + count] = v as i32;
-                count += 1u32;
+                if dist_sq <= radius_sq {
+                    neighbor_indices[out_base + count] = v as i32;
+                    count += 1u32;
+                }
             }
         }
     }
