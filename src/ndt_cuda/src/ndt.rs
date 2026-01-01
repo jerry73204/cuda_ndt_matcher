@@ -445,6 +445,19 @@ impl NdtScanMatcher {
     /// Evaluate NVTL at a given pose without running optimization.
     ///
     /// Useful for pose quality assessment.
+    ///
+    /// Uses GPU acceleration when available, falling back to CPU if GPU is
+    /// not initialized or fails.
+    ///
+    /// # Algorithm (Autoware-compatible)
+    ///
+    /// For each source point:
+    /// 1. Transform by pose
+    /// 2. Find all voxels within search radius
+    /// 3. Compute NDT score for each voxel
+    /// 4. Take the **maximum** score (not sum)
+    ///
+    /// Final NVTL = average of max scores across all points with neighbors.
     pub fn evaluate_nvtl(&self, source_points: &[[f32; 3]], pose: &Isometry3<f64>) -> Result<f64> {
         let grid = self
             .target_grid
@@ -455,12 +468,21 @@ impl NdtScanMatcher {
             bail!("Source point cloud is empty");
         }
 
+        // Try GPU path first if available
+        if let Some(nvtl) = self.evaluate_nvtl_gpu(source_points, pose) {
+            return Ok(nvtl);
+        }
+
+        // Fall back to CPU
         let config = NvtlConfig::default();
         let result = compute_nvtl(source_points, grid, pose, &self.gauss_params, &config);
         Ok(result.nvtl)
     }
 
     /// Evaluate transform probability at a given pose without running optimization.
+    ///
+    /// Uses GPU acceleration when available, falling back to CPU if GPU is
+    /// not initialized or fails.
     pub fn evaluate_transform_probability(
         &self,
         source_points: &[[f32; 3]],
@@ -475,6 +497,19 @@ impl NdtScanMatcher {
             bail!("Source point cloud is empty");
         }
 
+        // Try GPU path first if available
+        if let Some((total_score, total_correspondences)) =
+            self.evaluate_scores_gpu(source_points, pose)
+        {
+            let transform_probability = if total_correspondences > 0 {
+                total_score / total_correspondences as f64
+            } else {
+                0.0
+            };
+            return Ok(transform_probability);
+        }
+
+        // Fall back to CPU
         let result = compute_transform_probability(source_points, grid, pose, &self.gauss_params);
         Ok(result.transform_probability)
     }
@@ -598,14 +633,12 @@ impl NdtScanMatcher {
         self.gpu_runtime.is_some()
     }
 
-    /// Evaluate scores using GPU if available, otherwise CPU.
+    /// Evaluate scores using GPU if available (for transform probability).
     ///
-    /// This is an internal method used by evaluate_nvtl and evaluate_transform_probability
-    /// when GPU is available.
+    /// This is an internal method used by evaluate_transform_probability()
+    /// when GPU is available. Returns `None` if GPU is not available or fails.
     ///
-    /// TODO: Integrate this into evaluate_nvtl() and evaluate_transform_probability()
-    /// for GPU acceleration. Currently CPU path is always used.
-    #[allow(dead_code)]
+    /// Uses sum-based aggregation: total_score = sum of all voxel contributions.
     fn evaluate_scores_gpu(
         &self,
         source_points: &[[f32; 3]],
@@ -631,6 +664,38 @@ impl NdtScanMatcher {
             self.config.resolution,
         ) {
             Ok(result) => Some((result.total_score, result.total_correspondences)),
+            Err(_) => None,
+        }
+    }
+
+    /// Evaluate NVTL using GPU if available.
+    ///
+    /// This is an internal method used by evaluate_nvtl() when GPU is available.
+    /// Returns `None` if GPU is not available or fails.
+    ///
+    /// Uses max-based aggregation: NVTL = average of max scores per point.
+    /// This matches Autoware's NVTL algorithm.
+    fn evaluate_nvtl_gpu(&self, source_points: &[[f32; 3]], pose: &Isometry3<f64>) -> Option<f64> {
+        let runtime = self.gpu_runtime.as_ref()?;
+        let voxel_data = self.gpu_voxel_data.as_ref()?;
+
+        // Convert pose to transform matrix
+        use crate::derivatives::gpu::pose_to_transform_matrix;
+        use crate::optimization::types::isometry_to_pose_vector;
+
+        let pose_vec = isometry_to_pose_vector(pose);
+        let transform = pose_to_transform_matrix(&pose_vec);
+
+        // Use GPU for NVTL computation (max per point, not sum)
+        match runtime.compute_nvtl_scores(
+            source_points,
+            voxel_data,
+            &transform,
+            self.gauss_params.d1 as f32,
+            self.gauss_params.d2 as f32,
+            self.config.resolution,
+        ) {
+            Ok(result) => Some(result.nvtl),
             Err(_) => None,
         }
     }

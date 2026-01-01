@@ -236,6 +236,124 @@ pub fn compute_ndt_score_kernel<F: Float>(
     correspondences[point_idx] = total_correspondences;
 }
 
+/// Compute NVTL (Nearest Voxel Transformation Likelihood) scores.
+///
+/// For each source point, computes the **maximum** score across all neighboring voxels.
+/// This matches Autoware's NVTL algorithm where NVTL = average of max scores.
+///
+/// # Algorithm (per point)
+/// 1. Transform point using current pose
+/// 2. Look up neighbor voxels from pre-computed indices
+/// 3. For each neighbor voxel:
+///    a. Compute x_trans = transformed_point - voxel_mean
+///    b. Compute score: -d1 * exp(-d2/2 * x'Σ⁻¹x)
+/// 4. Track the **maximum** score (not sum)
+///
+/// # Difference from compute_ndt_score_kernel
+/// - `compute_ndt_score_kernel`: Sums scores → for transform probability
+/// - `compute_ndt_nvtl_kernel`: Takes max score → for NVTL (Autoware-compatible)
+#[cube(launch_unchecked)]
+pub fn compute_ndt_nvtl_kernel<F: Float>(
+    // Source points [N * 3]
+    source_points: &Array<F>,
+    // Transformation matrix [16]
+    transform: &Array<F>,
+    // Voxel means [V * 3]
+    voxel_means: &Array<F>,
+    // Voxel inverse covariances [V * 9] (row-major 3x3)
+    voxel_inv_covs: &Array<F>,
+    // Neighbor indices from radius search [N * MAX_NEIGHBORS]
+    neighbor_indices: &Array<i32>,
+    // Neighbor counts [N]
+    neighbor_counts: &Array<u32>,
+    // Gaussian d1 parameter
+    gauss_d1: F,
+    // Gaussian d2 parameter
+    gauss_d2: F,
+    // Number of source points
+    num_points: u32,
+    // Output: max score per point [N]
+    max_scores: &mut Array<F>,
+    // Output: 1 if point has at least one neighbor, 0 otherwise [N]
+    has_neighbor: &mut Array<u32>,
+) {
+    let point_idx = ABSOLUTE_POS;
+
+    if point_idx >= num_points {
+        terminate!();
+    }
+
+    // Load and transform source point
+    let sbase = point_idx * 3;
+    let sx = source_points[sbase];
+    let sy = source_points[sbase + 1];
+    let sz = source_points[sbase + 2];
+
+    let (tx, ty, tz) = transform_point_inline(sx, sy, sz, transform);
+
+    // Track maximum score across all neighbors (NVTL algorithm)
+    let mut max_score = F::new(0.0);
+    let mut found_neighbor = 0u32;
+
+    let num_neighbors = neighbor_counts[point_idx];
+    let neighbor_base = point_idx * MAX_NEIGHBORS;
+
+    for i in 0..MAX_NEIGHBORS {
+        // Only process if within neighbor count
+        if i < num_neighbors {
+            let voxel_idx = neighbor_indices[neighbor_base + i];
+            if voxel_idx >= 0 {
+                let v = voxel_idx as u32;
+
+                // Load voxel mean
+                let vbase = v * 3;
+                let mx = voxel_means[vbase];
+                let my = voxel_means[vbase + 1];
+                let mz = voxel_means[vbase + 2];
+
+                // Compute x_trans = transformed - mean
+                let x0 = tx - mx;
+                let x1 = ty - my;
+                let x2 = tz - mz;
+
+                // Load inverse covariance (row-major 3x3)
+                let cbase = v * 9;
+                let c00 = voxel_inv_covs[cbase];
+                let c01 = voxel_inv_covs[cbase + 1];
+                let c02 = voxel_inv_covs[cbase + 2];
+                let c10 = voxel_inv_covs[cbase + 3];
+                let c11 = voxel_inv_covs[cbase + 4];
+                let c12 = voxel_inv_covs[cbase + 5];
+                let c20 = voxel_inv_covs[cbase + 6];
+                let c21 = voxel_inv_covs[cbase + 7];
+                let c22 = voxel_inv_covs[cbase + 8];
+
+                // Compute x' * Σ⁻¹ * x
+                // First: Σ⁻¹ * x
+                let cx0 = c00 * x0 + c01 * x1 + c02 * x2;
+                let cx1 = c10 * x0 + c11 * x1 + c12 * x2;
+                let cx2 = c20 * x0 + c21 * x1 + c22 * x2;
+
+                // Then: x' * (Σ⁻¹ * x)
+                let x_c_x = x0 * cx0 + x1 * cx1 + x2 * cx2;
+
+                // Score: -d1 * exp(-d2/2 * x'Σ⁻¹x)
+                let exponent = gauss_d2 * x_c_x * F::new(-0.5);
+                let score = gauss_d1 * F::new(-1.0) * F::exp(exponent);
+
+                // Track maximum score (key difference from sum-based kernel)
+                if found_neighbor == 0u32 || score > max_score {
+                    max_score = score;
+                }
+                found_neighbor = 1u32;
+            }
+        }
+    }
+
+    max_scores[point_idx] = max_score;
+    has_neighbor[point_idx] = found_neighbor;
+}
+
 /// Compute gradient contributions per point.
 ///
 /// This kernel computes the gradient vector (6 elements) for each point
