@@ -54,8 +54,6 @@ struct DebugPublishers {
     // Visualization
     ndt_marker_pub: Publisher<MarkerArray>,
     points_aligned_pub: Publisher<PointCloud2>,
-    // TODO: Implement Monte Carlo particle visualization (see roadmap Phase 7.7)
-    #[allow(dead_code)]
     monte_carlo_marker_pub: Publisher<MarkerArray>,
 
     // Debug metrics
@@ -290,6 +288,7 @@ impl NdtScanMatcherNode {
             let map_points = Arc::clone(&map_points);
             let latest_sensor_points = Arc::clone(&latest_sensor_points);
             let params = Arc::clone(&params);
+            let monte_carlo_pub = debug_pubs.monte_carlo_marker_pub.clone();
 
             node.create_service::<PoseWithCovSrv, _>(
                 "ndt_align_srv",
@@ -300,6 +299,7 @@ impl NdtScanMatcherNode {
                         &map_points,
                         &latest_sensor_points,
                         &params,
+                        &monte_carlo_pub,
                     )
                 },
             )?
@@ -719,6 +719,114 @@ impl NdtScanMatcherNode {
         }
     }
 
+    /// Create visualization markers for Monte Carlo particles.
+    ///
+    /// Visualizes the initial pose estimation particles:
+    /// - Initial poses: small blue spheres
+    /// - Result poses: spheres colored by score (red=low, green=high)
+    /// - Best particle: larger green sphere
+    fn create_monte_carlo_markers(
+        header: &Header,
+        particles: &[crate::particle::Particle],
+        best_score: f64,
+    ) -> MarkerArray {
+        let mut markers = Vec::new();
+        let mut id = 0;
+
+        // Find score range for color normalization
+        let min_score = particles
+            .iter()
+            .map(|p| p.score)
+            .fold(f64::INFINITY, f64::min);
+        let max_score = particles
+            .iter()
+            .map(|p| p.score)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let score_range = (max_score - min_score).max(0.001); // Avoid division by zero
+
+        for particle in particles {
+            // Normalize score to 0-1 range for color
+            let normalized_score = (particle.score - min_score) / score_range;
+            let is_best = (particle.score - best_score).abs() < 1e-10;
+
+            // Initial pose marker (small blue sphere)
+            markers.push(Marker {
+                header: header.clone(),
+                ns: "monte_carlo_initial".to_string(),
+                id,
+                type_: 2,  // SPHERE
+                action: 0, // ADD
+                pose: particle.initial_pose.clone(),
+                scale: geometry_msgs::msg::Vector3 {
+                    x: 0.15,
+                    y: 0.15,
+                    z: 0.15,
+                },
+                color: std_msgs::msg::ColorRGBA {
+                    r: 0.3,
+                    g: 0.5,
+                    b: 1.0,
+                    a: 0.6,
+                },
+                lifetime: builtin_interfaces::msg::Duration {
+                    sec: 10,
+                    nanosec: 0,
+                },
+                frame_locked: false,
+                points: vec![],
+                colors: vec![],
+                texture_resource: String::new(),
+                texture: sensor_msgs::msg::CompressedImage::default(),
+                uv_coordinates: vec![],
+                text: String::new(),
+                mesh_resource: String::new(),
+                mesh_file: visualization_msgs::msg::MeshFile::default(),
+                mesh_use_embedded_materials: false,
+            });
+            id += 1;
+
+            // Result pose marker (sphere colored by score)
+            let size = if is_best { 0.4 } else { 0.2 };
+            markers.push(Marker {
+                header: header.clone(),
+                ns: "monte_carlo_result".to_string(),
+                id,
+                type_: 2,  // SPHERE
+                action: 0, // ADD
+                pose: particle.result_pose.clone(),
+                scale: geometry_msgs::msg::Vector3 {
+                    x: size,
+                    y: size,
+                    z: size,
+                },
+                color: std_msgs::msg::ColorRGBA {
+                    // Color gradient: red (low score) -> green (high score)
+                    r: (1.0 - normalized_score) as f32,
+                    g: normalized_score as f32,
+                    b: 0.0,
+                    a: if is_best { 1.0 } else { 0.7 },
+                },
+                lifetime: builtin_interfaces::msg::Duration {
+                    sec: 10,
+                    nanosec: 0,
+                },
+                frame_locked: false,
+                points: vec![],
+                colors: vec![],
+                texture_resource: String::new(),
+                texture: sensor_msgs::msg::CompressedImage::default(),
+                uv_coordinates: vec![],
+                text: String::new(),
+                mesh_resource: String::new(),
+                mesh_file: visualization_msgs::msg::MeshFile::default(),
+                mesh_use_embedded_materials: false,
+            });
+            id += 1;
+        }
+
+        MarkerArray { markers }
+    }
+
     /// Publish TF transform from map frame to ndt_base_frame.
     ///
     /// This matches Autoware's `publish_tf()` behavior in ndt_scan_matcher_core.cpp:
@@ -777,6 +885,7 @@ impl NdtScanMatcherNode {
         map_points: &Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
         latest_sensor_points: &Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
         params: &NdtParams,
+        monte_carlo_pub: &Publisher<MarkerArray>,
     ) -> PoseWithCovSrvResponse {
         log_info!(NODE_NAME, "NDT align service called");
 
@@ -844,6 +953,13 @@ impl NdtScanMatcherNode {
             result.reliable,
             result.particles.len()
         );
+
+        // Publish Monte Carlo particle visualization
+        let markers =
+            Self::create_monte_carlo_markers(&initial_pose.header, &result.particles, result.score);
+        if let Err(e) = monte_carlo_pub.publish(&markers) {
+            log_debug!(NODE_NAME, "Failed to publish Monte Carlo markers: {e}");
+        }
 
         // Build result with best aligned pose
         let result_pose = PoseWithCovarianceStamped {
