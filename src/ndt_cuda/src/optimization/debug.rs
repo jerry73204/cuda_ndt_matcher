@@ -154,6 +154,10 @@ pub struct AlignmentDebug {
 
     /// Final NVTL.
     pub final_nvtl: f64,
+
+    /// Maximum consecutive oscillation count detected.
+    /// Oscillation indicates the optimizer is bouncing between poses.
+    pub oscillation_count: usize,
 }
 
 impl AlignmentDebug {
@@ -187,17 +191,52 @@ impl AlignmentDebug {
         serde_json::to_string_pretty(self)
     }
 
+    /// Compute oscillation count from iteration history.
+    ///
+    /// This analyzes the pose history to detect direction reversals
+    /// that indicate the optimizer is oscillating.
+    pub fn compute_oscillation(&mut self) {
+        if self.iterations.len() < 3 {
+            self.oscillation_count = 0;
+            return;
+        }
+
+        // Convert iteration poses to array format for oscillation detection
+        let poses: Vec<[f64; 6]> = self
+            .iterations
+            .iter()
+            .map(|iter| {
+                let p = &iter.pose;
+                [
+                    p.get(0).copied().unwrap_or(0.0),
+                    p.get(1).copied().unwrap_or(0.0),
+                    p.get(2).copied().unwrap_or(0.0),
+                    p.get(3).copied().unwrap_or(0.0),
+                    p.get(4).copied().unwrap_or(0.0),
+                    p.get(5).copied().unwrap_or(0.0),
+                ]
+            })
+            .collect();
+
+        let result = super::oscillation::count_oscillation_from_arrays(
+            &poses,
+            super::oscillation::DEFAULT_OSCILLATION_THRESHOLD,
+        );
+        self.oscillation_count = result.max_oscillation_count;
+    }
+
     /// Format as compact multi-line log.
     pub fn to_log(&self) -> String {
         let mut lines = Vec::new();
         lines.push(format!(
-            "=== NDT Alignment ts={} points={} status={} iters={} score={:.6} nvtl={:.6} ===",
+            "=== NDT Alignment ts={} points={} status={} iters={} score={:.6} nvtl={:.6} osc={} ===",
             self.timestamp_ns,
             self.num_source_points,
             self.convergence_status,
             self.total_iterations,
             self.final_score,
             self.final_nvtl,
+            self.oscillation_count,
         ));
         lines.push(format!(
             "  initial=[{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}]",

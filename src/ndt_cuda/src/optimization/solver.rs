@@ -145,6 +145,11 @@ impl NdtOptimizer {
         let mut last_hessian = Matrix6::zeros();
         let mut last_correspondences = 0;
 
+        // Track pose history for oscillation detection
+        let mut pose_history: Vec<Isometry3<f64>> =
+            Vec::with_capacity(self.config.ndt.max_iterations + 1);
+        pose_history.push(initial_guess);
+
         // Main optimization loop
         for iteration in 0..self.config.ndt.max_iterations {
             // Compute derivatives at current pose
@@ -196,6 +201,10 @@ impl NdtOptimizer {
                     // Singular Hessian - return current best
                     let final_pose = pose_vector_to_isometry(&best_pose);
                     let nvtl = self.compute_nvtl(source_points, target_grid, &final_pose);
+                    let oscillation = super::oscillation::count_oscillation(
+                        &pose_history,
+                        super::oscillation::DEFAULT_OSCILLATION_THRESHOLD,
+                    );
                     return NdtResult {
                         pose: final_pose,
                         status: ConvergenceStatus::SingularHessian,
@@ -205,6 +214,7 @@ impl NdtOptimizer {
                         iterations: iteration,
                         hessian: last_hessian,
                         num_correspondences: last_correspondences,
+                        oscillation_count: oscillation.max_oscillation_count,
                     };
                 }
             };
@@ -217,6 +227,10 @@ impl NdtOptimizer {
             if delta_norm < self.config.ndt.trans_epsilon {
                 let final_pose = pose_vector_to_isometry(&pose);
                 let nvtl = self.compute_nvtl(source_points, target_grid, &final_pose);
+                let oscillation = super::oscillation::count_oscillation(
+                    &pose_history,
+                    super::oscillation::DEFAULT_OSCILLATION_THRESHOLD,
+                );
                 return NdtResult {
                     pose: final_pose,
                     status: ConvergenceStatus::Converged,
@@ -226,6 +240,7 @@ impl NdtOptimizer {
                     iterations: iteration + 1,
                     hessian: total_hessian,
                     num_correspondences: derivatives.num_correspondences,
+                    oscillation_count: oscillation.max_oscillation_count,
                 };
             }
 
@@ -257,11 +272,16 @@ impl NdtOptimizer {
             };
 
             pose = apply_pose_delta(&pose, &step_dir, step_length);
+            pose_history.push(pose_vector_to_isometry(&pose));
         }
 
         // Reached max iterations
         let final_pose = pose_vector_to_isometry(&best_pose);
         let nvtl = self.compute_nvtl(source_points, target_grid, &final_pose);
+        let oscillation = super::oscillation::count_oscillation(
+            &pose_history,
+            super::oscillation::DEFAULT_OSCILLATION_THRESHOLD,
+        );
         NdtResult {
             pose: final_pose,
             status: ConvergenceStatus::MaxIterations,
@@ -271,6 +291,7 @@ impl NdtOptimizer {
             iterations: self.config.ndt.max_iterations,
             hessian: last_hessian,
             num_correspondences: last_correspondences,
+            oscillation_count: oscillation.max_oscillation_count,
         }
     }
 
@@ -494,6 +515,7 @@ impl NdtOptimizer {
                     debug.total_iterations = iteration;
                     debug.set_final_pose(&best_pose);
                     debug.final_score = best_score;
+                    debug.compute_oscillation();
 
                     let final_pose = pose_vector_to_isometry(&best_pose);
                     let nvtl = self.compute_nvtl(source_points, target_grid, &final_pose);
@@ -508,6 +530,7 @@ impl NdtOptimizer {
                             iterations: iteration,
                             hessian: last_hessian,
                             num_correspondences: last_correspondences,
+                            oscillation_count: debug.oscillation_count,
                         },
                         debug,
                     );
@@ -526,6 +549,7 @@ impl NdtOptimizer {
                 debug.total_iterations = iteration + 1;
                 debug.set_final_pose(&pose);
                 debug.final_score = derivatives.score;
+                debug.compute_oscillation();
 
                 let final_pose = pose_vector_to_isometry(&pose);
                 let nvtl = self.compute_nvtl(source_points, target_grid, &final_pose);
@@ -541,6 +565,7 @@ impl NdtOptimizer {
                         iterations: iteration + 1,
                         hessian: derivatives.hessian,
                         num_correspondences: derivatives.num_correspondences,
+                        oscillation_count: debug.oscillation_count,
                     },
                     debug,
                 );
@@ -583,6 +608,7 @@ impl NdtOptimizer {
         debug.total_iterations = self.config.ndt.max_iterations;
         debug.set_final_pose(&best_pose);
         debug.final_score = best_score;
+        debug.compute_oscillation();
 
         let final_pose = pose_vector_to_isometry(&best_pose);
         let nvtl = self.compute_nvtl(source_points, target_grid, &final_pose);
@@ -598,6 +624,7 @@ impl NdtOptimizer {
                 iterations: self.config.ndt.max_iterations,
                 hessian: last_hessian,
                 num_correspondences: last_correspondences,
+                oscillation_count: debug.oscillation_count,
             },
             debug,
         )

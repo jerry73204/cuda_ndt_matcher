@@ -222,6 +222,10 @@ pub struct AlignResult {
 
     /// Number of point-voxel correspondences.
     pub num_correspondences: usize,
+
+    /// Maximum consecutive oscillation count during optimization.
+    /// Oscillation indicates the optimizer is bouncing between poses.
+    pub oscillation_count: usize,
 }
 
 /// NDT scan matcher.
@@ -381,6 +385,7 @@ impl NdtScanMatcher {
             iterations: result.iterations,
             hessian: result.hessian,
             num_correspondences: result.num_correspondences,
+            oscillation_count: result.oscillation_count,
         })
     }
 
@@ -429,6 +434,7 @@ impl NdtScanMatcher {
                 iterations: result.iterations,
                 hessian: result.hessian,
                 num_correspondences: result.num_correspondences,
+                oscillation_count: result.oscillation_count,
             },
             debug,
         ))
@@ -575,6 +581,7 @@ impl NdtScanMatcher {
                     iterations: result.iterations,
                     hessian: result.hessian,
                     num_correspondences: result.num_correspondences,
+                    oscillation_count: result.oscillation_count,
                 }
             })
             .collect();

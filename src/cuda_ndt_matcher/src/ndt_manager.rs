@@ -30,6 +30,8 @@ pub struct AlignResult {
     pub transform_probability: f64,
     /// Number of correspondences
     pub num_correspondences: usize,
+    /// Oscillation count (direction reversals during optimization)
+    pub oscillation_count: usize,
 }
 
 /// NDT alignment manager using our CubeCL implementation
@@ -128,6 +130,7 @@ impl NdtManager {
             nvtl: result.nvtl,
             transform_probability: result.transform_probability,
             num_correspondences: result.num_correspondences,
+            oscillation_count: result.oscillation_count,
         })
     }
 
@@ -169,6 +172,7 @@ impl NdtManager {
                 nvtl: result.nvtl,
                 transform_probability: result.transform_probability,
                 num_correspondences: result.num_correspondences,
+                oscillation_count: result.oscillation_count,
             },
             debug,
         ))
@@ -225,6 +229,7 @@ impl NdtManager {
                     nvtl: r.nvtl,
                     transform_probability: r.transform_probability,
                     num_correspondences: r.num_correspondences,
+                    oscillation_count: r.oscillation_count,
                 }
             })
             .collect())

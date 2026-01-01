@@ -59,6 +59,7 @@ struct DebugPublishers {
     nvtl_pub: Publisher<Float32Stamped>,
     iteration_num_pub: Publisher<Int32Stamped>,
     exe_time_pub: Publisher<Float32Stamped>,
+    oscillation_count_pub: Publisher<Int32Stamped>,
 
     // Pose tracking
     initial_pose_cov_pub: Publisher<PoseWithCovarianceStamped>,
@@ -157,6 +158,8 @@ impl NdtScanMatcherNode {
             nvtl_pub: node.create_publisher("nearest_voxel_transformation_likelihood")?,
             iteration_num_pub: node.create_publisher("iteration_num")?,
             exe_time_pub: node.create_publisher("exe_time_ms")?,
+            oscillation_count_pub: node
+                .create_publisher("local_optimal_solution_oscillation_num")?,
             initial_pose_cov_pub: node.create_publisher("initial_pose_with_covariance")?,
             initial_to_result_distance_pub: node.create_publisher("initial_to_result_distance")?,
             initial_to_result_relative_pose_pub: node
@@ -548,6 +551,13 @@ impl NdtScanMatcherNode {
             data: result.iterations,
         };
         let _ = debug_pubs.iteration_num_pub.publish(&iteration_msg);
+
+        // Publish oscillation count (detects if optimizer is bouncing between poses)
+        let oscillation_msg = Int32Stamped {
+            stamp: msg.header.stamp.clone(),
+            data: result.oscillation_count as i32,
+        };
+        let _ = debug_pubs.oscillation_count_pub.publish(&oscillation_msg);
 
         // Publish transform probability (fitness score converted to probability)
         let transform_prob = (-result.score / 10.0).exp();

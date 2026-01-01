@@ -118,6 +118,11 @@ pub struct NdtResult {
 
     /// Number of valid correspondences in final iteration.
     pub num_correspondences: usize,
+
+    /// Maximum consecutive oscillation count detected during optimization.
+    /// Oscillation indicates the optimizer is bouncing between poses,
+    /// potentially stuck in a local minimum.
+    pub oscillation_count: usize,
 }
 
 impl NdtResult {
@@ -132,7 +137,13 @@ impl NdtResult {
             iterations: 0,
             hessian: Matrix6::zeros(),
             num_correspondences: 0,
+            oscillation_count: 0,
         }
+    }
+
+    /// Check if oscillation was detected (count exceeds threshold).
+    pub fn is_oscillating(&self) -> bool {
+        self.oscillation_count > super::oscillation::DEFAULT_OSCILLATION_THRESHOLD
     }
 }
 
