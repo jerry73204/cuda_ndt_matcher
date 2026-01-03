@@ -26,6 +26,9 @@ use tf2_msgs::msg::TFMessage;
 
 const LOGGER_NAME: &str = "ndt_scan_matcher.tf_handler";
 
+/// Type alias for the transform buffer: (parent_frame, child_frame) -> list of transforms
+type TransformBuffer = HashMap<(String, String), Vec<TimestampedTransform>>;
+
 /// Maximum age of a transform before it's considered stale (seconds).
 const MAX_TRANSFORM_AGE_SECS: f64 = 10.0;
 
@@ -48,7 +51,7 @@ struct TimestampedTransform {
 pub struct TfHandler {
     /// Transform buffer: (parent_frame, child_frame) -> transform
     /// Multiple transforms can exist for the same frame pair (at different times)
-    buffer: Arc<RwLock<HashMap<(String, String), Vec<TimestampedTransform>>>>,
+    buffer: Arc<RwLock<TransformBuffer>>,
 
     /// Subscription to /tf (dynamic transforms)
     tf_sub: Subscription<TFMessage>,
@@ -87,11 +90,7 @@ impl TfHandler {
     }
 
     /// Handle incoming TF messages.
-    fn on_tf_message(
-        buffer: &Arc<RwLock<HashMap<(String, String), Vec<TimestampedTransform>>>>,
-        msg: TFMessage,
-        is_static: bool,
-    ) {
+    fn on_tf_message(buffer: &Arc<RwLock<TransformBuffer>>, msg: TFMessage, is_static: bool) {
         let mut buf = buffer.write();
 
         for ts in msg.transforms {
@@ -105,7 +104,7 @@ impl TfHandler {
                 is_static,
             };
 
-            let transforms = buf.entry(key).or_insert_with(Vec::new);
+            let transforms = buf.entry(key).or_default();
 
             if is_static {
                 // Static transforms replace any existing
@@ -216,17 +215,19 @@ impl TfHandler {
         };
 
         // Check if transform is too old (only for dynamic transforms)
-        if !transform.is_static && time_ns.is_some() {
-            let age_secs = (time_ns.unwrap() - transform.stamp_ns).abs() as f64 / 1e9;
-            if age_secs > MAX_TRANSFORM_AGE_SECS {
-                log_warn!(
-                    LOGGER_NAME,
-                    "Transform {} -> {} is {:.1}s old (max: {:.1}s)",
-                    parent,
-                    child,
-                    age_secs,
-                    MAX_TRANSFORM_AGE_SECS
-                );
+        if let Some(query_time) = time_ns {
+            if !transform.is_static {
+                let age_secs = (query_time - transform.stamp_ns).abs() as f64 / 1e9;
+                if age_secs > MAX_TRANSFORM_AGE_SECS {
+                    log_warn!(
+                        LOGGER_NAME,
+                        "Transform {} -> {} is {:.1}s old (max: {:.1}s)",
+                        parent,
+                        child,
+                        age_secs,
+                        MAX_TRANSFORM_AGE_SECS
+                    );
+                }
             }
         }
 

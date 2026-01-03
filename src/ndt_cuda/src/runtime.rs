@@ -520,6 +520,7 @@ impl GpuRuntime {
     /// * `gauss_d1`, `gauss_d2` - Gaussian parameters
     /// * `search_radius` - Radius for voxel search
     /// * `metric` - Distance metric (PointToDistribution or PointToPlane)
+    #[allow(clippy::too_many_arguments)]
     pub fn compute_derivatives_with_metric(
         &self,
         source_points: &[[f32; 3]],
