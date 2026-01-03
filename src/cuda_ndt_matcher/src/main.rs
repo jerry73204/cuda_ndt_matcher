@@ -364,13 +364,38 @@ impl NdtScanMatcherNode {
         let start_time = Instant::now();
 
         // Convert sensor points first - needed for align service even before we have initial pose
-        let sensor_points = match pointcloud::from_pointcloud2(&msg) {
+        let raw_points = match pointcloud::from_pointcloud2(&msg) {
             Ok(pts) => pts,
             Err(e) => {
                 log_error!(NODE_NAME, "Failed to convert point cloud: {e}");
                 return;
             }
         };
+
+        // Apply sensor point filtering (distance, z-height, downsampling)
+        let filter_params = pointcloud::PointFilterParams {
+            min_distance: params.sensor_points.min_distance,
+            max_distance: params.sensor_points.max_distance,
+            min_z: params.sensor_points.min_z,
+            max_z: params.sensor_points.max_z,
+            downsample_resolution: params.sensor_points.downsample_resolution,
+        };
+        let filter_result = pointcloud::filter_sensor_points(&raw_points, &filter_params);
+        let sensor_points = filter_result.points;
+
+        if sensor_points.len() < raw_points.len() {
+            let gpu_str = if filter_result.used_gpu { "GPU" } else { "CPU" };
+            log_debug!(
+                NODE_NAME,
+                "Filtered sensor points: {} -> {} (dist:{}, z:{}, downsample:{}) [{}]",
+                raw_points.len(),
+                sensor_points.len(),
+                filter_result.removed_by_distance,
+                filter_result.removed_by_z,
+                filter_result.removed_by_downsampling,
+                gpu_str
+            );
+        }
 
         // Always store sensor points for initial pose estimation service (ndt_align_srv)
         // This must happen before any early returns so the align service can work

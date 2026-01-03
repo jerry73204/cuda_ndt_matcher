@@ -33,6 +33,7 @@
 //! ```
 
 pub mod derivatives;
+pub mod filtering;
 pub mod ndt;
 pub mod optimization;
 pub mod runtime;
@@ -58,3 +59,8 @@ pub use ndt::{AlignResult, NdtScanMatcher, NdtScanMatcherBuilder, NdtScanMatcher
 
 // GPU runtime (optional, for direct GPU access)
 pub use runtime::{is_cuda_available, GpuDerivativeResult, GpuRuntime, GpuScoreResult};
+
+// GPU-accelerated point cloud filtering
+#[cfg(feature = "cuda")]
+pub use filtering::GpuPointFilter;
+pub use filtering::{CpuPointFilter, FilterParams, FilterResult};

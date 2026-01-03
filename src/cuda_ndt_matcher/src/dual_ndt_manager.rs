@@ -362,6 +362,11 @@ mod tests {
             sensor_points: SensorPointsParams {
                 timeout_sec: 1.0,
                 required_distance: 10.0,
+                min_distance: 0.0,
+                max_distance: 200.0,
+                min_z: -100.0,
+                max_z: 100.0,
+                downsample_resolution: None,
             },
             ndt: NdtAlgorithmParams {
                 trans_epsilon: 0.01,

@@ -20,7 +20,18 @@ pub struct FrameParams {
 #[derive(Clone)]
 pub struct SensorPointsParams {
     pub timeout_sec: f64,
+    /// Minimum max distance required (for validation, not filtering)
     pub required_distance: f32,
+    /// Minimum distance from sensor origin for filtering
+    pub min_distance: f32,
+    /// Maximum distance from sensor origin for filtering
+    pub max_distance: f32,
+    /// Minimum z value for filtering (ground removal)
+    pub min_z: f32,
+    /// Maximum z value for filtering (ceiling removal)
+    pub max_z: f32,
+    /// Voxel grid downsampling resolution (None = no downsampling)
+    pub downsample_resolution: Option<f32>,
 }
 
 /// NDT algorithm configuration
@@ -189,6 +200,38 @@ impl NdtParams {
                     .default(10.0)
                     .mandatory()?
                     .get() as f32,
+                min_distance: node
+                    .declare_parameter("sensor_points.min_distance")
+                    .default(0.0)
+                    .mandatory()?
+                    .get() as f32,
+                max_distance: node
+                    .declare_parameter("sensor_points.max_distance")
+                    .default(200.0)
+                    .mandatory()?
+                    .get() as f32,
+                min_z: node
+                    .declare_parameter("sensor_points.min_z")
+                    .default(-100.0)
+                    .mandatory()?
+                    .get() as f32,
+                max_z: node
+                    .declare_parameter("sensor_points.max_z")
+                    .default(100.0)
+                    .mandatory()?
+                    .get() as f32,
+                downsample_resolution: {
+                    let res: f64 = node
+                        .declare_parameter("sensor_points.downsample_resolution")
+                        .default(0.0) // 0 means disabled
+                        .mandatory()?
+                        .get();
+                    if res > 0.0 {
+                        Some(res as f32)
+                    } else {
+                        None
+                    }
+                },
             },
             ndt: NdtAlgorithmParams {
                 trans_epsilon: node
