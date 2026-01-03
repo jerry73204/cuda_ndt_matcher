@@ -362,6 +362,7 @@ impl NdtScanMatcherNode {
         params: &NdtParams,
     ) {
         let start_time = Instant::now();
+
         // Convert sensor points first - needed for align service even before we have initial pose
         let sensor_points = match pointcloud::from_pointcloud2(&msg) {
             Ok(pts) => pts,
@@ -505,11 +506,12 @@ impl NdtScanMatcherNode {
 
         // Estimate covariance based on configured mode
         // For MULTI_NDT modes, we use parallel batch evaluation (Rayon)
+        // NOTE: We reuse the manager lock from the alignment - don't try to lock again!
         let covariance_result = covariance::estimate_covariance_full(
             &params.covariance,
             &result.hessian,
             &result.pose,
-            Some(&*ndt_manager.lock()),
+            Some(&*manager), // Reuse existing lock to avoid deadlock
             Some(&sensor_points),
             Some(map),
         );
