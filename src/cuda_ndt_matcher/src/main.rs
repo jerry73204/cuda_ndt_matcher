@@ -1,5 +1,6 @@
 mod covariance;
 mod diagnostics;
+mod dual_ndt_manager;
 mod initial_pose;
 mod map_module;
 mod ndt_manager;
@@ -12,9 +13,9 @@ mod tpe;
 use anyhow::Result;
 use arc_swap::ArcSwap;
 use diagnostics::{DiagnosticLevel, DiagnosticsInterface, ScanMatchingDiagnostics};
+use dual_ndt_manager::DualNdtManager;
 use geometry_msgs::msg::{Point, Pose, PoseStamped, PoseWithCovariance, PoseWithCovarianceStamped};
 use map_module::{DynamicMapLoader, MapUpdateModule};
-use ndt_manager::NdtManager;
 use params::NdtParams;
 use parking_lot::Mutex;
 use rclrs::{
@@ -96,7 +97,7 @@ struct NdtScanMatcherNode {
     _map_update_srv: Service<Trigger>,
 
     // State
-    ndt_manager: Arc<Mutex<NdtManager>>,
+    ndt_manager: Arc<DualNdtManager>,
     map_module: Arc<MapUpdateModule>,
     map_loader: Arc<DynamicMapLoader>,
     map_points: Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
@@ -118,8 +119,8 @@ impl NdtScanMatcherNode {
             params.ndt.trans_epsilon
         );
 
-        // Initialize NDT manager
-        let ndt_manager = Arc::new(Mutex::new(NdtManager::new(&params)?));
+        // Initialize NDT manager (dual for non-blocking updates)
+        let ndt_manager = Arc::new(DualNdtManager::new((*params).clone())?);
 
         // Shared state
         let map_points: Arc<ArcSwap<Option<Vec<[f32; 3]>>>> = Arc::new(ArcSwap::from_pointee(None));
@@ -242,8 +243,7 @@ impl NdtScanMatcherNode {
                 }
 
                 // Set the regularization reference pose in the NDT matcher
-                let mut manager = ndt_manager.lock();
-                manager.set_regularization_pose(&msg.pose.pose);
+                ndt_manager.set_regularization_pose(&msg.pose.pose);
             })?
         };
 
@@ -348,7 +348,7 @@ impl NdtScanMatcherNode {
     #[allow(clippy::too_many_arguments)]
     fn on_points(
         msg: PointCloud2,
-        ndt_manager: &Arc<Mutex<NdtManager>>,
+        ndt_manager: &Arc<DualNdtManager>,
         map_module: &Arc<MapUpdateModule>,
         map_loader: &Arc<DynamicMapLoader>,
         map_points: &Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
@@ -411,22 +411,16 @@ impl NdtScanMatcherNode {
 
         // Check and apply any pending updates from the map module (local filtering)
         if let Some(filtered_map) = map_module.check_and_update(&current_position) {
-            // Map was updated - refresh the shared map points and NDT target
+            // Map was updated - refresh the shared map points
             map_points.store(Arc::new(Some(filtered_map.clone())));
 
-            let mut manager = ndt_manager.lock();
-            if let Err(e) = manager.set_target(&filtered_map) {
-                log_error!(
-                    NODE_NAME,
-                    "Failed to update NDT target after map update: {e}"
-                );
-            } else {
-                log_debug!(
-                    NODE_NAME,
-                    "NDT target updated with {} points",
-                    filtered_map.len()
-                );
-            }
+            // Start non-blocking NDT target update in background thread
+            let started = ndt_manager.start_background_update(filtered_map.clone());
+            log_debug!(
+                NODE_NAME,
+                "Background NDT update started={started} with {} points",
+                filtered_map.len()
+            );
         }
 
         // Get map points (may have been updated above)
@@ -459,6 +453,7 @@ impl NdtScanMatcherNode {
         let timestamp_ns =
             msg.header.stamp.sec as u64 * 1_000_000_000 + msg.header.stamp.nanosec as u64;
 
+        // Get lock on active NDT manager (also checks for pending swap from background update)
         let mut manager = ndt_manager.lock();
         let result = if debug_enabled {
             // Use debug variant and write to file
@@ -909,7 +904,7 @@ impl NdtScanMatcherNode {
     /// This matches Autoware's behavior of sampling multiple initial poses to find the best match.
     fn on_ndt_align(
         req: PoseWithCovSrvRequest,
-        ndt_manager: &Arc<Mutex<NdtManager>>,
+        ndt_manager: &Arc<DualNdtManager>,
         map_points: &Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
         latest_sensor_points: &Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
         params: &NdtParams,
@@ -949,6 +944,7 @@ impl NdtScanMatcherNode {
         };
 
         // Run multi-particle initial pose estimation using TPE
+        // Lock the active manager for the duration of pose estimation
         let mut manager = ndt_manager.lock();
         let score_threshold = params
             .score
@@ -1010,7 +1006,7 @@ impl NdtScanMatcherNode {
         msg: PointCloud2,
         map_module: &Arc<MapUpdateModule>,
         map_points: &Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
-        ndt_manager: &Arc<Mutex<NdtManager>>,
+        ndt_manager: &Arc<DualNdtManager>,
     ) {
         // Convert point cloud
         let points = match pointcloud::from_pointcloud2(&msg) {
@@ -1029,9 +1025,8 @@ impl NdtScanMatcherNode {
         // Update shared map points
         map_points.store(Arc::new(Some(points.clone())));
 
-        // Update NDT target
-        let mut manager = ndt_manager.lock();
-        if let Err(e) = manager.set_target(&points) {
+        // Update NDT target (blocking for initial map load)
+        if let Err(e) = ndt_manager.set_target(&points) {
             log_error!(NODE_NAME, "Failed to set NDT target: {e}");
         } else {
             log_info!(NODE_NAME, "NDT target updated with map");
@@ -1042,7 +1037,7 @@ impl NdtScanMatcherNode {
     fn on_map_update(
         map_module: &Arc<MapUpdateModule>,
         map_points: &Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
-        ndt_manager: &Arc<Mutex<NdtManager>>,
+        ndt_manager: &Arc<DualNdtManager>,
         latest_pose: &Arc<ArcSwap<Option<PoseWithCovarianceStamped>>>,
     ) -> TriggerResponse {
         // Get current position
@@ -1088,15 +1083,12 @@ impl NdtScanMatcherNode {
             if let Some(filtered_points) = map_module.get_map_points() {
                 map_points.store(Arc::new(Some(filtered_points.clone())));
 
-                // Update NDT target
-                let mut manager = ndt_manager.lock();
-                if let Err(e) = manager.set_target(&filtered_points) {
-                    log_error!(NODE_NAME, "Failed to update NDT target: {e}");
-                    return TriggerResponse {
-                        success: false,
-                        message: format!("Failed to update NDT target: {e}"),
-                    };
-                }
+                // Start non-blocking NDT target update
+                let started = ndt_manager.start_background_update(filtered_points);
+                log_debug!(
+                    NODE_NAME,
+                    "Map update service: background NDT update started={started}"
+                );
             }
         }
 
@@ -1120,8 +1112,8 @@ impl NdtScanMatcherNode {
         log_info!(NODE_NAME, "Loading map with {} points", points.len());
         self.map_points.store(Arc::new(Some(points.clone())));
 
-        let mut manager = self.ndt_manager.lock();
-        if let Err(e) = manager.set_target(&points) {
+        // Blocking set for initial map load
+        if let Err(e) = self.ndt_manager.set_target(&points) {
             log_error!(NODE_NAME, "Failed to set NDT target: {e}");
         }
     }

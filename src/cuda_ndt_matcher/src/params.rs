@@ -9,6 +9,7 @@ use rclrs::Node;
 use std::sync::Arc;
 
 /// Frame configuration
+#[derive(Clone)]
 pub struct FrameParams {
     pub base_frame: String,
     pub ndt_base_frame: String,
@@ -16,12 +17,14 @@ pub struct FrameParams {
 }
 
 /// Sensor points configuration
+#[derive(Clone)]
 pub struct SensorPointsParams {
     pub timeout_sec: f64,
     pub required_distance: f32,
 }
 
 /// NDT algorithm configuration
+#[derive(Clone)]
 pub struct NdtAlgorithmParams {
     pub trans_epsilon: f64,
     pub step_size: f64,
@@ -31,6 +34,7 @@ pub struct NdtAlgorithmParams {
 }
 
 /// Initial pose estimation configuration
+#[derive(Clone)]
 pub struct InitialPoseParams {
     pub particles_num: i32,
     pub n_startup_trials: i32,
@@ -40,6 +44,7 @@ pub struct InitialPoseParams {
 }
 
 /// Validation configuration
+#[derive(Clone)]
 pub struct ValidationParams {
     pub initial_pose_timeout_sec: f64,
     pub initial_pose_distance_tolerance_m: f64,
@@ -49,6 +54,7 @@ pub struct ValidationParams {
 }
 
 /// Score estimation configuration
+#[derive(Clone)]
 pub struct ScoreParams {
     pub converged_param_type: i32,
     pub converged_param_transform_probability: f64,
@@ -82,6 +88,7 @@ impl CovarianceEstimationType {
 }
 
 /// Covariance estimation sub-parameters
+#[derive(Clone)]
 pub struct CovarianceEstimationParams {
     /// Initial pose offset model X coordinates (meters)
     pub initial_pose_offset_model_x: Vec<f64>,
@@ -106,6 +113,7 @@ impl Default for CovarianceEstimationParams {
 }
 
 /// Covariance configuration
+#[derive(Clone)]
 pub struct CovarianceParams {
     /// Static 6x6 covariance matrix (used for FIXED mode and as fallback)
     pub output_pose_covariance: [f64; 36],
@@ -133,6 +141,7 @@ pub struct RegularizationParams {
 }
 
 /// All NDT parameters
+#[derive(Clone)]
 pub struct NdtParams {
     pub frame: FrameParams,
     pub sensor_points: SensorPointsParams,
