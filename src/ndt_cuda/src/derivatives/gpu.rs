@@ -1812,43 +1812,47 @@ pub fn compute_point_jacobians_cpu(source_points: &[[f32; 3]], pose: &[f64; 6]) 
         // Row-major 3x6 Jacobian
         // Columns 0-2: translation derivatives (identity block)
         // Columns 3-5: rotation derivatives
+        //
+        // Formulas from angular.rs (Magnusson 2009 Equation 6.19)
+        // angular.rs uses: sx=sin(roll), cx=cos(roll), sy=sin(pitch), cy=cos(pitch), sz=sin(yaw), cz=cos(yaw)
+        // Here we use:     sr=sin(roll), cr=cos(roll), sp=sin(pitch), cp=cos(pitch), sy=sin(yaw), cy=cos(yaw)
+        // Mapping: angular sx->sr, cx->cr, sy->sp, cy->cp, sz->sy, cz->cy
 
-        // Row 0: ∂x'/∂(tx, ty, tz, r, p, y)
+        // Row 0: ∂x'/∂(tx, ty, tz, roll, pitch, yaw)
         jacobians.push(1.0_f32); // ∂x'/∂tx
         jacobians.push(0.0_f32); // ∂x'/∂ty
         jacobians.push(0.0_f32); // ∂x'/∂tz
-                                 // ∂x'/∂roll = 0
-        jacobians.push(0.0_f32);
-        // ∂x'/∂pitch = -cy*sp*cr*z - cy*sp*sr*y - cy*cp*x + ... simplified
-        jacobians.push((cy * cp * sr * y - cy * cp * cr * z - cy * sp * x) as f32);
-        // ∂x'/∂yaw = -sy*cp*x - sy*sp*sr*y - sy*sp*cr*z - cy*cr*y + cy*sr*z
-        jacobians.push(
-            (-sy * cp * x + (-sy * sp * sr - cy * cr) * y + (-sy * sp * cr + cy * sr) * z) as f32,
-        );
+        jacobians.push(0.0_f32); // ∂x'/∂roll = 0
+                                 // ∂x'/∂pitch: j_ang[(2,:)] = [-sp*cy, sp*sy, cp]
+        jacobians.push(((-sp * cy) * x + (sp * sy) * y + cp * z) as f32);
+        // ∂x'/∂yaw: j_ang[(5,:)] = [-cp*sy, -cp*cy, 0]
+        jacobians.push(((-cp * sy) * x + (-cp * cy) * y) as f32);
 
-        // Row 1: ∂y'/∂(tx, ty, tz, r, p, y)
+        // Row 1: ∂y'/∂(tx, ty, tz, roll, pitch, yaw)
         jacobians.push(0.0_f32); // ∂y'/∂tx
         jacobians.push(1.0_f32); // ∂y'/∂ty
         jacobians.push(0.0_f32); // ∂y'/∂tz
-                                 // ∂y'/∂roll
-        jacobians.push(((sy * sp * cr + cy * sr) * y + (-sy * sp * sr + cy * cr) * z) as f32);
-        // ∂y'/∂pitch
-        jacobians.push((sy * cp * sr * y - sy * cp * cr * z - sy * sp * x) as f32);
-        // ∂y'/∂yaw
+                                 // ∂y'/∂roll: j_ang[(0,:)] = [-sr*sy + cr*sp*cy, -sr*cy - cr*sp*sy, -cr*cp]
         jacobians.push(
-            (cy * cp * x + (cy * sp * sr - sy * cr) * y + (cy * sp * cr + sy * sr) * z) as f32,
+            ((-sr * sy + cr * sp * cy) * x + (-sr * cy - cr * sp * sy) * y + (-cr * cp) * z) as f32,
         );
+        // ∂y'/∂pitch: j_ang[(3,:)] = [sr*cp*cy, -sr*cp*sy, sr*sp]
+        jacobians.push(((sr * cp * cy) * x + (-sr * cp * sy) * y + (sr * sp) * z) as f32);
+        // ∂y'/∂yaw: j_ang[(6,:)] = [cr*cy - sr*sp*sy, -cr*sy - sr*sp*cy, 0]
+        jacobians.push(((cr * cy - sr * sp * sy) * x + (-cr * sy - sr * sp * cy) * y) as f32);
 
-        // Row 2: ∂z'/∂(tx, ty, tz, r, p, y)
+        // Row 2: ∂z'/∂(tx, ty, tz, roll, pitch, yaw)
         jacobians.push(0.0_f32); // ∂z'/∂tx
         jacobians.push(0.0_f32); // ∂z'/∂ty
         jacobians.push(1.0_f32); // ∂z'/∂tz
-                                 // ∂z'/∂roll
-        jacobians.push((cp * cr * y - cp * sr * z) as f32);
-        // ∂z'/∂pitch
-        jacobians.push((-sp * sr * y - sp * cr * z - cp * x) as f32);
-        // ∂z'/∂yaw = 0
-        jacobians.push(0.0_f32);
+                                 // ∂z'/∂roll: j_ang[(1,:)] = [cr*sy + sr*sp*cy, cr*cy - sr*sp*sy, -sr*cp]
+        jacobians.push(
+            ((cr * sy + sr * sp * cy) * x + (cr * cy - sr * sp * sy) * y + (-sr * cp) * z) as f32,
+        );
+        // ∂z'/∂pitch: j_ang[(4,:)] = [-cr*cp*cy, cr*cp*sy, -cr*sp]
+        jacobians.push(((-cr * cp * cy) * x + (cr * cp * sy) * y + (-cr * sp) * z) as f32);
+        // ∂z'/∂yaw: j_ang[(7,:)] = [sr*cy + cr*sp*sy, cr*sp*cy - sr*sy, 0]
+        jacobians.push(((sr * cy + cr * sp * sy) * x + (cr * sp * cy - sr * sy) * y) as f32);
     }
 
     jacobians
@@ -2106,6 +2110,7 @@ pub fn pose_to_transform_matrix(pose: &[f64; 6]) -> [f32; 16] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::derivatives::AngularDerivatives;
 
     #[test]
     fn test_point_jacobians_identity() {
@@ -2135,5 +2140,382 @@ mod tests {
         assert!(ctx.gauss_d1 < 0.0);
         assert!(ctx.gauss_d2 > 0.0);
         assert_eq!(ctx.search_radius, 2.0);
+    }
+
+    #[test]
+    fn test_jacobians_match_angular_derivatives() {
+        use crate::derivatives::AngularDerivatives;
+
+        // Test with a non-trivial pose
+        let pose = [1.0, 2.0, 3.0, 0.1, 0.2, 0.3]; // tx, ty, tz, roll, pitch, yaw
+
+        // Test points
+        let points = vec![
+            [1.0f32, 2.0, 3.0],
+            [5.0, 0.0, 0.0],
+            [0.0, 5.0, 0.0],
+            [0.0, 0.0, 5.0],
+        ];
+
+        // Compute Jacobians using GPU function
+        let gpu_jacobians = compute_point_jacobians_cpu(&points, &pose);
+
+        // Compute Jacobians using Angular derivatives (CPU reference)
+        let angular = AngularDerivatives::new(pose[3], pose[4], pose[5], false);
+
+        println!("=== Jacobian Comparison ===");
+        println!(
+            "Pose: roll={:.3}, pitch={:.3}, yaw={:.3}",
+            pose[3], pose[4], pose[5]
+        );
+
+        for (i, point) in points.iter().enumerate() {
+            println!(
+                "\nPoint {i}: [{:.1}, {:.1}, {:.1}]",
+                point[0], point[1], point[2]
+            );
+
+            let point_f64 = [point[0] as f64, point[1] as f64, point[2] as f64];
+            let angular_terms = angular.compute_point_gradient_terms(&point_f64);
+
+            // GPU Jacobian for this point (3x6 row-major, starting at i*18)
+            let jbase = i * 18;
+
+            // Compare rotation columns (3, 4, 5)
+            // Column 3 (roll): GPU [jbase+3, jbase+9, jbase+15] vs Angular [-, 0, 1]
+            // Angular gives [∂y'/∂roll, ∂z'/∂roll] (∂x'/∂roll = 0)
+            let gpu_dy_droll = gpu_jacobians[jbase + 9]; // J[1,3]
+            let gpu_dz_droll = gpu_jacobians[jbase + 15]; // J[2,3]
+            let cpu_dy_droll = angular_terms[0] as f32;
+            let cpu_dz_droll = angular_terms[1] as f32;
+
+            println!(
+                "  Roll:  GPU=[{:.4}, {:.4}], CPU=[{:.4}, {:.4}], diff=[{:.4}, {:.4}]",
+                gpu_dy_droll,
+                gpu_dz_droll,
+                cpu_dy_droll,
+                cpu_dz_droll,
+                (gpu_dy_droll - cpu_dy_droll).abs(),
+                (gpu_dz_droll - cpu_dz_droll).abs()
+            );
+
+            // Column 4 (pitch): GPU [jbase+4, jbase+10, jbase+16] vs Angular [2, 3, 4]
+            let gpu_dx_dpitch = gpu_jacobians[jbase + 4]; // J[0,4]
+            let gpu_dy_dpitch = gpu_jacobians[jbase + 10]; // J[1,4]
+            let gpu_dz_dpitch = gpu_jacobians[jbase + 16]; // J[2,4]
+            let cpu_dx_dpitch = angular_terms[2] as f32;
+            let cpu_dy_dpitch = angular_terms[3] as f32;
+            let cpu_dz_dpitch = angular_terms[4] as f32;
+
+            println!(
+                "  Pitch: GPU=[{:.4}, {:.4}, {:.4}], CPU=[{:.4}, {:.4}, {:.4}]",
+                gpu_dx_dpitch,
+                gpu_dy_dpitch,
+                gpu_dz_dpitch,
+                cpu_dx_dpitch,
+                cpu_dy_dpitch,
+                cpu_dz_dpitch
+            );
+            println!(
+                "         diff=[{:.4}, {:.4}, {:.4}]",
+                (gpu_dx_dpitch - cpu_dx_dpitch).abs(),
+                (gpu_dy_dpitch - cpu_dy_dpitch).abs(),
+                (gpu_dz_dpitch - cpu_dz_dpitch).abs()
+            );
+
+            // Column 5 (yaw): GPU [jbase+5, jbase+11, jbase+17] vs Angular [5, 6, 7]
+            let gpu_dx_dyaw = gpu_jacobians[jbase + 5]; // J[0,5]
+            let gpu_dy_dyaw = gpu_jacobians[jbase + 11]; // J[1,5]
+            let gpu_dz_dyaw = gpu_jacobians[jbase + 17]; // J[2,5]
+            let cpu_dx_dyaw = angular_terms[5] as f32;
+            let cpu_dy_dyaw = angular_terms[6] as f32;
+            let cpu_dz_dyaw = angular_terms[7] as f32;
+
+            println!(
+                "  Yaw:   GPU=[{:.4}, {:.4}, {:.4}], CPU=[{:.4}, {:.4}, {:.4}]",
+                gpu_dx_dyaw, gpu_dy_dyaw, gpu_dz_dyaw, cpu_dx_dyaw, cpu_dy_dyaw, cpu_dz_dyaw
+            );
+            println!(
+                "         diff=[{:.4}, {:.4}, {:.4}]",
+                (gpu_dx_dyaw - cpu_dx_dyaw).abs(),
+                (gpu_dy_dyaw - cpu_dy_dyaw).abs(),
+                (gpu_dz_dyaw - cpu_dz_dyaw).abs()
+            );
+
+            // Assert rotation gradients match
+            let eps = 1e-3;
+            assert!(
+                (gpu_dy_droll - cpu_dy_droll).abs() < eps,
+                "∂y'/∂roll mismatch: GPU={gpu_dy_droll}, CPU={cpu_dy_droll}"
+            );
+            assert!(
+                (gpu_dz_droll - cpu_dz_droll).abs() < eps,
+                "∂z'/∂roll mismatch: GPU={gpu_dz_droll}, CPU={cpu_dz_droll}"
+            );
+            assert!(
+                (gpu_dx_dpitch - cpu_dx_dpitch).abs() < eps,
+                "∂x'/∂pitch mismatch: GPU={gpu_dx_dpitch}, CPU={cpu_dx_dpitch}"
+            );
+            assert!(
+                (gpu_dy_dpitch - cpu_dy_dpitch).abs() < eps,
+                "∂y'/∂pitch mismatch: GPU={gpu_dy_dpitch}, CPU={cpu_dy_dpitch}"
+            );
+            assert!(
+                (gpu_dz_dpitch - cpu_dz_dpitch).abs() < eps,
+                "∂z'/∂pitch mismatch: GPU={gpu_dz_dpitch}, CPU={cpu_dz_dpitch}"
+            );
+            assert!(
+                (gpu_dx_dyaw - cpu_dx_dyaw).abs() < eps,
+                "∂x'/∂yaw mismatch: GPU={gpu_dx_dyaw}, CPU={cpu_dx_dyaw}"
+            );
+            assert!(
+                (gpu_dy_dyaw - cpu_dy_dyaw).abs() < eps,
+                "∂y'/∂yaw mismatch: GPU={gpu_dy_dyaw}, CPU={cpu_dy_dyaw}"
+            );
+            assert!(
+                (gpu_dz_dyaw - cpu_dz_dyaw).abs() < eps,
+                "∂z'/∂yaw mismatch: GPU={gpu_dz_dyaw}, CPU={cpu_dz_dyaw}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_point_hessians_match_angular_derivatives() {
+        // Verify that compute_point_hessians_cpu matches AngularDerivatives.compute_point_hessian_terms
+        let pose = [0.0, 0.0, 0.0, 0.3, 0.2, 0.1]; // tx, ty, tz, roll, pitch, yaw
+
+        // Test multiple points
+        let points: Vec<[f32; 3]> = vec![
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 2.0, 3.0],
+            [5.0, 0.0, 0.0],
+        ];
+
+        // Compute Hessians using GPU function
+        let gpu_hessians = compute_point_hessians_cpu(&points, &pose);
+
+        // Compute Hessians using Angular derivatives (CPU reference)
+        let angular = AngularDerivatives::new(pose[3], pose[4], pose[5], true);
+
+        println!("=== Point Hessian Comparison ===");
+        println!(
+            "Pose: roll={:.3}, pitch={:.3}, yaw={:.3}",
+            pose[3], pose[4], pose[5]
+        );
+
+        for (i, point) in points.iter().enumerate() {
+            println!(
+                "\nPoint {i}: [{:.1}, {:.1}, {:.1}]",
+                point[0], point[1], point[2]
+            );
+
+            let point_f64 = [point[0] as f64, point[1] as f64, point[2] as f64];
+            let angular_terms = angular.compute_point_hessian_terms(&point_f64);
+
+            // GPU Hessian for this point (24x6 row-major, starting at i*144)
+            let hbase = i * 144;
+
+            // Extract the 15 angular Hessian terms from GPU output
+            // The GPU stores them in a 24x6 matrix with specific layout:
+            // Row 13: [0,0,0, a2·p, b2·p, c2·p]
+            // Row 14: [0,0,0, a3·p, b3·p, c3·p]
+            // Row 16: [0,0,0,0, d1·p, e1·p]
+            // Row 17: [0,0,0, b2·p, d2·p, e2·p]
+            // Row 18: [0,0,0, b3·p, d3·p, e3·p]
+            // Row 20: [0,0,0,0, e1·p, f1·p]  - note: e1 reused here
+            // Row 21: [0,0,0, c2·p, e2·p, f2·p]
+            // Row 22: [0,0,0, c3·p, e3·p, f3·p]
+
+            // Extract GPU values (row-major indexing: row*6 + col)
+            let gpu_a2 = gpu_hessians[hbase + 13 * 6 + 3];
+            let gpu_a3 = gpu_hessians[hbase + 14 * 6 + 3];
+            let gpu_b2 = gpu_hessians[hbase + 13 * 6 + 4];
+            let gpu_b3 = gpu_hessians[hbase + 14 * 6 + 4];
+            let gpu_c2 = gpu_hessians[hbase + 13 * 6 + 5];
+            let gpu_c3 = gpu_hessians[hbase + 14 * 6 + 5];
+            let gpu_d1 = gpu_hessians[hbase + 16 * 6 + 4];
+            let gpu_d2 = gpu_hessians[hbase + 17 * 6 + 4];
+            let gpu_d3 = gpu_hessians[hbase + 18 * 6 + 4];
+            let gpu_e1 = gpu_hessians[hbase + 16 * 6 + 5];
+            let gpu_e2 = gpu_hessians[hbase + 17 * 6 + 5];
+            let gpu_e3 = gpu_hessians[hbase + 18 * 6 + 5];
+            let gpu_f1 = gpu_hessians[hbase + 20 * 6 + 5];
+            let gpu_f2 = gpu_hessians[hbase + 21 * 6 + 5];
+            let gpu_f3 = gpu_hessians[hbase + 22 * 6 + 5];
+
+            // Angular terms order: [a2, a3, b2, b3, c2, c3, d1, d2, d3, e1, e2, e3, f1, f2, f3]
+            let cpu_a2 = angular_terms[0] as f32;
+            let cpu_a3 = angular_terms[1] as f32;
+            let cpu_b2 = angular_terms[2] as f32;
+            let cpu_b3 = angular_terms[3] as f32;
+            let cpu_c2 = angular_terms[4] as f32;
+            let cpu_c3 = angular_terms[5] as f32;
+            let cpu_d1 = angular_terms[6] as f32;
+            let cpu_d2 = angular_terms[7] as f32;
+            let cpu_d3 = angular_terms[8] as f32;
+            let cpu_e1 = angular_terms[9] as f32;
+            let cpu_e2 = angular_terms[10] as f32;
+            let cpu_e3 = angular_terms[11] as f32;
+            let cpu_f1 = angular_terms[12] as f32;
+            let cpu_f2 = angular_terms[13] as f32;
+            let cpu_f3 = angular_terms[14] as f32;
+
+            // Print comparison
+            println!(
+                "  a2: GPU={:.4}, CPU={:.4}, diff={:.4}",
+                gpu_a2,
+                cpu_a2,
+                (gpu_a2 - cpu_a2).abs()
+            );
+            println!(
+                "  a3: GPU={:.4}, CPU={:.4}, diff={:.4}",
+                gpu_a3,
+                cpu_a3,
+                (gpu_a3 - cpu_a3).abs()
+            );
+            println!(
+                "  b2: GPU={:.4}, CPU={:.4}, diff={:.4}",
+                gpu_b2,
+                cpu_b2,
+                (gpu_b2 - cpu_b2).abs()
+            );
+            println!(
+                "  b3: GPU={:.4}, CPU={:.4}, diff={:.4}",
+                gpu_b3,
+                cpu_b3,
+                (gpu_b3 - cpu_b3).abs()
+            );
+            println!(
+                "  c2: GPU={:.4}, CPU={:.4}, diff={:.4}",
+                gpu_c2,
+                cpu_c2,
+                (gpu_c2 - cpu_c2).abs()
+            );
+            println!(
+                "  c3: GPU={:.4}, CPU={:.4}, diff={:.4}",
+                gpu_c3,
+                cpu_c3,
+                (gpu_c3 - cpu_c3).abs()
+            );
+            println!(
+                "  d1: GPU={:.4}, CPU={:.4}, diff={:.4}",
+                gpu_d1,
+                cpu_d1,
+                (gpu_d1 - cpu_d1).abs()
+            );
+            println!(
+                "  d2: GPU={:.4}, CPU={:.4}, diff={:.4}",
+                gpu_d2,
+                cpu_d2,
+                (gpu_d2 - cpu_d2).abs()
+            );
+            println!(
+                "  d3: GPU={:.4}, CPU={:.4}, diff={:.4}",
+                gpu_d3,
+                cpu_d3,
+                (gpu_d3 - cpu_d3).abs()
+            );
+            println!(
+                "  e1: GPU={:.4}, CPU={:.4}, diff={:.4}",
+                gpu_e1,
+                cpu_e1,
+                (gpu_e1 - cpu_e1).abs()
+            );
+            println!(
+                "  e2: GPU={:.4}, CPU={:.4}, diff={:.4}",
+                gpu_e2,
+                cpu_e2,
+                (gpu_e2 - cpu_e2).abs()
+            );
+            println!(
+                "  e3: GPU={:.4}, CPU={:.4}, diff={:.4}",
+                gpu_e3,
+                cpu_e3,
+                (gpu_e3 - cpu_e3).abs()
+            );
+            println!(
+                "  f1: GPU={:.4}, CPU={:.4}, diff={:.4}",
+                gpu_f1,
+                cpu_f1,
+                (gpu_f1 - cpu_f1).abs()
+            );
+            println!(
+                "  f2: GPU={:.4}, CPU={:.4}, diff={:.4}",
+                gpu_f2,
+                cpu_f2,
+                (gpu_f2 - cpu_f2).abs()
+            );
+            println!(
+                "  f3: GPU={:.4}, CPU={:.4}, diff={:.4}",
+                gpu_f3,
+                cpu_f3,
+                (gpu_f3 - cpu_f3).abs()
+            );
+
+            // Assert all terms match
+            let eps = 1e-3;
+            assert!(
+                (gpu_a2 - cpu_a2).abs() < eps,
+                "a2 mismatch: GPU={gpu_a2}, CPU={cpu_a2}"
+            );
+            assert!(
+                (gpu_a3 - cpu_a3).abs() < eps,
+                "a3 mismatch: GPU={gpu_a3}, CPU={cpu_a3}"
+            );
+            assert!(
+                (gpu_b2 - cpu_b2).abs() < eps,
+                "b2 mismatch: GPU={gpu_b2}, CPU={cpu_b2}"
+            );
+            assert!(
+                (gpu_b3 - cpu_b3).abs() < eps,
+                "b3 mismatch: GPU={gpu_b3}, CPU={cpu_b3}"
+            );
+            assert!(
+                (gpu_c2 - cpu_c2).abs() < eps,
+                "c2 mismatch: GPU={gpu_c2}, CPU={cpu_c2}"
+            );
+            assert!(
+                (gpu_c3 - cpu_c3).abs() < eps,
+                "c3 mismatch: GPU={gpu_c3}, CPU={cpu_c3}"
+            );
+            assert!(
+                (gpu_d1 - cpu_d1).abs() < eps,
+                "d1 mismatch: GPU={gpu_d1}, CPU={cpu_d1}"
+            );
+            assert!(
+                (gpu_d2 - cpu_d2).abs() < eps,
+                "d2 mismatch: GPU={gpu_d2}, CPU={cpu_d2}"
+            );
+            assert!(
+                (gpu_d3 - cpu_d3).abs() < eps,
+                "d3 mismatch: GPU={gpu_d3}, CPU={cpu_d3}"
+            );
+            assert!(
+                (gpu_e1 - cpu_e1).abs() < eps,
+                "e1 mismatch: GPU={gpu_e1}, CPU={cpu_e1}"
+            );
+            assert!(
+                (gpu_e2 - cpu_e2).abs() < eps,
+                "e2 mismatch: GPU={gpu_e2}, CPU={cpu_e2}"
+            );
+            assert!(
+                (gpu_e3 - cpu_e3).abs() < eps,
+                "e3 mismatch: GPU={gpu_e3}, CPU={cpu_e3}"
+            );
+            assert!(
+                (gpu_f1 - cpu_f1).abs() < eps,
+                "f1 mismatch: GPU={gpu_f1}, CPU={cpu_f1}"
+            );
+            assert!(
+                (gpu_f2 - cpu_f2).abs() < eps,
+                "f2 mismatch: GPU={gpu_f2}, CPU={cpu_f2}"
+            );
+            assert!(
+                (gpu_f3 - cpu_f3).abs() < eps,
+                "f3 mismatch: GPU={gpu_f3}, CPU={cpu_f3}"
+            );
+        }
     }
 }

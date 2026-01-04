@@ -1146,4 +1146,240 @@ mod tests {
         // max_scores should have one entry
         assert_eq!(result.max_scores.len(), 1);
     }
+
+    #[test]
+    fn test_cpu_vs_gpu_derivatives() {
+        require_cuda!();
+
+        use crate::derivatives::{compute_derivatives_cpu, GpuVoxelData};
+        use crate::test_utils::make_half_cubic_pcd;
+        use crate::voxel_grid::VoxelGrid;
+
+        // Create a simple point cloud for both target and source
+        let target_points = make_half_cubic_pcd(10.0, 0.5); // 10m sides, 0.5m spacing
+        let resolution = 2.0;
+
+        // Build CPU voxel grid
+        let target_grid =
+            VoxelGrid::from_points(&target_points, resolution).expect("Failed to build voxel grid");
+
+        // Convert to GPU format
+        let gpu_voxel_data = GpuVoxelData::from_voxel_grid(&target_grid);
+
+        // Create source points (subset of target, slightly offset)
+        let source_points: Vec<[f32; 3]> = target_points
+            .iter()
+            .step_by(10)
+            .take(50) // Take 50 points
+            .map(|p| [p[0] + 0.1, p[1] + 0.1, p[2]]) // Small offset
+            .collect();
+
+        // Test pose: small translation and rotation
+        let pose = [0.05, 0.05, 0.0, 0.01, 0.01, 0.02]; // tx, ty, tz, roll, pitch, yaw
+
+        // Gaussian parameters matching Autoware defaults
+        // GaussianParams::new(resolution, outlier_ratio)
+        let gauss = crate::GaussianParams::new(resolution as f64, 0.55);
+        let gauss_d1 = gauss.d1 as f32;
+        let gauss_d2 = gauss.d2 as f32;
+
+        // Compute CPU derivatives
+        let cpu_result = compute_derivatives_cpu(&source_points, &target_grid, &pose, &gauss, true);
+
+        // Compute GPU derivatives
+        let runtime = GpuRuntime::new().expect("Failed to create GPU runtime");
+        let gpu_result = runtime
+            .compute_derivatives(
+                &source_points,
+                &gpu_voxel_data,
+                &pose,
+                gauss_d1,
+                gauss_d2,
+                resolution,
+            )
+            .expect("GPU derivatives failed");
+
+        println!("=== CPU vs GPU Derivative Comparison ===");
+        println!("Source points: {}", source_points.len());
+        println!("CPU correspondences: {}", cpu_result.num_correspondences);
+        println!("GPU correspondences: {}", gpu_result.num_correspondences);
+
+        println!("\n--- Score ---");
+        println!("CPU score: {:.6}", cpu_result.score);
+        println!("GPU score: {:.6}", gpu_result.score);
+        let score_diff = (cpu_result.score - gpu_result.score).abs();
+        println!("Score diff: {:.6}", score_diff);
+
+        println!("\n--- Gradient ---");
+        for i in 0..6 {
+            let cpu_g = cpu_result.gradient[i];
+            let gpu_g = gpu_result.gradient[i];
+            let diff = (cpu_g - gpu_g).abs();
+            println!(
+                "  g[{i}]: CPU={:12.4}, GPU={:12.4}, diff={:12.4}",
+                cpu_g, gpu_g, diff
+            );
+        }
+
+        println!("\n--- Hessian Diagonal ---");
+        for i in 0..6 {
+            let cpu_h = cpu_result.hessian[(i, i)];
+            let gpu_h = gpu_result.hessian[i][i];
+            let diff = (cpu_h - gpu_h).abs();
+            let sign_match = (cpu_h * gpu_h) > 0.0;
+            println!(
+                "  h[{i},{i}]: CPU={:12.2}, GPU={:12.2}, diff={:12.2}, sign_match={}",
+                cpu_h, gpu_h, diff, sign_match
+            );
+        }
+
+        println!("\n--- Full Hessian (upper triangle) ---");
+        for i in 0..6 {
+            for j in i..6 {
+                let cpu_h = cpu_result.hessian[(i, j)];
+                let gpu_h = gpu_result.hessian[i][j];
+                let diff = (cpu_h - gpu_h).abs();
+                if diff > 1.0 {
+                    println!(
+                        "  h[{i},{j}]: CPU={:12.2}, GPU={:12.2}, diff={:12.2}",
+                        cpu_h, gpu_h, diff
+                    );
+                }
+            }
+        }
+
+        // Check that scores match (tolerance for f32/f64 differences)
+        let score_rel_diff = if cpu_result.score.abs() > 1e-10 {
+            score_diff / cpu_result.score.abs()
+        } else {
+            score_diff
+        };
+        assert!(
+            score_rel_diff < 0.05,
+            "Score relative difference too large: {score_rel_diff}"
+        );
+
+        // Check gradient sign consistency
+        for i in 0..6 {
+            let cpu_g = cpu_result.gradient[i];
+            let gpu_g = gpu_result.gradient[i];
+            if cpu_g.abs() > 1.0 && gpu_g.abs() > 1.0 {
+                assert!(
+                    (cpu_g * gpu_g) > 0.0,
+                    "Gradient sign mismatch at {i}: CPU={cpu_g}, GPU={gpu_g}"
+                );
+            }
+        }
+
+        // Check Hessian diagonal sign consistency (main bug we're looking for)
+        let mut sign_mismatches = Vec::new();
+        for i in 0..6 {
+            let cpu_h = cpu_result.hessian[(i, i)];
+            let gpu_h = gpu_result.hessian[i][i];
+            // Only check if values are significant
+            if cpu_h.abs() > 10.0 && gpu_h.abs() > 10.0 && (cpu_h * gpu_h) < 0.0 {
+                sign_mismatches.push((i, cpu_h, gpu_h));
+            }
+        }
+
+        if !sign_mismatches.is_empty() {
+            println!("\n!!! HESSIAN DIAGONAL SIGN MISMATCHES !!!");
+            for (i, cpu_h, gpu_h) in &sign_mismatches {
+                println!(
+                    "  h[{i},{i}]: CPU={cpu_h:.2} ({}), GPU={gpu_h:.2} ({})",
+                    if *cpu_h < 0.0 { "neg" } else { "pos" },
+                    if *gpu_h < 0.0 { "neg" } else { "pos" }
+                );
+            }
+            panic!(
+                "Found {} Hessian diagonal sign mismatches - GPU likely has a sign bug",
+                sign_mismatches.len()
+            );
+        }
+    }
+
+    #[test]
+    fn test_cpu_vs_gpu_single_point_single_voxel() {
+        require_cuda!();
+
+        use crate::derivatives::{compute_derivatives_cpu, GpuVoxelData};
+        use crate::voxel_grid::VoxelGrid;
+
+        // Create a minimal test case: points clustered at origin
+        let target_points: Vec<[f32; 3]> = (0..20)
+            .flat_map(|i| (0..20).map(move |j| [0.1 * i as f32, 0.1 * j as f32, 0.0]))
+            .collect();
+        let resolution = 2.0;
+
+        let target_grid =
+            VoxelGrid::from_points(&target_points, resolution).expect("Failed to build voxel grid");
+        let gpu_voxel_data = GpuVoxelData::from_voxel_grid(&target_grid);
+
+        println!("Target grid has {} voxels", target_grid.len());
+
+        // Single source point near the voxel mean
+        let source_points = vec![[0.5, 0.5, 0.0]];
+
+        // Identity pose (no transformation)
+        let pose = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+
+        let gauss = crate::GaussianParams::new(resolution as f64, 0.55);
+        let gauss_d1 = gauss.d1 as f32;
+        let gauss_d2 = gauss.d2 as f32;
+
+        println!("Gaussian params: d1={:.4}, d2={:.4}", gauss.d1, gauss.d2);
+
+        // CPU
+        let cpu_result = compute_derivatives_cpu(&source_points, &target_grid, &pose, &gauss, true);
+
+        // GPU
+        let runtime = GpuRuntime::new().expect("Failed to create GPU runtime");
+        let gpu_result = runtime
+            .compute_derivatives(
+                &source_points,
+                &gpu_voxel_data,
+                &pose,
+                gauss_d1,
+                gauss_d2,
+                resolution,
+            )
+            .expect("GPU derivatives failed");
+
+        println!("\n=== Single Point Test ===");
+        println!(
+            "CPU score: {:.6}, GPU score: {:.6}",
+            cpu_result.score, gpu_result.score
+        );
+        println!(
+            "CPU correspondences: {}, GPU correspondences: {}",
+            cpu_result.num_correspondences, gpu_result.num_correspondences
+        );
+
+        println!("\nGradient comparison:");
+        for i in 0..6 {
+            println!(
+                "  g[{i}]: CPU={:12.6}, GPU={:12.6}",
+                cpu_result.gradient[i], gpu_result.gradient[i]
+            );
+        }
+
+        println!("\nHessian diagonal:");
+        for i in 0..6 {
+            let cpu_h = cpu_result.hessian[(i, i)];
+            let gpu_h = gpu_result.hessian[i][i];
+            println!("  h[{i},{i}]: CPU={:12.4}, GPU={:12.4}", cpu_h, gpu_h);
+        }
+
+        // In this simple case, values should match closely
+        for i in 0..6 {
+            let cpu_h = cpu_result.hessian[(i, i)];
+            let gpu_h = gpu_result.hessian[i][i];
+            if cpu_h.abs() > 0.1 && gpu_h.abs() > 0.1 {
+                assert!(
+                    (cpu_h * gpu_h) > 0.0,
+                    "Hessian diagonal sign mismatch at [{i},{i}]: CPU={cpu_h:.4}, GPU={gpu_h:.4}"
+                );
+            }
+        }
+    }
 }
