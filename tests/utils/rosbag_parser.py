@@ -100,8 +100,11 @@ def parse_poses(bag_path: Union[str, Path]) -> List[TimestampedPose]:
         for conn, timestamp, rawdata in reader.messages():
             if conn.topic == "/localization/pose_estimator/pose":
                 msg = _deserialize(rawdata, conn.msgtype)
+                # Use message header timestamp (sim time) instead of bag timestamp (wall clock)
+                # This ensures alignment works across runs on different days
+                header_ts = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
                 poses.append(TimestampedPose(
-                    timestamp_ns=timestamp,
+                    timestamp_ns=header_ts,
                     x=msg.pose.position.x,
                     y=msg.pose.position.y,
                     z=msg.pose.position.z,
