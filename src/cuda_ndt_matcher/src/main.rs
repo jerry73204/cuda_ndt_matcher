@@ -25,9 +25,10 @@ use rclrs::{
     SubscriptionOptions,
 };
 use sensor_msgs::msg::PointCloud2;
+use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use std_msgs::msg::Header;
@@ -137,6 +138,12 @@ impl NdtScanMatcherNode {
         let latest_sensor_points: Arc<ArcSwap<Option<Vec<[f32; 3]>>>> =
             Arc::new(ArcSwap::from_pointee(None));
         let enabled = Arc::new(AtomicBool::new(true));
+        // Track processed timestamps to prevent duplicate processing.
+        // Use a HashSet since messages may arrive out of order.
+        let processed_timestamps = Arc::new(Mutex::new(HashSet::<u64>::with_capacity(1000)));
+
+        // Track consecutive skips due to low score (like Autoware's skipping_publish_num)
+        let skip_counter = Arc::new(AtomicI32::new(0));
 
         // Initialize map update module
         let map_module = Arc::new(MapUpdateModule::new(params.dynamic_map.clone()));
@@ -197,12 +204,14 @@ impl NdtScanMatcherNode {
             let latest_pose = Arc::clone(&latest_pose);
             let latest_sensor_points = Arc::clone(&latest_sensor_points);
             let enabled = Arc::clone(&enabled);
+            let processed_timestamps = Arc::clone(&processed_timestamps);
             let pose_pub = pose_pub.clone();
             let pose_cov_pub = pose_cov_pub.clone();
             let debug_pubs = debug_pubs.clone();
             let diagnostics = Arc::clone(&diagnostics);
             let params = Arc::clone(&params);
             let tf_handler = Arc::clone(&tf_handler);
+            let skip_counter = Arc::clone(&skip_counter);
 
             let mut opts = SubscriptionOptions::new("points_raw");
             opts.qos = sensor_qos;
@@ -217,6 +226,8 @@ impl NdtScanMatcherNode {
                     &latest_pose,
                     &latest_sensor_points,
                     &enabled,
+                    &processed_timestamps,
+                    &skip_counter,
                     &pose_pub,
                     &pose_cov_pub,
                     &debug_pubs,
@@ -367,6 +378,8 @@ impl NdtScanMatcherNode {
         latest_pose: &Arc<ArcSwap<Option<PoseWithCovarianceStamped>>>,
         latest_sensor_points: &Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
         enabled: &Arc<AtomicBool>,
+        processed_timestamps: &Arc<Mutex<HashSet<u64>>>,
+        skip_counter: &Arc<AtomicI32>,
         pose_pub: &Publisher<PoseStamped>,
         pose_cov_pub: &Publisher<PoseWithCovarianceStamped>,
         debug_pubs: &DebugPublishers,
@@ -374,6 +387,28 @@ impl NdtScanMatcherNode {
         params: &NdtParams,
         tf_handler: &Arc<tf_handler::TfHandler>,
     ) {
+        // Deduplicate: skip if we've already processed this exact timestamp
+        // This prevents the same pointcloud from being processed multiple times
+        // due to executor issues or duplicate message delivery
+        let timestamp_ns =
+            msg.header.stamp.sec as u64 * 1_000_000_000 + msg.header.stamp.nanosec as u64;
+
+        // Use HashSet to track all processed timestamps (handles out-of-order delivery)
+        {
+            let mut processed = processed_timestamps.lock();
+            if !processed.insert(timestamp_ns) {
+                // Already in set - this is a duplicate, skip it
+                return;
+            }
+            // Prune old timestamps to prevent unbounded growth
+            // Keep last 1000 timestamps (about 100 seconds at 10Hz)
+            if processed.len() > 1000 {
+                // Remove oldest entries (approximate - just clear and start fresh)
+                processed.clear();
+                processed.insert(timestamp_ns);
+            }
+        }
+
         let start_time = Instant::now();
 
         // Convert sensor points first - needed for align service even before we have initial pose
@@ -528,8 +563,7 @@ impl NdtScanMatcherNode {
 
         // Run NDT alignment (with optional debug output)
         let debug_enabled = std::env::var("NDT_DEBUG").is_ok();
-        let timestamp_ns =
-            msg.header.stamp.sec as u64 * 1_000_000_000 + msg.header.stamp.nanosec as u64;
+        // timestamp_ns is computed at the beginning of this function for deduplication
 
         // Get lock on active NDT manager (also checks for pending swap from background update)
         let mut manager = ndt_manager.lock();
@@ -577,59 +611,104 @@ impl NdtScanMatcherNode {
             log_warn!(NODE_NAME, "NDT did not converge, score={:.3}", result.score);
         }
 
-        // Estimate covariance based on configured mode
-        // For MULTI_NDT modes, we use parallel batch evaluation (Rayon)
-        // NOTE: We reuse the manager lock from the alignment - don't try to lock again!
-        let covariance_result = covariance::estimate_covariance_full(
-            &params.covariance,
-            &result.hessian,
-            &result.pose,
-            Some(&*manager), // Reuse existing lock to avoid deadlock
-            Some(&sensor_points),
-            Some(map),
-        );
+        // ---- Compute scores for filtering decision ----
+        // Like Autoware, we compute NVTL and transform_probability before deciding to publish
 
-        // Create output header
+        // Compute transform probability (fitness score converted to probability)
+        let transform_prob = (-result.score / 10.0).exp();
+
+        // Compute NVTL score
+        let nvtl_score = manager
+            .evaluate_nvtl(&sensor_points, map, &result.pose, 0.55)
+            .unwrap_or(0.0);
+
+        // Calculate execution time (needed for diagnostics regardless of publish decision)
+        let exe_time_ms = start_time.elapsed().as_secs_f32() * 1000.0;
+
+        // ---- Score threshold check (like Autoware's is_converged check) ----
+        // converged_param_type: 0 = transform_probability, 1 = NVTL
+        let (score_for_check, threshold, score_name) = if params.score.converged_param_type == 0 {
+            (
+                transform_prob,
+                params.score.converged_param_transform_probability,
+                "transform_probability",
+            )
+        } else {
+            (
+                nvtl_score,
+                params
+                    .score
+                    .converged_param_nearest_voxel_transformation_likelihood,
+                "NVTL",
+            )
+        };
+
+        // Track consecutive skips for diagnostics
+        let skipping_publish_num = if score_for_check < threshold {
+            let skips = skip_counter.fetch_add(1, Ordering::SeqCst) + 1;
+            log_warn!(
+                NODE_NAME,
+                "Score below threshold: {score_name}={score_for_check:.3} < {threshold:.3}, skip_count={skips}"
+            );
+            skips
+        } else {
+            skip_counter.store(0, Ordering::SeqCst);
+            0
+        };
+
+        // Create output header (needed for debug publishers even if we skip pose publishing)
         let header = Header {
             stamp: msg.header.stamp.clone(),
             frame_id: params.frame.map_frame.clone(),
         };
 
-        // Publish PoseStamped
-        let pose_msg = PoseStamped {
-            header: header.clone(),
-            pose: result.pose.clone(),
-        };
-        if let Err(e) = pose_pub.publish(&pose_msg) {
-            log_error!(NODE_NAME, "Failed to publish pose: {e}");
-        }
+        // Only publish pose if score is above threshold
+        if score_for_check >= threshold {
+            // Estimate covariance based on configured mode
+            // For MULTI_NDT modes, we use parallel batch evaluation (Rayon)
+            // NOTE: We reuse the manager lock from the alignment - don't try to lock again!
+            let covariance_result = covariance::estimate_covariance_full(
+                &params.covariance,
+                &result.hessian,
+                &result.pose,
+                Some(&*manager), // Reuse existing lock to avoid deadlock
+                Some(&sensor_points),
+                Some(map),
+            );
 
-        // Publish PoseWithCovarianceStamped with estimated covariance
-        let pose_cov_msg = PoseWithCovarianceStamped {
-            header: header.clone(),
-            pose: PoseWithCovariance {
+            // Publish PoseStamped
+            let pose_msg = PoseStamped {
+                header: header.clone(),
                 pose: result.pose.clone(),
-                covariance: covariance_result.covariance,
-            },
-        };
-        if let Err(e) = pose_cov_pub.publish(&pose_cov_msg) {
-            log_error!(NODE_NAME, "Failed to publish pose with covariance: {e}");
+            };
+            if let Err(e) = pose_pub.publish(&pose_msg) {
+                log_error!(NODE_NAME, "Failed to publish pose: {e}");
+            }
+
+            // Publish PoseWithCovarianceStamped with estimated covariance
+            let pose_cov_msg = PoseWithCovarianceStamped {
+                header: header.clone(),
+                pose: PoseWithCovariance {
+                    pose: result.pose.clone(),
+                    covariance: covariance_result.covariance,
+                },
+            };
+            if let Err(e) = pose_cov_pub.publish(&pose_cov_msg) {
+                log_error!(NODE_NAME, "Failed to publish pose with covariance: {e}");
+            }
+
+            // Publish TF transform (map -> ndt_base_link)
+            // This matches Autoware's publish_tf() behavior
+            Self::publish_tf(
+                &debug_pubs.tf_pub,
+                &msg.header.stamp,
+                &result.pose,
+                &params.frame.map_frame,
+                &params.frame.ndt_base_frame,
+            );
         }
 
-        // Publish TF transform (map -> ndt_base_link)
-        // This matches Autoware's publish_tf() behavior
-        Self::publish_tf(
-            &debug_pubs.tf_pub,
-            &msg.header.stamp,
-            &result.pose,
-            &params.frame.map_frame,
-            &params.frame.ndt_base_frame,
-        );
-
-        // ---- Debug Publishers ----
-
-        // Calculate execution time
-        let exe_time_ms = start_time.elapsed().as_secs_f32() * 1000.0;
+        // ---- Debug Publishers (always publish for monitoring) ----
 
         // Publish execution time
         let exe_time_msg = Float32Stamped {
@@ -652,8 +731,7 @@ impl NdtScanMatcherNode {
         };
         let _ = debug_pubs.oscillation_count_pub.publish(&oscillation_msg);
 
-        // Publish transform probability (fitness score converted to probability)
-        let transform_prob = (-result.score / 10.0).exp();
+        // Publish transform probability
         let transform_prob_msg = Float32Stamped {
             stamp: msg.header.stamp.clone(),
             data: transform_prob as f32,
@@ -662,10 +740,7 @@ impl NdtScanMatcherNode {
             .transform_probability_pub
             .publish(&transform_prob_msg);
 
-        // Compute and publish NVTL score
-        let nvtl_score = manager
-            .evaluate_nvtl(&sensor_points, map, &result.pose, 0.55)
-            .unwrap_or(0.0);
+        // Publish NVTL score
         let nvtl_msg = Float32Stamped {
             stamp: msg.header.stamp.clone(),
             data: nvtl_score as f32,
@@ -750,7 +825,7 @@ impl NdtScanMatcherNode {
             nearest_voxel_transformation_likelihood: nvtl_score,
             distance_initial_to_result: distance,
             execution_time_ms: exe_time_ms as f64,
-            skipping_publish_num: 0,
+            skipping_publish_num,
         };
 
         {
