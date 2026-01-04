@@ -1,11 +1,13 @@
 <?xml version="1.0"?>
 <launch>
   <!-- NDT Replay Simulation
-       Based on Autoware's logging_simulator with minimal components for NDT testing.
+       Based on Autoware's autoware.launch.xml with minimal components for NDT testing.
 
-       For Autoware mode: Uses logging_simulator with standard NDT
-       For CUDA mode: Uses logging_simulator with pose_source=gyro_odom (no NDT),
-                      then launches our CUDA NDT separately
+       Both modes use autoware.launch.xml with launch_localization=false, then include
+       the localization stack separately to enable passing user_defined_initial_pose.
+
+       For Autoware mode: Uses tier4_localization_component with standard NDT
+       For CUDA mode: Uses cuda_localization with our CUDA NDT implementation
   -->
 
   <!-- Global parameters - must be set before any nodes are launched -->
@@ -28,8 +30,9 @@
   <!-- User-defined initial pose (for headless testing without RViz) -->
   <!-- Format: [x, y, z, qx, qy, qz, qw] in map frame -->
   <!-- Default values are for sample-rosbag at approximate starting position -->
+  <!-- Note: z=-3.3 matches the actual vehicle height in the sample rosbag -->
   <arg name="user_defined_initial_pose_enable" default="false"/>
-  <arg name="user_defined_initial_pose" default="[89571.0, 42301.0, 0.0, 0.0, 0.0, 0.28, 0.96]"/>
+  <arg name="user_defined_initial_pose" default="[89571.0, 42301.0, -3.3, 0.0, 0.0, 0.28, 0.96]"/>
 
   <!-- CUDA NDT parameter file -->
   <arg name="ndt_param_file" default="$(find-pkg-share cuda_ndt_matcher_launch)/config/ndt_scan_matcher.param.yaml"/>
@@ -38,43 +41,68 @@
   <let name="disabled_components" value="true"/>
 
   <!-- ========== Autoware Mode ========== -->
+  <!-- Calls autoware.launch.xml with launch_localization=false, then includes
+       localization separately to enable passing initial_pose -->
   <group unless="$(var use_cuda)">
-    <include file="$(find-pkg-share autoware_launch)/launch/logging_simulator.launch.xml">
+    <!-- Autoware stack without localization (we provide our own with initial_pose) -->
+    <include file="$(find-pkg-share autoware_launch)/launch/autoware.launch.xml">
       <arg name="map_path" value="$(var map_path)"/>
       <arg name="vehicle_model" value="$(var vehicle_model)"/>
       <arg name="sensor_model" value="$(var sensor_model)"/>
       <arg name="lanelet2_map_file" value="$(var lanelet2_map_file)"/>
       <arg name="pointcloud_map_file" value="$(var pointcloud_map_file)"/>
-      <arg name="map" value="true"/>
-      <arg name="sensing" value="true"/>
-      <arg name="localization" value="true"/>
-      <arg name="vehicle" value="true"/>
-      <arg name="system" value="false"/>
-      <arg name="perception" value="false"/>
-      <arg name="planning" value="false"/>
-      <arg name="control" value="false"/>
+      <!-- Modules to launch -->
+      <arg name="launch_map" value="true"/>
+      <arg name="launch_sensing" value="true"/>
+      <arg name="launch_localization" value="false"/>
+      <arg name="launch_vehicle" value="true"/>
+      <arg name="launch_system" value="false"/>
+      <arg name="launch_perception" value="false"/>
+      <arg name="launch_planning" value="false"/>
+      <arg name="launch_control" value="false"/>
+      <arg name="launch_api" value="false"/>
+      <!-- Logging simulation mode settings -->
+      <arg name="use_sim_time" value="true"/>
+      <arg name="system_run_mode" value="logging_simulation"/>
+      <arg name="launch_sensing_driver" value="false"/>
+      <!-- RViz -->
       <arg name="rviz" value="$(var rviz)"/>
+    </include>
+
+    <!-- Autoware localization stack with initial_pose support -->
+    <!-- When user_defined_initial_pose_enable is true, pass the initial pose; otherwise pass empty list -->
+    <let name="autoware_initial_pose" value="$(var user_defined_initial_pose)" if="$(var user_defined_initial_pose_enable)"/>
+    <let name="autoware_initial_pose" value="[]" unless="$(var user_defined_initial_pose_enable)"/>
+    <include file="$(find-pkg-share autoware_launch)/launch/components/tier4_localization_component.launch.xml">
+      <arg name="initial_pose" value="$(var autoware_initial_pose)"/>
     </include>
   </group>
 
   <!-- ========== CUDA Mode ========== -->
-  <!-- Uses logging_simulator WITHOUT localization, then includes our CUDA localization stack -->
+  <!-- Calls autoware.launch.xml with launch_localization=false, then includes our CUDA localization stack -->
   <group if="$(var use_cuda)">
-    <!-- Autoware stack without localization (we provide our own) -->
-    <include file="$(find-pkg-share autoware_launch)/launch/logging_simulator.launch.xml">
+    <!-- Autoware stack without localization (we provide our own CUDA implementation) -->
+    <include file="$(find-pkg-share autoware_launch)/launch/autoware.launch.xml">
       <arg name="map_path" value="$(var map_path)"/>
       <arg name="vehicle_model" value="$(var vehicle_model)"/>
       <arg name="sensor_model" value="$(var sensor_model)"/>
       <arg name="lanelet2_map_file" value="$(var lanelet2_map_file)"/>
       <arg name="pointcloud_map_file" value="$(var pointcloud_map_file)"/>
-      <arg name="map" value="true"/>
-      <arg name="sensing" value="true"/>
-      <arg name="localization" value="false"/>
-      <arg name="vehicle" value="true"/>
-      <arg name="system" value="false"/>
-      <arg name="perception" value="false"/>
-      <arg name="planning" value="false"/>
-      <arg name="control" value="false"/>
+      <!-- Modules to launch -->
+      <arg name="launch_map" value="true"/>
+      <arg name="launch_sensing" value="true"/>
+      <arg name="launch_localization" value="false"/>
+      <arg name="launch_vehicle" value="true"/>
+      <arg name="launch_system" value="false"/>
+      <arg name="launch_perception" value="false"/>
+      <arg name="launch_planning" value="false"/>
+      <arg name="launch_control" value="false"/>
+      <arg name="launch_api" value="false"/>
+      <!-- Logging simulation mode settings -->
+      <arg name="use_sim_time" value="true"/>
+      <arg name="system_run_mode" value="logging_simulation"/>
+      <arg name="launch_sensing_driver" value="false"/>
+      <!-- RViz -->
       <arg name="rviz" value="$(var rviz)"/>
     </include>
 
