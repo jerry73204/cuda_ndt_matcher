@@ -24,13 +24,31 @@ The project uses a pure-Rust NDT implementation built with [CubeCL](https://gith
 | Phase 3 | Newton Optimization | ✅ Complete |
 | Phase 4 | Scoring & NVTL | ✅ Complete |
 | Phase 5 | Integration | ✅ Complete |
-| Phase 6 | Validation | 🔲 Not started |
+| Phase 6 | Validation | ⚠️ In Progress |
 | Phase 7.1 | TF Broadcast | ✅ Complete |
 | Phase 7.2 | Dynamic Map Loading | ✅ Complete |
 | Phase 7.3 | GNSS Regularization | ✅ Complete |
 | Phase 7.4 | Multi-NDT Covariance | ✅ Complete |
 | Phase 7.5 | Diagnostics Interface | ✅ Complete |
 | Phase 7.6 | Oscillation Detection | ✅ Complete |
+| Phase 9.1 | GPU Infrastructure (CubeCL) | ✅ Complete |
+| Phase 9.2 | GPU Voxel Grid | ✅ Complete |
+| Phase 9.3 | GPU Derivatives (Hessian) | ✅ Complete |
+
+### Validation Status
+
+Integration tests run but convergence is poor compared to Autoware baseline:
+- **311 unit tests pass** (45 cuda_ndt_matcher + 266 ndt_cuda)
+- **Trajectory RMSE: ~12m** (target: <0.3m)
+- **Convergence rate: ~54%** (target: >80%)
+
+**Derivative formulas verified correct:**
+- Jacobian formulas (∂T/∂pose) match `AngularDerivatives` reference exactly
+- Point Hessian formulas (∂²T/∂pose²) match `AngularDerivatives` reference exactly
+- CPU vs GPU derivative computation matches (score, gradient, Hessian diagonal signs)
+- All 15 h_ang terms (a2, a3, b2, b3, c2, c3, d1-d3, e1-e3, f1-f3) verified
+
+Root cause investigation ongoing. KD-tree radius search infrastructure is complete (matching Autoware's algorithm), but numerical convergence differs.
 
 ### Core Components
 
@@ -264,6 +282,29 @@ The `ndt_cuda` crate provides a pure-Rust NDT implementation using [CubeCL](http
 - **Multi-platform**: Same code for CUDA, ROCm, WebGPU
 - **Type-safe**: Rust's guarantees for GPU code
 
+### CubeCL Limitations
+
+When writing GPU kernels, be aware of these CubeCL constraints:
+
+1. **No `as usize` for array indexing**: Dynamic array indexing with `arr[i as usize]` is not supported. Use fully unrolled loops with explicit indices instead.
+
+2. **Parameter count limit**: Kernels with >12 parameters hit Rust's tuple trait limits (`Eq`, `Hash`, `Debug` not implemented for large tuples). Workaround: combine multiple buffers into single arrays.
+
+3. **No dynamic control flow in some cases**: Some operations require compile-time constants.
+
+Example of working around the indexing limitation:
+```rust
+// BAD: Dynamic indexing not supported
+for i in 0..6 {
+    result += arr[i as usize];
+}
+
+// GOOD: Fully unrolled
+let v0 = arr[0]; let v1 = arr[1]; let v2 = arr[2];
+let v3 = arr[3]; let v4 = arr[4]; let v5 = arr[5];
+result = v0 + v1 + v2 + v3 + v4 + v5;
+```
+
 ### API
 
 ```rust
@@ -288,7 +329,7 @@ let result = matcher.align(&source_points, initial_pose)?;
 The NDT algorithm we're implementing:
 
 1. **Voxelization**: Build Gaussian voxel grid from map (mean + covariance per voxel)
-2. **Correspondence**: Find voxels containing each transformed source point
+2. **Correspondence**: Find voxels using KD-tree radius search on centroids (matches Autoware's `radiusSearch`)
 3. **Derivatives**: Compute gradient (6x1) and Hessian (6x6) using:
    - Score: `p(x) = -d1 * exp(-d2/2 * (x-μ)ᵀΣ⁻¹(x-μ))` (Eq. 6.9)
    - Gradient: Eq. 6.12
@@ -297,6 +338,40 @@ The NDT algorithm we're implementing:
 5. **Iterate**: Until convergence (typically 5-10 iterations)
 
 See `docs/cubecl-ndt-roadmap.md` for full implementation details.
+
+### Derivative Verification Tests
+
+The derivative computations are verified against the reference `AngularDerivatives` implementation:
+
+- `test_jacobians_match_angular_derivatives` - Verifies all 8 Jacobian rotation terms
+- `test_point_hessians_match_angular_derivatives` - Verifies all 15 point Hessian terms
+- `test_cpu_vs_gpu_derivatives` - End-to-end CPU/GPU comparison
+- `test_cpu_vs_gpu_single_point_single_voxel` - Simplified single-point verification
+
+Run with: `cargo --config build/ros2_cargo_config.toml test -p ndt_cuda --lib "test_jacobians\|test_hessians\|test_cpu_vs_gpu" -- --nocapture`
+
+### Voxel Search Infrastructure
+
+The `VoxelSearch` struct (in `voxel_grid/search.rs`) provides KD-tree based radius search matching Autoware's implementation:
+
+```rust
+// Build KD-tree from voxel centroids (using kiddo crate)
+let search = VoxelSearch::from_voxels(&voxels);
+
+// Find all voxels within radius (matches Autoware's radiusSearch)
+let nearby_indices = search.within(&query_point, resolution);
+
+// Accumulate contributions from ALL nearby voxels
+for idx in nearby_indices {
+    let voxel = &voxels[idx];
+    // Compute derivatives...
+}
+```
+
+Key details:
+- Uses `kiddo` crate for high-performance KD-tree
+- Search radius = voxel resolution (2.0m default), matching Autoware
+- Returns multiple voxels per query point for smoother gradients
 
 ## Development Notes
 
@@ -349,6 +424,12 @@ let quaternion = UnitQuaternion::from_rotation_matrix(&rotation);
 - Use `colcon build --base-paths src` to avoid scanning external/ and target/ directories
 - Add COLCON_IGNORE to directories containing unwanted CMakeLists.txt
 
+### rclrs Limitations
+
+The Rust ROS 2 library (`rclrs`) has some limitations:
+
+- **Topic remapping from launch files doesn't work**: Publishers must use the final topic name directly, not rely on `<remap from="X" to="Y"/>` in launch XML. For example, use `node.create_publisher("pose")` not `node.create_publisher("ndt_pose")` with a remap.
+
 ### Running Cargo Commands Directly
 
 When running cargo commands outside of `just` recipes (e.g., for testing a specific test), pass the ROS 2 cargo config:
@@ -374,8 +455,10 @@ This config file is generated by colcon and provides the correct paths for ROS 2
 - Example: Use `Bash(command: "ros2 service call ...", timeout: 60000)` instead of `Bash(command: "timeout 60 ros2 service call ...")`
 - For long-running background processes (like `just run-cuda`), use the Bash tool with `run_in_background: true` and set an appropriate `timeout`
 - Example: `Bash(command: "just run-cuda", timeout: 300000, run_in_background: true)`
-- Create temporary files in `$project/tmp/` directory instead of `/tmp/`
+- Create temporary scripts and files in `$project/tmp/` directory instead of `/tmp/` or using heredocs
 - Create files using Write/Edit tools instead of `cat << EOF` heredoc syntax in Bash
+- **Do NOT modify files in `external/autoware_repo`** - this is a symlink to the main Autoware workspace
+- If you need to modify Autoware components, copy them to `src/` first (e.g., `src/autoware_ndt_scan_matcher/`)
 
 ## NDT Topic Mappings
 
