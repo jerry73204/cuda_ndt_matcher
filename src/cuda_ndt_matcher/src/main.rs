@@ -8,6 +8,7 @@ mod nvtl;
 mod params;
 mod particle;
 mod pointcloud;
+mod pose_buffer;
 mod tf_handler;
 mod tpe;
 
@@ -19,6 +20,7 @@ use geometry_msgs::msg::{Point, Pose, PoseStamped, PoseWithCovariance, PoseWithC
 use map_module::{DynamicMapLoader, MapUpdateModule};
 use params::NdtParams;
 use parking_lot::Mutex;
+use pose_buffer::SmartPoseBuffer;
 use rclrs::{
     log_debug, log_error, log_info, log_warn, Context, CreateBasicExecutor, Node, Publisher,
     QoSHistoryPolicy, QoSProfile, RclrsErrorFilter, Service, SpinOptions, Subscription,
@@ -103,7 +105,7 @@ struct NdtScanMatcherNode {
     map_module: Arc<MapUpdateModule>,
     map_loader: Arc<DynamicMapLoader>,
     map_points: Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
-    latest_pose: Arc<ArcSwap<Option<PoseWithCovarianceStamped>>>,
+    pose_buffer: Arc<SmartPoseBuffer>,
     latest_sensor_points: Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
     enabled: Arc<AtomicBool>,
     params: Arc<NdtParams>,
@@ -133,8 +135,10 @@ impl NdtScanMatcherNode {
 
         // Shared state
         let map_points: Arc<ArcSwap<Option<Vec<[f32; 3]>>>> = Arc::new(ArcSwap::from_pointee(None));
-        let latest_pose: Arc<ArcSwap<Option<PoseWithCovarianceStamped>>> =
-            Arc::new(ArcSwap::from_pointee(None));
+        let pose_buffer = Arc::new(SmartPoseBuffer::new(
+            params.validation.initial_pose_timeout_sec,
+            params.validation.initial_pose_distance_tolerance_m,
+        ));
         let latest_sensor_points: Arc<ArcSwap<Option<Vec<[f32; 3]>>>> =
             Arc::new(ArcSwap::from_pointee(None));
         let enabled = Arc::new(AtomicBool::new(true));
@@ -201,7 +205,7 @@ impl NdtScanMatcherNode {
             let map_module = Arc::clone(&map_module);
             let map_loader = Arc::clone(&map_loader);
             let map_points = Arc::clone(&map_points);
-            let latest_pose = Arc::clone(&latest_pose);
+            let pose_buffer = Arc::clone(&pose_buffer);
             let latest_sensor_points = Arc::clone(&latest_sensor_points);
             let enabled = Arc::clone(&enabled);
             let processed_timestamps = Arc::clone(&processed_timestamps);
@@ -223,7 +227,7 @@ impl NdtScanMatcherNode {
                     &map_module,
                     &map_loader,
                     &map_points,
-                    &latest_pose,
+                    &pose_buffer,
                     &latest_sensor_points,
                     &enabled,
                     &processed_timestamps,
@@ -238,15 +242,15 @@ impl NdtScanMatcherNode {
             })?
         };
 
-        // Initial pose subscription
+        // Initial pose subscription - pushes to pose buffer for interpolation
         let initial_pose_sub = {
-            let latest_pose = Arc::clone(&latest_pose);
+            let pose_buffer = Arc::clone(&pose_buffer);
 
             let mut opts = SubscriptionOptions::new("ekf_pose_with_covariance");
             opts.qos = sensor_qos;
 
             node.create_subscription(opts, move |msg: PoseWithCovarianceStamped| {
-                latest_pose.store(Arc::new(Some(msg)));
+                pose_buffer.push_back(msg);
             })?
         };
 
@@ -332,12 +336,12 @@ impl NdtScanMatcherNode {
             let map_module = Arc::clone(&map_module);
             let map_points = Arc::clone(&map_points);
             let ndt_manager = Arc::clone(&ndt_manager);
-            let latest_pose = Arc::clone(&latest_pose);
+            let pose_buffer = Arc::clone(&pose_buffer);
 
             node.create_service::<Trigger, _>(
                 "map_update_srv",
                 move |_req: TriggerRequest, _info: rclrs::ServiceInfo| {
-                    Self::on_map_update(&map_module, &map_points, &ndt_manager, &latest_pose)
+                    Self::on_map_update(&map_module, &map_points, &ndt_manager, &pose_buffer)
                 },
             )?
         };
@@ -360,7 +364,7 @@ impl NdtScanMatcherNode {
             map_module,
             map_loader,
             map_points,
-            latest_pose,
+            pose_buffer,
             latest_sensor_points,
             enabled,
             params,
@@ -375,7 +379,7 @@ impl NdtScanMatcherNode {
         map_module: &Arc<MapUpdateModule>,
         map_loader: &Arc<DynamicMapLoader>,
         map_points: &Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
-        latest_pose: &Arc<ArcSwap<Option<PoseWithCovarianceStamped>>>,
+        pose_buffer: &Arc<SmartPoseBuffer>,
         latest_sensor_points: &Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
         enabled: &Arc<AtomicBool>,
         processed_timestamps: &Arc<Mutex<HashSet<u64>>>,
@@ -494,15 +498,34 @@ impl NdtScanMatcherNode {
             return;
         }
 
-        // Get initial pose (needed for map update check and NDT alignment)
-        let initial_pose = latest_pose.load();
-        let initial_pose = match initial_pose.as_ref() {
-            Some(p) => p,
+        // Get initial pose via interpolation to match sensor timestamp
+        // This implements Autoware's SmartPoseBuffer behavior for better timestamp alignment
+        let sensor_time_ns =
+            msg.header.stamp.sec as i64 * 1_000_000_000 + msg.header.stamp.nanosec as i64;
+
+        let interpolate_result = pose_buffer.interpolate(sensor_time_ns);
+        let initial_pose = match &interpolate_result {
+            Some(result) => &result.interpolated_pose,
             None => {
-                log_warn!(NODE_NAME, "No initial pose, skipping alignment");
+                // Interpolation failed - need at least 2 poses, or validation failed
+                if pose_buffer.len() < 2 {
+                    log_debug!(
+                        NODE_NAME,
+                        "Waiting for pose buffer to fill (size={}, need 2)",
+                        pose_buffer.len()
+                    );
+                } else {
+                    log_warn!(
+                        NODE_NAME,
+                        "Pose interpolation failed (validation error or timestamp mismatch)"
+                    );
+                }
                 return;
             }
         };
+
+        // Pop old poses to prevent unbounded buffer growth
+        pose_buffer.pop_old(sensor_time_ns);
 
         // Check if map needs updating based on current position
         // This implements Autoware's dynamic map loading behavior
@@ -1191,11 +1214,10 @@ impl NdtScanMatcherNode {
         map_module: &Arc<MapUpdateModule>,
         map_points: &Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
         ndt_manager: &Arc<DualNdtManager>,
-        latest_pose: &Arc<ArcSwap<Option<PoseWithCovarianceStamped>>>,
+        pose_buffer: &Arc<SmartPoseBuffer>,
     ) -> TriggerResponse {
-        // Get current position
-        let pose = latest_pose.load();
-        let position = match pose.as_ref() {
+        // Get current position from latest pose in buffer
+        let position = match pose_buffer.latest() {
             Some(p) => Point {
                 x: p.pose.pose.position.x,
                 y: p.pose.pose.position.y,
