@@ -15,7 +15,7 @@ NDT (Normal Distributions Transform) scan matching is used for position estimati
 
 ### CubeCL NDT Implementation
 
-The project uses a pure-Rust NDT implementation built with [CubeCL](https://github.com/tracel-ai/cubecl). See `docs/cubecl-ndt-roadmap.md` for implementation details.
+The project uses a pure-Rust NDT implementation built with [CubeCL](https://github.com/tracel-ai/cubecl). See `docs/roadmap/` for implementation details.
 
 | Phase | Component | Status |
 |-------|-----------|--------|
@@ -34,13 +34,36 @@ The project uses a pure-Rust NDT implementation built with [CubeCL](https://gith
 | Phase 9.1 | GPU Infrastructure (CubeCL) | ✅ Complete |
 | Phase 9.2 | GPU Voxel Grid | ✅ Complete |
 | Phase 9.3 | GPU Derivatives (Hessian) | ✅ Complete |
+| Phase 11 | GPU Zero-Copy Voxel Pipeline | ✅ Complete |
+| Phase 12 | GPU Derivative Pipeline | ✅ Complete |
 
 ### Validation Status
 
-Integration tests run but convergence is poor compared to Autoware baseline:
-- **311 unit tests pass** (45 cuda_ndt_matcher + 266 ndt_cuda)
-- **Trajectory RMSE: ~12m** (target: <0.3m)
-- **Convergence rate: ~54%** (target: >80%)
+**Core algorithm verified correct** - When map coverage is good, our scores match Autoware's:
+- Score per point: 4-5 (matching Autoware's 5.2)
+- Convergence: 95%+ in good map coverage areas
+- Multi-voxel radius search: ~2.4 voxels/point
+
+**Known issue: Voxels-per-point ratio**
+
+With real rosbag data, we observe lower voxels-per-point than Autoware:
+
+| Metric | CUDA | Autoware | Notes |
+|--------|------|----------|-------|
+| Voxels per point | ~1.2 | ~3.4 | 2.8x difference |
+| Hessian magnitude | ~1e5 | ~1e7 | 100x smaller |
+| Hessian eigenvalues | Mixed | All negative | Causes direction reversal |
+| Convergence | 30 iters (max) | 3 iters | Non-convergent |
+
+Root cause under investigation - likely related to:
+- Different source point counts (756 vs 1459)
+- Possible map loading or filtering differences
+
+Use `NDT_DEBUG_VPP=1` to diagnose voxel-per-point distribution (see Debugging section).
+
+**Remaining issues:**
+- Lower convergence in sparse map areas or during map transitions
+- Need better filtering to skip NDT when conditions are poor
 
 **Derivative formulas verified correct:**
 - Jacobian formulas (∂T/∂pose) match `AngularDerivatives` reference exactly
@@ -48,7 +71,10 @@ Integration tests run but convergence is poor compared to Autoware baseline:
 - CPU vs GPU derivative computation matches (score, gradient, Hessian diagonal signs)
 - All 15 h_ang terms (a2, a3, b2, b3, c2, c3, d1-d3, e1-e3, f1-f3) verified
 
-Root cause investigation ongoing. KD-tree radius search infrastructure is complete (matching Autoware's algorithm), but numerical convergence differs.
+**Bug fixes applied:**
+- Fixed duplicate message processing (was ~17x duplicates due to out-of-order delivery)
+- Fixed `use_line_search` default (was true, should be false like Autoware)
+- Fixed Hessian regularization (was 1e-6, should be 0 like Autoware)
 
 ### Core Components
 
@@ -178,10 +204,13 @@ cuda_ndt_matcher/
 ├── docs/                        # Design documentation
 │   ├── overview.md              # Project goals and strategy
 │   ├── architecture.md          # System architecture, ROS interface
-│   ├── integration.md           # ROS2 integration details
-│   ├── roadmap.md               # Phased work items with tests
+│   ├── autoware-comparison.md   # Feature comparison with Autoware NDT
 │   ├── rosbag-replay-guide.md   # Guide for custom rosbag replay simulation
-│   └── cubecl-ndt-roadmap.md    # CubeCL NDT implementation plan
+│   └── roadmap/                 # Implementation roadmap
+│       ├── README.md            # Status summary
+│       ├── phase-1-voxel-grid.md
+│       ├── phase-11-gpu-zero-copy-pipeline.md
+│       └── phase-12-gpu-derivative-pipeline.md
 ├── data/                        # Test data (downloaded via just download-data)
 │   ├── sample-map-rosbag/       # PCD map and lanelet2_map.osm
 │   └── sample-rosbag/           # Sample rosbag for replay simulation
@@ -195,9 +224,21 @@ cuda_ndt_matcher/
 │   │   ├── src/
 │   │   │   ├── lib.rs
 │   │   │   ├── voxel_grid/      # Voxelization kernels
-│   │   │   ├── derivatives/     # Jacobian/Hessian computation
+│   │   │   ├── derivatives/     # Jacobian/Hessian computation + GPU pipeline
 │   │   │   ├── optimization/    # Newton solver
 │   │   │   └── scoring/         # Transform probability, NVTL
+│   │   └── Cargo.toml
+│   ├── cuda_ffi/                # CUDA FFI bindings (CUB library)
+│   │   ├── csrc/                # CUDA source files
+│   │   │   ├── radix_sort.cu    # CUB DeviceRadixSort wrapper
+│   │   │   ├── segment_detect.cu # CUB DeviceScan + DeviceSelect
+│   │   │   └── segmented_reduce.cu # CUB DeviceSegmentedReduce
+│   │   ├── src/
+│   │   │   ├── lib.rs
+│   │   │   ├── radix_sort.rs    # Rust bindings for radix sort
+│   │   │   ├── segment_detect.rs # Rust bindings for segment detection
+│   │   │   └── segmented_reduce.rs # Rust bindings for segmented reduce
+│   │   ├── build.rs             # nvcc compilation
 │   │   └── Cargo.toml
 │   ├── cuda_ndt_matcher/        # Main ROS package (Rust)
 │   │   ├── src/
@@ -274,13 +315,14 @@ The Autoware `ndt_scan_matcher` at `external/autoware_core/localization/autoware
 
 ## ndt_cuda Library
 
-The `ndt_cuda` crate provides a pure-Rust NDT implementation using [CubeCL](https://github.com/tracel-ai/cubecl) for GPU compute.
+The `ndt_cuda` crate provides a pure-Rust NDT implementation using [CubeCL](https://github.com/tracel-ai/cubecl) for GPU compute, with CUB library integration via `cuda_ffi` for high-performance primitives.
 
-### Why CubeCL?
+### Why CubeCL + CUB?
 
-- **Pure Rust**: No C++/CUDA FFI complexity
-- **Multi-platform**: Same code for CUDA, ROCm, WebGPU
-- **Type-safe**: Rust's guarantees for GPU code
+- **Pure Rust kernels**: CubeCL for type-safe GPU kernels (transforms, derivatives, scoring)
+- **Multi-platform**: Same CubeCL code for CUDA, ROCm, WebGPU
+- **High-performance primitives**: CUB via `cuda_ffi` for radix sort, segment detection, segmented reduce
+- **Zero-copy interop**: CubeCL handles ↔ CUB device pointers without CPU roundtrip
 
 ### CubeCL Limitations
 
@@ -337,7 +379,7 @@ The NDT algorithm we're implementing:
 4. **Newton step**: Solve `Δp = -H⁻¹g` (6x6 linear system)
 5. **Iterate**: Until convergence (typically 5-10 iterations)
 
-See `docs/cubecl-ndt-roadmap.md` for full implementation details.
+See `docs/roadmap/` for full implementation details.
 
 ### Derivative Verification Tests
 
@@ -372,6 +414,36 @@ Key details:
 - Uses `kiddo` crate for high-performance KD-tree
 - Search radius = voxel resolution (2.0m default), matching Autoware
 - Returns multiple voxels per query point for smoother gradients
+
+### GPU Derivative Pipeline
+
+The `GpuDerivativePipeline` (in `derivatives/pipeline.rs`) provides zero-copy GPU acceleration:
+
+```rust
+// Create pipeline with capacity
+let mut pipeline = GpuDerivativePipeline::new(max_points, max_voxels)?;
+
+// Upload once per alignment
+pipeline.upload_alignment_data(&source_points, &voxel_data, gauss_d1, gauss_d2, radius)?;
+
+// Per iteration: only upload pose (16 floats), download results (43 floats)
+let result = pipeline.compute_iteration_gpu_reduce(&pose)?;
+// result.score, result.gradient, result.hessian, result.num_correspondences
+```
+
+Key features:
+- **Zero-copy**: Data stays on GPU between kernel launches
+- **Minimal transfers**: Upload 16 floats (pose), download 43 floats (score + gradient + Hessian)
+- **CUB reduction**: Uses DeviceSegmentedReduce for GPU-side summation
+- **Column-major output**: Kernels output gradients/Hessians in column-major for efficient reduction
+
+Pipeline stages per iteration:
+1. Transform points (GPU kernel)
+2. Radius search (GPU kernel, brute-force O(N×V))
+3. Compute scores (GPU kernel)
+4. Compute gradients (GPU kernel, column-major output)
+5. Compute Hessians (GPU kernel, column-major output)
+6. Reduce (CUB DeviceSegmentedReduce, 43 segments → 43 floats)
 
 ## Development Notes
 
@@ -448,6 +520,85 @@ This config file is generated by colcon and provides the correct paths for ROS 2
 - Prefer `Arc<ArcSwap<T>>` over `Arc<Mutex<T>>` for read-heavy concurrent access
 - Clone variables in a local scope before moving into closures
 - Use type aliases for ROS service types: `type SetBoolRequest = std_srvs::srv::SetBool_Request;`
+
+### Logging
+
+Use different logging libraries depending on the crate:
+
+| Crate | Library | Reason |
+|-------|---------|--------|
+| `cuda_ndt_matcher` | `rclrs` (`log_debug!`, `log_info!`, `log_warn!`, `log_error!`) | ROS node with rosout integration |
+| `ndt_cuda` | `tracing` (`debug!`, `info!`, `warn!`, `error!`) | ROS-independent library with 299 unit tests |
+
+**Why separate?** The `ndt_cuda` crate is a standalone algorithm library that doesn't depend on ROS. Its unit tests run without ROS infrastructure. Merging into `cuda_ndt_matcher` would require ROS setup for all tests or complex conditional compilation.
+
+```rust
+// In cuda_ndt_matcher (ROS node)
+use rclrs::log_info;
+log_info!(NODE_NAME, "Message: {}", value);
+
+// In ndt_cuda (library)
+use tracing::info;
+info!(field = value, "Message");
+```
+
+## Debugging
+
+### NDT Debug Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `NDT_DEBUG=1` | Enable per-alignment debug output to JSONL file |
+| `NDT_DEBUG_FILE` | Output file path (default: `/tmp/ndt_cuda_debug.jsonl`) |
+| `NDT_DEBUG_VPP=1` | Log voxel-per-point distribution (debug builds only) |
+| `NDT_AUTOWARE_DEBUG=1` | Enable Autoware NDT debug output (requires patched Autoware) |
+| `NDT_AUTOWARE_DEBUG_FILE` | Autoware debug file (default: `/tmp/ndt_autoware_debug.jsonl`) |
+
+The `just run-cuda` and `just run-builtin` recipes automatically enable debug output.
+
+### Debug Output Format
+
+**NDT_DEBUG JSONL format:**
+```json
+{
+  "timestamp_ns": 1234567890,
+  "num_source_points": 756,
+  "iterations": [
+    {
+      "iteration": 0,
+      "score": 539.5,
+      "num_correspondences": 891,
+      "gradient": [...],
+      "hessian": [...],
+      "direction_reversed": true
+    }
+  ],
+  "convergence_status": "MaxIterations",
+  "final_score": 903.2
+}
+```
+
+**NDT_DEBUG_VPP output:**
+```
+[NDT] Target grid: 150000 points -> 12000 voxels (resolution=2.0)
+[NDT-VPP] 756 points: 0v=200, 1v=400, 2v=100, 3+v=56 | 891 corr (1.18 vpp)
+```
+
+### Comparing CUDA vs Autoware
+
+Use the Python scripts in `tmp/` to analyze debug output:
+
+```bash
+# Compare debug outputs
+python3 tmp/compare_debug.py
+
+# Analyze Hessian eigenvalues
+python3 tmp/analyze_hessian.py /tmp/ndt_cuda_debug.jsonl
+python3 tmp/analyze_hessian.py /tmp/ndt_autoware_debug.jsonl
+
+# Diagnose voxel-per-point distribution
+python3 tmp/diagnose_voxels.py
+```
 
 ## Claude Code Practices
 
