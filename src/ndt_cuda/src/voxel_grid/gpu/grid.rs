@@ -19,7 +19,7 @@
 
 use super::{
     compute_morton_codes_cpu, compute_voxel_statistics_cpu, detect_segments_cpu, radius_search_cpu,
-    radix_sort_by_key_cpu, RadiusSearchConfig,
+    radix_sort_by_key, RadiusSearchConfig,
 };
 
 /// GPU-accelerated voxel grid for NDT scan matching.
@@ -113,7 +113,7 @@ impl GpuVoxelGrid {
             .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
             .collect();
 
-        let sort_result = radix_sort_by_key_cpu(&codes, &indices);
+        let sort_result = radix_sort_by_key(&codes, &indices);
 
         let sorted_codes: Vec<u64> = sort_result
             .keys

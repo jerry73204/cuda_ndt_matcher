@@ -1,21 +1,14 @@
 //! GPU radix sort for Morton codes.
 //!
-//! Implements LSB (least-significant-bit) radix sort for 64-bit keys.
-//! Uses a 4-bit radix (16 buckets) for each pass, requiring 16 passes total.
+//! Provides GPU-accelerated radix sort using CUB DeviceRadixSort via cuda_ffi.
+//! Falls back to CPU implementation if GPU sort fails.
 //!
 //! # Algorithm
 //!
-//! For each 4-bit digit (LSB to MSB):
-//! 1. **Histogram**: Count occurrences of each digit value per block
-//! 2. **Scan**: Prefix sum on histograms to compute global offsets
-//! 3. **Scatter**: Move elements to their sorted positions
-//!
-//! This is a stable sort, preserving relative order of equal keys.
-//!
-//! # Current Status
-//!
-//! GPU kernels are defined but require CubeCL type system fixes.
-//! CPU reference implementations are provided and tested.
+//! Uses NVIDIA CUB's DeviceRadixSort which implements an efficient
+//! parallel radix sort optimized for GPU execution.
+
+use cuda_ffi::RadixSorter;
 
 /// Radix (number of possible values per digit).
 /// 4-bit radix = 16 values per digit.
@@ -34,6 +27,63 @@ pub struct RadixSortResult {
     pub values: Vec<u8>,
     /// Number of elements.
     pub num_elements: u32,
+}
+
+/// Perform radix sort on Morton codes with associated indices using GPU (CUB).
+///
+/// Uses NVIDIA CUB's DeviceRadixSort for GPU-accelerated sorting.
+///
+/// # Arguments
+/// * `keys` - Morton codes to sort
+/// * `values` - Associated values (original indices)
+///
+/// # Returns
+/// Sorted keys and reordered values, or error if GPU sort fails.
+pub fn radix_sort_by_key_gpu(
+    keys: &[u64],
+    values: &[u32],
+) -> Result<RadixSortResult, cuda_ffi::CudaError> {
+    let n = keys.len();
+    if n == 0 {
+        return Ok(RadixSortResult {
+            keys: Vec::new(),
+            values: Vec::new(),
+            num_elements: 0,
+        });
+    }
+
+    let sorter = RadixSorter::new()?;
+    let (sorted_keys, sorted_values) = sorter.sort_pairs(keys, values)?;
+
+    // Convert to bytes
+    let key_bytes: Vec<u8> = sorted_keys.iter().flat_map(|k| k.to_le_bytes()).collect();
+    let value_bytes: Vec<u8> = sorted_values.iter().flat_map(|v| v.to_le_bytes()).collect();
+
+    Ok(RadixSortResult {
+        keys: key_bytes,
+        values: value_bytes,
+        num_elements: n as u32,
+    })
+}
+
+/// Perform radix sort on Morton codes, using GPU with CPU fallback.
+///
+/// Tries GPU sort first, falls back to CPU if GPU fails.
+///
+/// # Arguments
+/// * `keys` - Morton codes to sort
+/// * `values` - Associated values (original indices)
+///
+/// # Returns
+/// Sorted keys and reordered values.
+pub fn radix_sort_by_key(keys: &[u64], values: &[u32]) -> RadixSortResult {
+    match radix_sort_by_key_gpu(keys, values) {
+        Ok(result) => result,
+        Err(e) => {
+            tracing::warn!("GPU radix sort failed ({e}), falling back to CPU");
+            radix_sort_by_key_cpu(keys, values)
+        }
+    }
 }
 
 /// Perform radix sort on Morton codes with associated indices (CPU reference).
@@ -149,5 +199,75 @@ mod tests {
     fn test_radix_sort_empty() {
         let result = radix_sort_by_key_cpu(&[], &[]);
         assert_eq!(result.num_elements, 0);
+    }
+
+    #[test]
+    fn test_radix_sort_gpu() {
+        let keys = vec![5u64, 3, 8, 1, 9, 2, 7, 4, 6, 0];
+        let values: Vec<u32> = (0..10).collect();
+
+        let result = radix_sort_by_key_gpu(&keys, &values).expect("GPU sort should succeed");
+
+        let sorted_keys: Vec<u64> = result
+            .keys
+            .chunks(8)
+            .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+
+        assert_eq!(sorted_keys, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    }
+
+    #[test]
+    fn test_radix_sort_gpu_vs_cpu() {
+        // Test that GPU and CPU produce identical results
+        let keys = vec![42u64, 17, 99, 1, 50, 33, 88, 5, 77, 23];
+        let values: Vec<u32> = (0..10).collect();
+
+        let cpu_result = radix_sort_by_key_cpu(&keys, &values);
+        let gpu_result = radix_sort_by_key_gpu(&keys, &values).expect("GPU sort should succeed");
+
+        assert_eq!(cpu_result.keys, gpu_result.keys);
+        assert_eq!(cpu_result.values, gpu_result.values);
+    }
+
+    #[test]
+    fn test_radix_sort_with_fallback() {
+        // Test the unified function that uses GPU with CPU fallback
+        let keys = vec![100u64, 50, 75, 25, 0];
+        let values: Vec<u32> = (0..5).collect();
+
+        let result = radix_sort_by_key(&keys, &values);
+
+        let sorted_keys: Vec<u64> = result
+            .keys
+            .chunks(8)
+            .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+
+        assert_eq!(sorted_keys, vec![0, 25, 50, 75, 100]);
+    }
+
+    #[test]
+    fn test_radix_sort_gpu_large() {
+        // Test with larger dataset to exercise GPU parallelism
+        let n: usize = 100_000;
+        let keys: Vec<u64> = (0..n as u64).rev().collect();
+        let values: Vec<u32> = (0..n as u32).collect();
+
+        let result = radix_sort_by_key_gpu(&keys, &values).expect("GPU sort should succeed");
+
+        let sorted_keys: Vec<u64> = result
+            .keys
+            .chunks(8)
+            .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+
+        // Verify sorted order
+        for i in 1..n {
+            assert!(sorted_keys[i] >= sorted_keys[i - 1]);
+        }
+
+        assert_eq!(sorted_keys[0], 0);
+        assert_eq!(sorted_keys[n - 1], (n - 1) as u64);
     }
 }

@@ -13,10 +13,132 @@
 //!
 //! This gives a 63-bit Morton code (21 bits × 3 axes) stored in u64.
 //!
-//! # Current Status
+//! # GPU Implementation
 //!
-//! GPU kernels are defined but require CubeCL type system fixes.
-//! CPU reference implementations are provided and tested.
+//! The GPU implementation uses two passes:
+//! 1. Bounds reduction: Find min/max coordinates (parallel reduction)
+//! 2. Morton encoding: Compute Morton code for each point (embarrassingly parallel)
+
+use cubecl::prelude::*;
+
+// ============================================================================
+// GPU Kernels for Morton Code Computation
+// ============================================================================
+
+/// GPU kernel: Compute Morton codes for a batch of points.
+///
+/// Each thread processes one point, computing its Morton code from
+/// pre-computed bounds.
+///
+/// # Inputs
+/// - `points`: [N * 3] point coordinates (x, y, z) flattened
+/// - `min_bound`: [3] minimum bounds of the point cloud
+/// - `inv_resolution`: 1.0 / resolution
+/// - `num_points`: number of points
+///
+/// # Outputs
+/// - `codes_low`: [N] lower 32 bits of Morton codes
+/// - `codes_high`: [N] upper 32 bits of Morton codes
+/// - `indices`: [N] original point indices (identity mapping)
+///
+/// Note: We split u64 into two u32 arrays because CubeCL doesn't support u64 directly.
+#[cube(launch_unchecked)]
+pub fn compute_morton_codes_kernel<F: Float>(
+    points: &Array<F>,
+    min_bound: &Array<F>,
+    inv_resolution: F,
+    num_points: u32,
+    codes_low: &mut Array<u32>,
+    codes_high: &mut Array<u32>,
+    indices: &mut Array<u32>,
+) {
+    let idx = ABSOLUTE_POS;
+
+    if idx >= num_points {
+        terminate!();
+    }
+
+    // Load point coordinates
+    let base = idx * 3;
+    let px = points[base];
+    let py = points[base + 1];
+    let pz = points[base + 2];
+
+    // Load min bounds
+    let min_x = min_bound[0];
+    let min_y = min_bound[1];
+    let min_z = min_bound[2];
+
+    // Compute grid coordinates
+    let gx = (px - min_x) * inv_resolution;
+    let gy = (py - min_y) * inv_resolution;
+    let gz = (pz - min_z) * inv_resolution;
+
+    // Quantize to 21-bit integers (max 0x1FFFFF = 2097151)
+    let max_coord = 0x1FFFFFu32;
+    let ix_raw = u32::cast_from(F::floor(F::abs(gx)));
+    let iy_raw = u32::cast_from(F::floor(F::abs(gy)));
+    let iz_raw = u32::cast_from(F::floor(F::abs(gz)));
+
+    // Clamp to max_coord using select
+    let ix = select(ix_raw > max_coord, max_coord, ix_raw);
+    let iy = select(iy_raw > max_coord, max_coord, iy_raw);
+    let iz = select(iz_raw > max_coord, max_coord, iz_raw);
+
+    // Morton encode using bit interleaving
+    // We compute the 63-bit Morton code as two 32-bit parts
+    let (low, high) = morton_encode_split(ix, iy, iz);
+
+    codes_low[idx] = low;
+    codes_high[idx] = high;
+    indices[idx] = idx;
+}
+
+/// Expand bits for Morton encoding (GPU version).
+/// Spreads 21 bits across 63 bits with 2-bit gaps.
+#[cube]
+fn expand_bits_21(x: u32) -> (u32, u32) {
+    // We need to spread 21 bits across 63 bit positions
+    // Lower 11 bits go to positions 0,3,6,...,30 (low word)
+    // Upper 10 bits go to positions 33,36,...,60 (high word)
+
+    let x_low = x & 0x7FF; // Lower 11 bits
+    let x_high = (x >> 11) & 0x3FF; // Upper 10 bits
+
+    // Expand lower 11 bits to positions 0,3,6,...,30 in low word
+    let mut lo = x_low;
+    lo = (lo | (lo << 16)) & 0x030000FF;
+    lo = (lo | (lo << 8)) & 0x0300F00F;
+    lo = (lo | (lo << 4)) & 0x030C30C3;
+    lo = (lo | (lo << 2)) & 0x09249249;
+
+    // Expand upper 10 bits to positions 0,3,6,...,27 in high word
+    let mut hi = x_high;
+    hi = (hi | (hi << 16)) & 0x030000FF;
+    hi = (hi | (hi << 8)) & 0x0300F00F;
+    hi = (hi | (hi << 4)) & 0x030C30C3;
+    hi = (hi | (hi << 2)) & 0x09249249;
+
+    (lo, hi)
+}
+
+/// Morton encode 3 coordinates into split 32-bit words.
+#[cube]
+fn morton_encode_split(x: u32, y: u32, z: u32) -> (u32, u32) {
+    let (x_lo, x_hi) = expand_bits_21(x);
+    let (y_lo, y_hi) = expand_bits_21(y);
+    let (z_lo, z_hi) = expand_bits_21(z);
+
+    // Interleave: x at bit positions 2,5,8,..., y at 1,4,7,..., z at 0,3,6,...
+    let low = (x_lo << 2) | (y_lo << 1) | z_lo;
+    let high = (x_hi << 2) | (y_hi << 1) | z_hi;
+
+    (low, high)
+}
+
+// ============================================================================
+// CPU Reference Implementations
+// ============================================================================
 
 /// Result of Morton code computation.
 #[derive(Debug)]
