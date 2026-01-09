@@ -17,7 +17,9 @@ use super::types::{
     apply_pose_delta, isometry_to_pose_vector, pose_vector_to_isometry, ConvergenceStatus,
     NdtConfig, NdtResult,
 };
-use crate::derivatives::{compute_derivatives_cpu_with_metric, GaussianParams};
+use crate::derivatives::{
+    compute_derivatives_cpu_with_metric, GaussianParams, GpuDerivativePipeline, GpuVoxelData,
+};
 use crate::scoring::{compute_nvtl, NvtlConfig};
 use crate::voxel_grid::VoxelGrid;
 
@@ -294,6 +296,183 @@ impl NdtOptimizer {
             num_correspondences: last_correspondences,
             oscillation_count: oscillation.max_oscillation_count,
         }
+    }
+
+    /// Align source points to target voxel grid using GPU pipeline.
+    ///
+    /// This method uses the zero-copy GPU derivative pipeline for better performance.
+    /// Data is uploaded once at the start, and only the pose transform is uploaded per iteration.
+    ///
+    /// # Arguments
+    /// * `source_points` - Source point cloud to align
+    /// * `target_grid` - Target voxel grid (map)
+    /// * `initial_guess` - Initial pose estimate
+    ///
+    /// # Returns
+    /// NDT result with final pose, score, and convergence status.
+    ///
+    /// # Errors
+    /// Returns an error if GPU pipeline initialization or computation fails.
+    pub fn align_gpu(
+        &self,
+        source_points: &[[f32; 3]],
+        target_grid: &VoxelGrid,
+        initial_guess: Isometry3<f64>,
+    ) -> Result<NdtResult, anyhow::Error> {
+        // Create GPU pipeline
+        let max_points = source_points.len().max(1);
+        let max_voxels = target_grid.len().max(1);
+        let mut pipeline = GpuDerivativePipeline::new(max_points, max_voxels)?;
+
+        // Upload alignment data once
+        let voxel_data = GpuVoxelData::from_voxel_grid(target_grid);
+        pipeline.upload_alignment_data(
+            source_points,
+            &voxel_data,
+            self.gauss.d1 as f32,
+            self.gauss.d2 as f32,
+            self.config.ndt.resolution as f32,
+        )?;
+
+        // Convert initial guess to pose vector
+        let mut pose = isometry_to_pose_vector(&initial_guess);
+
+        // Track best result
+        let mut best_score = f64::NEG_INFINITY;
+        let mut best_pose = pose;
+        let mut last_hessian = Matrix6::zeros();
+        let mut last_correspondences = 0;
+
+        // Track pose history for oscillation detection
+        let mut pose_history: Vec<Isometry3<f64>> =
+            Vec::with_capacity(self.config.ndt.max_iterations + 1);
+        pose_history.push(initial_guess);
+
+        // Main optimization loop
+        for iteration in 0..self.config.ndt.max_iterations {
+            // Compute derivatives at current pose using GPU pipeline
+            let gpu_result = pipeline.compute_iteration(&pose)?;
+
+            // Convert GPU result to nalgebra types
+            let gradient = Vector6::from_row_slice(&gpu_result.gradient);
+            let hessian = Matrix6::from_fn(|i, j| gpu_result.hessian[i][j]);
+            let score = gpu_result.score;
+            let num_correspondences = gpu_result.num_correspondences;
+
+            // Check for sufficient correspondences
+            if num_correspondences < self.config.min_correspondences {
+                if iteration == 0 {
+                    return Ok(NdtResult::no_correspondences(initial_guess));
+                }
+                // Use best result so far
+                break;
+            }
+
+            last_correspondences = num_correspondences;
+
+            // Apply GNSS regularization if enabled
+            let (reg_score, reg_gradient, reg_hessian) = self
+                .regularization
+                .compute_derivatives(&pose, num_correspondences);
+
+            let total_score = score + reg_score;
+            let total_gradient = gradient + reg_gradient;
+            let total_hessian = hessian + reg_hessian;
+
+            last_hessian = total_hessian;
+
+            // Track best score
+            if total_score > best_score {
+                best_score = total_score;
+                best_pose = pose;
+            }
+
+            // Compute Newton step
+            let delta = match newton_step_regularized(
+                &total_gradient,
+                &total_hessian,
+                self.config.ndt.regularization,
+                self.config.svd_tolerance,
+            ) {
+                Some(d) => d,
+                None => {
+                    // Singular Hessian - return current best
+                    let final_pose = pose_vector_to_isometry(&best_pose);
+                    let nvtl = self.compute_nvtl(source_points, target_grid, &final_pose);
+                    let oscillation = super::oscillation::count_oscillation(
+                        &pose_history,
+                        super::oscillation::DEFAULT_OSCILLATION_THRESHOLD,
+                    );
+                    return Ok(NdtResult {
+                        pose: final_pose,
+                        status: ConvergenceStatus::SingularHessian,
+                        score: best_score,
+                        transform_probability: self.compute_transform_probability(best_score),
+                        nvtl,
+                        iterations: iteration,
+                        hessian: last_hessian,
+                        num_correspondences: last_correspondences,
+                        oscillation_count: oscillation.max_oscillation_count,
+                    });
+                }
+            };
+
+            // Clamp Newton step to maximum step length (Autoware behavior)
+            let delta_norm = delta.norm();
+
+            // Check convergence before clamping
+            if delta_norm < self.config.ndt.trans_epsilon {
+                let final_pose = pose_vector_to_isometry(&pose);
+                let nvtl = self.compute_nvtl(source_points, target_grid, &final_pose);
+                let oscillation = super::oscillation::count_oscillation(
+                    &pose_history,
+                    super::oscillation::DEFAULT_OSCILLATION_THRESHOLD,
+                );
+                return Ok(NdtResult {
+                    pose: final_pose,
+                    status: ConvergenceStatus::Converged,
+                    score: total_score,
+                    transform_probability: self.compute_transform_probability(total_score),
+                    nvtl,
+                    iterations: iteration + 1,
+                    hessian: total_hessian,
+                    num_correspondences,
+                    oscillation_count: oscillation.max_oscillation_count,
+                });
+            }
+
+            // Check if Newton step is an ascent direction for the score
+            let mut step_dir = delta / delta_norm;
+            let grad_dot_step = total_gradient.dot(&step_dir);
+            if grad_dot_step <= 0.0 {
+                step_dir = -step_dir;
+            }
+
+            // Apply step (no line search for GPU path - would require many transfers)
+            let step_length = delta_norm.min(self.config.ndt.step_size);
+
+            pose = apply_pose_delta(&pose, &step_dir, step_length);
+            pose_history.push(pose_vector_to_isometry(&pose));
+        }
+
+        // Reached max iterations
+        let final_pose = pose_vector_to_isometry(&best_pose);
+        let nvtl = self.compute_nvtl(source_points, target_grid, &final_pose);
+        let oscillation = super::oscillation::count_oscillation(
+            &pose_history,
+            super::oscillation::DEFAULT_OSCILLATION_THRESHOLD,
+        );
+        Ok(NdtResult {
+            pose: final_pose,
+            status: ConvergenceStatus::MaxIterations,
+            score: best_score,
+            transform_probability: self.compute_transform_probability(best_score),
+            nvtl,
+            iterations: self.config.ndt.max_iterations,
+            hessian: last_hessian,
+            num_correspondences: last_correspondences,
+            oscillation_count: oscillation.max_oscillation_count,
+        })
     }
 
     /// Compute NVTL for a given pose.
@@ -884,5 +1063,195 @@ mod tests {
         scaled[(0, 0)] = 100.0;
         let cond_scaled = optimizer.hessian_condition_number(&scaled);
         assert_relative_eq!(cond_scaled, 100.0, epsilon = 1e-5);
+    }
+
+    // GPU path tests
+
+    #[test]
+    fn test_align_gpu_identity() {
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(123);
+        let dist = Normal::new(0.0, 0.1).unwrap();
+
+        let grid = create_test_grid([0.0, 0.0, 0.0], 0.1);
+
+        // Source points distributed around grid center
+        let source_points: Vec<[f32; 3]> = (0..50)
+            .map(|_| {
+                [
+                    dist.sample(&mut rng) as f32,
+                    dist.sample(&mut rng) as f32,
+                    dist.sample(&mut rng) as f32,
+                ]
+            })
+            .collect();
+
+        let optimizer = NdtOptimizer::with_defaults();
+        let initial_guess = Isometry3::identity();
+
+        let result = optimizer.align_gpu(&source_points, &grid, initial_guess);
+        assert!(result.is_ok(), "GPU align failed: {:?}", result.err());
+
+        let result = result.unwrap();
+        assert!(result.status.is_usable(), "Status: {:?}", result.status);
+        assert!(
+            result.iterations <= 30,
+            "Too many iterations: {}",
+            result.iterations
+        );
+    }
+
+    #[test]
+    fn test_align_gpu_no_correspondences() {
+        let grid = create_test_grid([0.0, 0.0, 0.0], 0.1);
+
+        // Source points far away (no overlap)
+        let source_points: Vec<[f32; 3]> = (0..50).map(|_| [1000.0f32, 1000.0, 1000.0]).collect();
+
+        let optimizer = NdtOptimizer::with_defaults();
+        let initial_guess = Isometry3::identity();
+
+        let result = optimizer.align_gpu(&source_points, &grid, initial_guess);
+        assert!(result.is_ok(), "GPU align failed: {:?}", result.err());
+
+        let result = result.unwrap();
+        assert_eq!(result.status, ConvergenceStatus::NoCorrespondences);
+    }
+
+    #[test]
+    fn test_align_gpu_vs_cpu() {
+        // Test that GPU and CPU paths produce similar results
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let dist = Normal::new(0.0, 0.2).unwrap();
+
+        let grid = create_test_grid([0.0, 0.0, 0.0], 0.2);
+
+        // Source points with some variation
+        let source_points: Vec<[f32; 3]> = (0..100)
+            .map(|_| {
+                [
+                    dist.sample(&mut rng) as f32,
+                    dist.sample(&mut rng) as f32,
+                    dist.sample(&mut rng) as f32,
+                ]
+            })
+            .collect();
+
+        let optimizer = NdtOptimizer::with_defaults();
+        let initial_guess = Isometry3::identity();
+
+        // Run CPU path
+        let cpu_result = optimizer.align(&source_points, &grid, initial_guess);
+
+        // Run GPU path
+        let gpu_result = optimizer
+            .align_gpu(&source_points, &grid, initial_guess)
+            .expect("GPU align failed");
+
+        // Both should produce usable results
+        assert!(
+            cpu_result.status.is_usable(),
+            "CPU status: {:?}",
+            cpu_result.status
+        );
+        assert!(
+            gpu_result.status.is_usable(),
+            "GPU status: {:?}",
+            gpu_result.status
+        );
+
+        // Scores should be in the same ballpark (not exact due to f32 vs f64 differences)
+        let score_ratio = if cpu_result.score.abs() > 1e-10 {
+            (gpu_result.score / cpu_result.score).abs()
+        } else {
+            1.0
+        };
+        assert!(
+            score_ratio > 0.5 && score_ratio < 2.0,
+            "Score mismatch: CPU={}, GPU={}",
+            cpu_result.score,
+            gpu_result.score
+        );
+
+        // Final positions should be similar (within 0.5m for translation)
+        let cpu_trans = cpu_result.pose.translation.vector;
+        let gpu_trans = gpu_result.pose.translation.vector;
+        let pos_diff = (cpu_trans - gpu_trans).norm();
+        assert!(
+            pos_diff < 0.5,
+            "Position difference too large: {} (CPU={:?}, GPU={:?})",
+            pos_diff,
+            cpu_trans,
+            gpu_trans
+        );
+    }
+
+    #[test]
+    #[ignore] // Run with: cargo test --release test_align_performance -- --nocapture --ignored
+    fn test_align_performance() {
+        use std::time::Instant;
+
+        // Create a larger test case for meaningful timing
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(999);
+        let dist = Normal::new(0.0, 0.3).unwrap();
+
+        // Build a larger voxel grid (1000 points -> ~100+ voxels)
+        let grid_points: Vec<[f32; 3]> = (0..1000)
+            .map(|_| {
+                [
+                    dist.sample(&mut rng) as f32 * 10.0,
+                    dist.sample(&mut rng) as f32 * 10.0,
+                    dist.sample(&mut rng) as f32 * 2.0,
+                ]
+            })
+            .collect();
+        let grid = VoxelGrid::from_points(&grid_points, 2.0).unwrap();
+        println!("Grid has {} voxels", grid.len());
+
+        // Create 500 source points
+        let source_points: Vec<[f32; 3]> = (0..500)
+            .map(|_| {
+                [
+                    dist.sample(&mut rng) as f32 * 10.0,
+                    dist.sample(&mut rng) as f32 * 10.0,
+                    dist.sample(&mut rng) as f32 * 2.0,
+                ]
+            })
+            .collect();
+
+        let optimizer = NdtOptimizer::with_defaults();
+        let initial_guess = Isometry3::translation(0.5, 0.5, 0.0);
+
+        // Warm up
+        let _ = optimizer.align(&source_points, &grid, initial_guess);
+        let _ = optimizer.align_gpu(&source_points, &grid, initial_guess);
+
+        // Benchmark CPU path
+        const ITERATIONS: usize = 10;
+        let cpu_start = Instant::now();
+        for _ in 0..ITERATIONS {
+            let _ = optimizer.align(&source_points, &grid, initial_guess);
+        }
+        let cpu_elapsed = cpu_start.elapsed();
+        let cpu_per_align = cpu_elapsed.as_secs_f64() * 1000.0 / ITERATIONS as f64;
+
+        // Benchmark GPU path
+        let gpu_start = Instant::now();
+        for _ in 0..ITERATIONS {
+            let _ = optimizer.align_gpu(&source_points, &grid, initial_guess);
+        }
+        let gpu_elapsed = gpu_start.elapsed();
+        let gpu_per_align = gpu_elapsed.as_secs_f64() * 1000.0 / ITERATIONS as f64;
+
+        println!("\n=== Performance Comparison ===");
+        println!("Source points: {}", source_points.len());
+        println!("Voxel grid: {} voxels", grid.len());
+        println!("Iterations: {}", ITERATIONS);
+        println!("CPU path: {:.2} ms per alignment", cpu_per_align);
+        println!("GPU path: {:.2} ms per alignment", gpu_per_align);
+        println!("Speedup: {:.2}x", cpu_per_align / gpu_per_align);
+        println!("==============================\n");
     }
 }

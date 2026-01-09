@@ -425,8 +425,19 @@ pub fn compute_derivatives_cpu_with_metric(
 
     // Debug: track voxel-per-point distribution (only in debug builds)
     #[cfg(debug_assertions)]
-    let (debug_vpp, mut points_with_0_voxels, mut points_with_1_voxel, mut points_with_2_voxels, mut points_with_3plus_voxels) =
-        (std::env::var("NDT_DEBUG_VPP").is_ok(), 0usize, 0usize, 0usize, 0usize);
+    let (
+        debug_vpp,
+        mut points_with_0_voxels,
+        mut points_with_1_voxel,
+        mut points_with_2_voxels,
+        mut points_with_3plus_voxels,
+    ) = (
+        std::env::var("NDT_DEBUG_VPP").is_ok(),
+        0usize,
+        0usize,
+        0usize,
+        0usize,
+    );
 
     for source_point in source_points {
         // Convert to f64
