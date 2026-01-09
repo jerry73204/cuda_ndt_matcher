@@ -471,14 +471,9 @@ impl NdtScanMatcherNode {
             }
         };
 
-        // Apply sensor point filtering (distance, z-height, downsampling)
-        let filter_params = pointcloud::PointFilterParams {
-            min_distance: params.sensor_points.min_distance,
-            max_distance: params.sensor_points.max_distance,
-            min_z: params.sensor_points.min_z,
-            max_z: params.sensor_points.max_z,
-            downsample_resolution: params.sensor_points.downsample_resolution,
-        };
+        // Note: Sensor point filtering (distance, z-height, downsampling) is handled
+        // upstream by pointcloud_preprocessor. We use default (no-op) filtering here.
+        let filter_params = pointcloud::PointFilterParams::default();
         let filter_result = pointcloud::filter_sensor_points(&raw_points, &filter_params);
         let sensor_points = filter_result.points;
 

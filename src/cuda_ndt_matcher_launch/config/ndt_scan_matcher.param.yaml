@@ -16,13 +16,11 @@
       max_iterations: 30
       num_threads: 4
 
-    # GNSS regularization penalizes deviation from GNSS pose in longitudinal direction.
-    # This helps prevent drift in open areas where scan matching may be unreliable.
-    regularization:
-      # Enable GNSS regularization
-      enable_gnss_regularization: false
-      # Scale factor for regularization term (higher = more weight to GNSS)
-      gnss_regularization_scale_factor: 0.01
+      # GNSS regularization penalizes deviation from GNSS pose in longitudinal direction.
+      # This helps prevent drift in open areas where scan matching may be unreliable.
+      regularization:
+        enable: false
+        scale_factor: 0.01
 
     initial_pose_estimation:
       # Total number of particles (candidate poses) to evaluate
