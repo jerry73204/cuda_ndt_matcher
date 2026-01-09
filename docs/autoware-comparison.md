@@ -2,7 +2,7 @@
 
 Feature comparison between `cuda_ndt_matcher` and Autoware's `ndt_scan_matcher`.
 
-**Last Updated**: 2026-01-09 (Convergence gating + diagnostic keys implemented - matches Autoware behavior)
+**Last Updated**: 2026-01-09 (Feature parity complete - all debug publishers implemented)
 
 ---
 
@@ -290,7 +290,8 @@ See `docs/roadmap/phase-13-gpu-scoring-pipeline.md` for implementation details.
 | `/tf` broadcast                | ✅     | Same                |
 | `trigger_node_srv` service     | ✅     | Same                |
 | `ndt_align_srv` service        | ✅     | Same                |
-| 12 debug publishers            | ✅     | Same topics         |
+| Debug metric publishers (10)   | ✅     | Same topics         |
+| `initial_to_result_*` pubs (4) | ✅     | Same topics         |
 | `no_ground_*` publishers (3)   | ✅     | Same topics         |
 | `voxel_score_points` pub       | ✅     | Same (RGB colors)   |
 | `multi_ndt_pose` PoseArray     | ✅     | Same                |
@@ -367,9 +368,7 @@ All functional features are implemented. Convergence gating and diagnostic keys 
 
 ### Debug/Visualization Gaps (no runtime impact)
 
-| Feature                     | Priority | Effort | GPU |
-|-----------------------------|----------|--------|-----|
-| Distance old/new publishers | Low      | Low    | No  |
+None - all debug publishers are implemented.
 
 ### Intentionally Not Implemented
 
@@ -634,7 +633,4 @@ GPU: radix sort
 - Oscillation count > 10 (gates if oscillating)
 - Score threshold (gates if below threshold)
 
-**Remaining items** (low priority, debug-only):
-- Distance old/new publishers
-
-This is an optional debug feature with no impact on localization accuracy or performance.
+**Remaining items**: None - feature parity complete.

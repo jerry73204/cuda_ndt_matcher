@@ -74,6 +74,8 @@ struct DebugPublishers {
     // Pose tracking
     initial_pose_cov_pub: Publisher<PoseWithCovarianceStamped>,
     initial_to_result_distance_pub: Publisher<Float32Stamped>,
+    initial_to_result_distance_old_pub: Publisher<Float32Stamped>,
+    initial_to_result_distance_new_pub: Publisher<Float32Stamped>,
     initial_to_result_relative_pose_pub: Publisher<PoseStamped>,
 
     // No-ground scoring (debug)
@@ -212,6 +214,10 @@ impl NdtScanMatcherNode {
                 .create_publisher("local_optimal_solution_oscillation_num")?,
             initial_pose_cov_pub: node.create_publisher("initial_pose_with_covariance")?,
             initial_to_result_distance_pub: node.create_publisher("initial_to_result_distance")?,
+            initial_to_result_distance_old_pub: node
+                .create_publisher("initial_to_result_distance_old")?,
+            initial_to_result_distance_new_pub: node
+                .create_publisher("initial_to_result_distance_new")?,
             initial_to_result_relative_pose_pub: node
                 .create_publisher("initial_to_result_relative_pose")?,
             // No-ground scoring debug
@@ -897,6 +903,34 @@ impl NdtScanMatcherNode {
         let _ = debug_pubs
             .initial_to_result_distance_pub
             .publish(&distance_msg);
+
+        // Calculate distance from old/new interpolation poses to result
+        // (interpolate_result is guaranteed to be Some here since we returned early otherwise)
+        if let Some(ref interp) = interpolate_result {
+            // Distance from old pose (older of the two bracketing poses) to result
+            let dx_old = result.pose.position.x - interp.old_pose.pose.pose.position.x;
+            let dy_old = result.pose.position.y - interp.old_pose.pose.pose.position.y;
+            let dz_old = result.pose.position.z - interp.old_pose.pose.pose.position.z;
+            let distance_old = (dx_old * dx_old + dy_old * dy_old + dz_old * dz_old).sqrt();
+            let _ = debug_pubs
+                .initial_to_result_distance_old_pub
+                .publish(&Float32Stamped {
+                    stamp: msg.header.stamp.clone(),
+                    data: distance_old as f32,
+                });
+
+            // Distance from new pose (newer of the two bracketing poses) to result
+            let dx_new = result.pose.position.x - interp.new_pose.pose.pose.position.x;
+            let dy_new = result.pose.position.y - interp.new_pose.pose.pose.position.y;
+            let dz_new = result.pose.position.z - interp.new_pose.pose.pose.position.z;
+            let distance_new = (dx_new * dx_new + dy_new * dy_new + dz_new * dz_new).sqrt();
+            let _ = debug_pubs
+                .initial_to_result_distance_new_pub
+                .publish(&Float32Stamped {
+                    stamp: msg.header.stamp.clone(),
+                    data: distance_new as f32,
+                });
+        }
 
         // Publish relative pose (result relative to initial)
         let relative_pose_msg = PoseStamped {
