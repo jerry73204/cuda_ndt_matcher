@@ -2,7 +2,7 @@
 
 Feature comparison between `cuda_ndt_matcher` and Autoware's `ndt_scan_matcher`.
 
-**Last Updated**: 2026-01-09 (P2 Jacobian caching - all pipeline optimizations complete)
+**Last Updated**: 2026-01-09 (Convergence gating + diagnostic keys implemented - matches Autoware behavior)
 
 ---
 
@@ -39,7 +39,7 @@ Feature comparison between `cuda_ndt_matcher` and Autoware's `ndt_scan_matcher`.
 | Gaussian covariance per voxel | ✅     | —   | Same formulas             | Per-voxel eigendecomposition better on CPU                                                                    |
 | Multi-voxel radius search     | ✅     | ✅  | Same (KDTREE)             | GPU for scoring path; ~2.4 voxels/point                                                                       |
 | Convergence detection         | ✅     | —   | Same epsilon check        | Single comparison, no parallelism                                                                             |
-| Oscillation detection         | ✅     | —   | Same algorithm            | Sequential history tracking                                                                                   |
+| Oscillation detection         | ✅     | —   | Same (gated at count > 10) | Sequential history tracking                                                                                   |
 | Step size clamping            | ✅     | —   | Same limits               | Single operation                                                                                              |
 
 ### 1.1 Search Methods
@@ -312,11 +312,58 @@ See `docs/roadmap/phase-13-gpu-scoring-pipeline.md` for implementation details.
 
 ---
 
+## 11. Behavioral Differences
+
+These are implementation differences that may affect output behavior:
+
+### 11.1 Convergence Gating ✅ Matches Autoware
+
+| Condition              | Autoware            | CUDA NDT            | Status |
+|------------------------|---------------------|---------------------|--------|
+| Max iterations check   | ✅ Gates publishing | ✅ Gates publishing | Same   |
+| Oscillation count > 10 | ✅ Gates publishing | ✅ Gates publishing | Same   |
+| Score threshold        | ✅ Gates publishing | ✅ Gates publishing | Same   |
+
+**Implementation** (`main.rs:700-764`):
+- `is_ok_iteration_num`: Gates if max iterations reached (`!result.converged`)
+- `is_ok_oscillation`: Gates if oscillation count > 10 (`OSCILLATION_THRESHOLD = 10`)
+- `is_ok_score`: Gates if score below threshold
+- Only publishes if ALL three conditions pass (same as Autoware)
+
+### 11.2 Execution Time Measurement ✅ Matches Autoware
+
+| Metric | Autoware                    | CUDA NDT             |
+|--------|-----------------------------|----------------------|
+| Scope  | NDT alignment only          | NDT alignment only   |
+| Timer  | `std::chrono::system_clock` | `std::time::Instant` |
+
+Both implementations measure only the NDT alignment call. `std::time::Instant` provides higher resolution than `std::chrono::system_clock`.
+
+### 11.3 Diagnostic Keys ✅ Matches Autoware
+
+All diagnostic keys published by Autoware are now implemented:
+
+| Key                                              | Autoware | CUDA NDT | Notes                   |
+|--------------------------------------------------|----------|----------|-------------------------|
+| `transform_probability`                          | ✅       | ✅       | Final alignment score   |
+| `transform_probability_before`                   | ✅       | ✅       | Initial estimate score  |
+| `transform_probability_diff`                     | ✅       | ✅       | Before/after comparison |
+| `nearest_voxel_transformation_likelihood`        | ✅       | ✅       | Final NVTL score        |
+| `nearest_voxel_transformation_likelihood_before` | ✅       | ✅       | Initial NVTL score      |
+| `nearest_voxel_transformation_likelihood_diff`   | ✅       | ✅       | Before/after comparison |
+| `distance_initial_to_result`                     | ✅       | ✅       | Pose displacement       |
+
+**Implementation** (`diagnostics.rs`, `main.rs:649-655`):
+- Computes "before" scores at initial pose using `evaluate_transform_probability()` and `evaluate_nvtl()`
+- Publishes 19 key-value pairs in `ScanMatchingDiagnostics::apply_to()`
+
+---
+
 ## Summary: What's Missing
 
-### Functional Gaps (affects behavior)
+### Functional Gaps
 
-All functional features are implemented. Ground point filtering was added in Phase 13.8.
+All functional features are implemented. Convergence gating and diagnostic keys now match Autoware behavior.
 
 ### Debug/Visualization Gaps (no runtime impact)
 
@@ -574,7 +621,7 @@ GPU: radix sort
 
 ## Completion Summary
 
-**Feature parity**: All functional features from Autoware's `ndt_scan_matcher` are implemented. The CUDA implementation is a drop-in replacement.
+**Feature parity**: Complete. The CUDA implementation is a drop-in replacement for Autoware's `ndt_scan_matcher`.
 
 **GPU acceleration**: All compute-heavy operations run on GPU:
 - Voxel grid construction (zero-copy pipeline)
@@ -582,7 +629,12 @@ GPU: radix sort
 - Batch scoring (`GpuScoringPipeline`)
 - Batch alignment (`align_batch_gpu()`)
 
-**Remaining low-priority item**:
-- Distance old/new publishers (debug only)
+**Behavioral compatibility**: Convergence gating now matches Autoware:
+- Max iterations check (gates if hit max iterations)
+- Oscillation count > 10 (gates if oscillating)
+- Score threshold (gates if below threshold)
+
+**Remaining items** (low priority, debug-only):
+- Distance old/new publishers
 
 This is an optional debug feature with no impact on localization accuracy or performance.
