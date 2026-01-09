@@ -22,6 +22,9 @@ pub struct CovarianceEstimationResult {
     pub covariance: [f64; 36],
     /// Estimated 2x2 XY covariance (if dynamic estimation was used)
     pub xy_covariance: Option<[[f64; 2]; 2]>,
+    /// Poses from MULTI_NDT estimation (for debug visualization)
+    /// Contains the primary result pose followed by all offset alignment results.
+    pub multi_ndt_poses: Option<Vec<Pose>>,
 }
 
 /// Estimate covariance using ndt_cuda result
@@ -67,6 +70,7 @@ pub fn estimate_covariance(
     CovarianceEstimationResult {
         covariance,
         xy_covariance,
+        multi_ndt_poses: None,
     }
 }
 
@@ -403,6 +407,7 @@ pub fn estimate_covariance_full(
 ) -> CovarianceEstimationResult {
     // Start with static covariance rotated to match the result pose
     let mut covariance = rotate_covariance(&params.output_pose_covariance, result_pose);
+    let mut multi_ndt_poses: Option<Vec<Pose>> = None;
 
     let xy_covariance = match params.covariance_estimation_type {
         CovarianceEstimationType::Fixed => None,
@@ -435,6 +440,12 @@ pub fn estimate_covariance_full(
                         result_pose,
                         &params.estimation,
                     );
+
+                    // Capture poses for debug visualization: primary + offset results
+                    let mut poses = vec![result_pose.clone()];
+                    poses.extend(multi_result.poses_searched);
+                    multi_ndt_poses = Some(poses);
+
                     let scaled = scale_covariance_2d(
                         &multi_result.covariance,
                         params.estimation.scale_factor,
@@ -483,6 +494,12 @@ pub fn estimate_covariance_full(
                         result_pose,
                         &params.estimation,
                     );
+
+                    // Capture poses for debug visualization: primary + offset poses
+                    let mut poses = vec![result_pose.clone()];
+                    poses.extend(multi_result.poses_searched);
+                    multi_ndt_poses = Some(poses);
+
                     let scaled = scale_covariance_2d(
                         &multi_result.covariance,
                         params.estimation.scale_factor,
@@ -524,6 +541,7 @@ pub fn estimate_covariance_full(
     CovarianceEstimationResult {
         covariance,
         xy_covariance,
+        multi_ndt_poses,
     }
 }
 

@@ -2,7 +2,7 @@
 
 Feature comparison between `cuda_ndt_matcher` and Autoware's `ndt_scan_matcher`.
 
-**Last Updated**: 2026-01-09 (GPU Batch Alignment for MULTI_NDT complete)
+**Last Updated**: 2026-01-09 (PoseArray and Debug Map publishers complete)
 
 ---
 
@@ -238,7 +238,7 @@ See `docs/roadmap/phase-13-gpu-scoring-pipeline.md` for implementation details.
 | Position-based trigger  | ✅     | —   | Same distance check        | Single comparison              |
 | Map radius filtering    | ✅     | —   | Same algorithm             | CPU point filtering sufficient |
 | Dual-NDT (non-blocking) | ✅     | —   | Same concept               | Background thread swap         |
-| Debug map publisher     | ❌     | -   | **Missing** (debug)        | Visualization only             |
+| Debug map publisher     | ✅     | —   | Same                       | Visualization only             |
 
 **GPU consideration**: Map loading is I/O bound, not compute bound. No GPU benefit.
 
@@ -293,9 +293,9 @@ See `docs/roadmap/phase-13-gpu-scoring-pipeline.md` for implementation details.
 | 12 debug publishers            | ✅     | Same topics         |
 | `no_ground_*` publishers (3)   | ✅     | Same topics         |
 | `voxel_score_points` pub       | ✅     | Same (RGB colors)   |
-| `multi_ndt_pose` PoseArray     | ❌     | **Missing** (debug) |
+| `multi_ndt_pose` PoseArray     | ✅     | Same                |
+| `debug/loaded_pointcloud_map`  | ✅     | Same                |
 | `multi_initial_pose` PoseArray | ❌     | **Missing** (debug) |
-| `debug/loaded_pointcloud_map`  | ❌     | **Missing** (debug) |
 
 ---
 
@@ -322,8 +322,7 @@ All functional features are implemented. Ground point filtering was added in Pha
 
 | Feature                     | Priority | Effort | GPU |
 |-----------------------------|----------|--------|-----|
-| Multi-NDT PoseArray         | Low      | Low    | No  |
-| Debug map publisher         | Low      | Low    | No  |
+| Multi-initial PoseArray     | Low      | Low    | No  |
 | Distance old/new publishers | Low      | Low    | No  |
 
 ### Intentionally Not Implemented

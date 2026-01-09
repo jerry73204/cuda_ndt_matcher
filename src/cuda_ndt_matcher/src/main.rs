@@ -16,7 +16,9 @@ use anyhow::Result;
 use arc_swap::ArcSwap;
 use diagnostics::{DiagnosticLevel, DiagnosticsInterface, ScanMatchingDiagnostics};
 use dual_ndt_manager::DualNdtManager;
-use geometry_msgs::msg::{Point, Pose, PoseStamped, PoseWithCovariance, PoseWithCovarianceStamped};
+use geometry_msgs::msg::{
+    Point, Pose, PoseArray, PoseStamped, PoseWithCovariance, PoseWithCovarianceStamped,
+};
 use map_module::{DynamicMapLoader, MapUpdateModule};
 use nalgebra::{Isometry3, Quaternion as NaQuaternion, Translation3, UnitQuaternion, Vector3};
 use params::NdtParams;
@@ -81,6 +83,12 @@ struct DebugPublishers {
 
     // Per-point score visualization (voxel_score_points with RGB colors)
     voxel_score_points_pub: Publisher<PointCloud2>,
+
+    // MULTI_NDT covariance debug: poses from offset alignments
+    multi_ndt_pose_pub: Publisher<PoseArray>,
+
+    // Debug map: currently loaded point cloud map
+    debug_loaded_pointcloud_map_pub: Publisher<PointCloud2>,
 }
 
 // Note: Many fields appear "unused" but are actually used via cloned references
@@ -211,6 +219,11 @@ impl NdtScanMatcherNode {
                 .create_publisher("no_ground_nearest_voxel_transformation_likelihood")?,
             // Per-point score visualization
             voxel_score_points_pub: node.create_publisher("voxel_score_points")?,
+            // MULTI_NDT covariance debug
+            multi_ndt_pose_pub: node.create_publisher("multi_ndt_pose")?,
+            // Debug loaded map
+            debug_loaded_pointcloud_map_pub: node
+                .create_publisher("debug/loaded_pointcloud_map")?,
         };
 
         // Create diagnostics interface
@@ -295,12 +308,21 @@ impl NdtScanMatcherNode {
             let map_module = Arc::clone(&map_module);
             let map_points = Arc::clone(&map_points);
             let ndt_manager = Arc::clone(&ndt_manager);
+            let debug_pubs = debug_pubs.clone();
+            let params = Arc::clone(&params);
 
             let mut opts = SubscriptionOptions::new("pointcloud_map");
             opts.qos = QoSProfile::default(); // Reliable for map data
 
             node.create_subscription(opts, move |msg: PointCloud2| {
-                Self::on_map_received(msg, &map_module, &map_points, &ndt_manager);
+                Self::on_map_received(
+                    msg,
+                    &map_module,
+                    &map_points,
+                    &ndt_manager,
+                    &debug_pubs,
+                    &params,
+                );
             })?
         };
 
@@ -567,6 +589,18 @@ impl NdtScanMatcherNode {
             // Map was updated - refresh the shared map points
             map_points.store(Arc::new(Some(filtered_map.clone())));
 
+            // Publish debug map for visualization
+            let debug_map_msg = pointcloud::to_pointcloud2(
+                &filtered_map,
+                &Header {
+                    stamp: msg.header.stamp.clone(),
+                    frame_id: params.frame.map_frame.clone(),
+                },
+            );
+            let _ = debug_pubs
+                .debug_loaded_pointcloud_map_pub
+                .publish(&debug_map_msg);
+
             // Start non-blocking NDT target update in background thread
             let started = ndt_manager.start_background_update(filtered_map.clone());
             log_debug!(
@@ -746,6 +780,15 @@ impl NdtScanMatcherNode {
                 &params.frame.map_frame,
                 &params.frame.ndt_base_frame,
             );
+
+            // Publish MULTI_NDT poses for debug visualization (only for MULTI_NDT modes)
+            if let Some(poses) = covariance_result.multi_ndt_poses {
+                let pose_array_msg = PoseArray {
+                    header: header.clone(),
+                    poses,
+                };
+                let _ = debug_pubs.multi_ndt_pose_pub.publish(&pose_array_msg);
+            }
         }
 
         // ---- Debug Publishers (always publish for monitoring) ----
@@ -1290,6 +1333,8 @@ impl NdtScanMatcherNode {
         map_module: &Arc<MapUpdateModule>,
         map_points: &Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
         ndt_manager: &Arc<DualNdtManager>,
+        debug_pubs: &DebugPublishers,
+        params: &NdtParams,
     ) {
         // Convert point cloud
         let points = match pointcloud::from_pointcloud2(&msg) {
@@ -1307,6 +1352,18 @@ impl NdtScanMatcherNode {
 
         // Update shared map points
         map_points.store(Arc::new(Some(points.clone())));
+
+        // Publish debug map for visualization
+        let debug_map_msg = pointcloud::to_pointcloud2(
+            &points,
+            &Header {
+                stamp: msg.header.stamp.clone(),
+                frame_id: params.frame.map_frame.clone(),
+            },
+        );
+        let _ = debug_pubs
+            .debug_loaded_pointcloud_map_pub
+            .publish(&debug_map_msg);
 
         // Update NDT target (blocking for initial map load)
         if let Err(e) = ndt_manager.set_target(&points) {
