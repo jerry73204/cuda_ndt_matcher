@@ -17,11 +17,11 @@ This document outlines the plan to implement custom CUDA kernels for NDT scan ma
 | Phase 9: Full GPU Acceleration   | ⚠️ Partial     | 9.1 workaround, 9.2 GPU voxel grid complete              |
 | Phase 10: SmartPoseBuffer        | ✅ Complete    | Pose interpolation for timestamp-aligned initial guess   |
 | Phase 11: GPU Zero-Copy Voxel    | ✅ Complete    | CubeCL-cuda_ffi interop, radix sort + segment on GPU     |
-| Phase 12: GPU Derivative Pipeline| ✅ Complete    | Zero-copy pipeline, solver integration, 1.6x speedup     |
+| Phase 12: GPU Derivative Pipeline| ✅ Complete    | All sub-phases complete, CUB GPU reduction implemented   |
 
 **Core NDT algorithm is fully implemented on CPU and matches Autoware's pclomp.**
 **GPU runtime is implemented with CubeCL for accelerated scoring and voxel grid construction.**
-**366 tests pass (297 ndt_cuda + 56 cuda_ndt_matcher + 13 cuda_ffi). All GPU tests enabled and passing.**
+**375 tests pass (299 ndt_cuda + 56 cuda_ndt_matcher + 20 cuda_ffi). All GPU tests enabled and passing.**
 
 ## Phase Documents
 
@@ -118,7 +118,7 @@ cuda_ndt_matcher/
 | Phase 9.5: Async GPU Execution       | 1 week             | Low          | 🔲 Not started |
 | Phase 11: GPU Zero-Copy Voxel        | 1-2 weeks          | Medium       | ✅ Complete    |
 | Phase 12: GPU Derivative Pipeline    | 1-2 weeks          | High         | ✅ Complete    |
-| **Total Remaining**                  | **~2-3 weeks**     |              | 6, 9.3-9.5     |
+| **Total Remaining**                  | **~1-2 weeks**     |              | 6, 9.3-9.5     |
 
 ### Priority Order
 

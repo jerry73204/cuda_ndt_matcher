@@ -2328,6 +2328,7 @@ dependencies = [
  "anyhow",
  "approx",
  "cubecl",
+ "cuda_ffi",
  "kiddo",
  "nalgebra",
  "rand 0.8.5",

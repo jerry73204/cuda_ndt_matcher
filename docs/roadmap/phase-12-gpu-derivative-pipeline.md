@@ -1,8 +1,8 @@
 # Phase 12: GPU Zero-Copy Derivative Pipeline
 
-**Status**: ✅ Complete (all phases 12.1-12.5 implemented)
+**Status**: ✅ Complete
 **Priority**: High
-**Measured Speedup**: 1.6x per alignment (500 points, 57 voxels); larger point clouds expected to show better speedups
+**Measured Speedup**: 1.6x per alignment (500 points, 57 voxels); GPU reduction (12.6) eliminates N×43 download overhead
 
 ## Overview
 
@@ -119,43 +119,31 @@ Data volume: ~99% reduction (43 floats vs N×43 floats per iteration)
 
 ## Implementation Plan
 
-### Phase 12.1: GPU Reduction Kernel
+### Phase 12.1: Reduction Strategy
 
-**Status**: ⚠️ Partial - CPU reduction implemented, GPU reduction deferred
+**Status**: ⚠️ CPU reduction implemented, GPU reduction planned in Phase 12.6
 
 **Goal**: Sum per-point results on GPU instead of downloading N×43 floats.
 
-**Current Implementation**: CPU reduction is used for now. The pipeline still benefits from
-persistent GPU buffers (data stays on GPU between kernel launches). GPU reduction can be
-added later for additional optimization.
+**Current Implementation**: CPU reduction downloads N×43 floats and sums on CPU.
+The pipeline still benefits from persistent GPU buffers (data stays on GPU between
+kernel launches). See **Phase 12.6** for GPU reduction using CUB.
 
-**File**: `src/ndt_cuda/src/derivatives/gpu.rs`
-
-```rust
-/// Reduce per-point derivatives to totals using atomic operations.
-#[cube(launch_unchecked)]
-pub fn reduce_derivatives_kernel<F: Float>(
-    scores: &Array<F>,           // [N]
-    correspondences: &Array<u32>, // [N]
-    gradients: &Array<F>,        // [N × 6]
-    hessians: &Array<F>,         // [N × 36]
-    num_points: u32,
-    // Output: single aggregated result
-    total_score: &mut Array<F>,        // [1]
-    total_correspondences: &mut Array<u32>, // [1]
-    total_gradient: &mut Array<F>,     // [6]
-    total_hessian: &mut Array<F>,      // [36]
-);
+**Current data flow**:
+```
+GPU: scores[N], correspondences[N], gradients[N×6], hessians[N×36]
+     ↓ Download N×43 floats (bottleneck)
+CPU: Sum to 43 totals
 ```
 
-**Approach**: Two-phase reduction
-1. Block-level reduction using shared memory
-2. Final reduction using atomics
-
-**Tests**:
-- `test_reduce_small` - 100 points
-- `test_reduce_large` - 10,000 points
-- `test_reduce_matches_cpu` - Compare with CPU sum
+**Target data flow** (Phase 12.6):
+```
+GPU: scores[N], correspondences[N], gradients[6×N], hessians[36×N]  ← column-major
+     ↓ CUB DeviceSegmentedReduce (single kernel)
+GPU: totals[43]
+     ↓ Download 43 floats only
+CPU: Use totals
+```
 
 ### Phase 12.2: Derivative Pipeline Buffers
 
@@ -280,7 +268,176 @@ impl GpuDerivativePipeline {
 Notes:
 - GPU path includes CPU reduction (downloads N×43 floats, sums on CPU)
 - Larger point clouds (typical real-world: 1000+ points) will show better speedups
-- GPU reduction kernel deferred as future optimization
+- GPU reduction (Phase 12.6) will eliminate the N×43 download bottleneck
+
+### Phase 12.6: CUB GPU Reduction
+
+**Status**: ✅ Complete
+
+**Goal**: Replace CPU reduction with CUB DeviceSegmentedReduce to download only 43 floats.
+
+**Approach**: Option D2 - Column-major kernel output + CUB segmented reduce
+
+**Implementation Summary**:
+1. Added `cuda_ffi/csrc/segmented_reduce.cu` - CUB DeviceSegmentedReduce wrapper (f32/f64)
+2. Added `cuda_ffi/src/segmented_reduce.rs` - Rust bindings with `SegmentedReducer` API
+3. Modified `derivatives/gpu.rs` gradient/Hessian kernels for column-major output
+4. Added `compute_iteration_gpu_reduce()` to `GpuDerivativePipeline`
+5. Updated `runtime.rs` CPU reduction to match column-major layout
+
+**Tests**:
+- 7 segmented reduce tests in `cuda_ffi` (all passing)
+- `test_pipeline_gpu_reduce_vs_cpu_reduce` - Verifies GPU/CPU reduction produce same results
+- `test_pipeline_gpu_reduce_empty_input` - Edge case handling
+- 299 total tests passing in `ndt_cuda`
+
+#### The Layout Problem
+
+Current gradient/Hessian kernels output **row-major** (per-point contiguous):
+```
+gradients[N×6] = [g0₀,g0₁,g0₂,g0₃,g0₄,g0₅, g1₀,g1₁,..., gN₀,gN₁,...]
+                  ├────── point 0 ──────┤  ├─ point 1 ─┤
+```
+
+We need to sum **columns** (each gradient component across all points):
+```
+total_gradient[0] = g0₀ + g1₀ + g2₀ + ... + gN₀  (component 0)
+total_gradient[1] = g0₁ + g1₁ + g2₁ + ... + gN₁  (component 1)
+...
+```
+
+CUB DeviceSegmentedReduce sums **contiguous segments**, not strided data.
+
+#### Solution: Column-Major Output
+
+Modify kernels to output **column-major** (per-component contiguous):
+```
+gradients[6×N] = [g0₀,g1₀,g2₀,...,gN₀, g0₁,g1₁,...,gN₁, ..., g0₅,g1₅,...,gN₅]
+                  ├─── component 0 ───┤ ├── component 1 ──┤    ├── component 5 ──┤
+```
+
+Then CUB can sum each segment (component) in a single kernel launch.
+
+#### Implementation Steps
+
+**Step 1: Add CUB DeviceSegmentedReduce to cuda_ffi**
+
+```
+src/cuda_ffi/
+├── cuda/
+│   └── segmented_reduce.cu    (NEW - CUB wrapper)
+├── src/
+│   ├── lib.rs                 (add pub mod segmented_reduce)
+│   └── segmented_reduce.rs    (NEW - Rust bindings)
+└── build.rs                   (add compilation)
+```
+
+C++ interface:
+```cpp
+extern "C" void segmented_reduce_sum_f32(
+    const float* d_input,      // [total_elements]
+    float* d_output,           // [num_segments]
+    const int* d_offsets,      // [num_segments + 1]
+    int num_segments,
+    void* d_temp,
+    size_t temp_bytes
+);
+
+extern "C" size_t segmented_reduce_temp_size(
+    int num_items,
+    int num_segments
+);
+```
+
+Rust interface:
+```rust
+pub struct SegmentedReducer {
+    temp_buffer: *mut c_void,
+    temp_size: usize,
+}
+
+impl SegmentedReducer {
+    pub fn new(max_items: usize, max_segments: usize) -> Result<Self>;
+
+    pub fn sum_f32(
+        &self,
+        input: *mut f32,         // device pointer
+        output: *mut f32,        // device pointer
+        offsets: *const i32,     // device pointer [num_segments + 1]
+        num_segments: i32,
+    ) -> Result<()>;
+}
+```
+
+**Step 2: Modify gradient/Hessian kernels for column-major output**
+
+File: `src/ndt_cuda/src/derivatives/gpu.rs`
+
+```rust
+// Before (row-major):
+gradients[point_idx * 6 + component] = value;
+
+// After (column-major):
+gradients[component * num_points + point_idx] = value;
+```
+
+Same change for `compute_ndt_hessian_kernel`.
+
+**Step 3: Update pipeline to use CUB reduction**
+
+File: `src/ndt_cuda/src/derivatives/pipeline.rs`
+
+```rust
+impl GpuDerivativePipeline {
+    fn reduce_on_gpu(&self) -> Result<GpuDerivativeResult> {
+        // Segment offsets: [0, N, 2N, 3N, ..., 43N]
+        // For: scores[N], corr[N], grad[6×N], hess[36×N]
+        let offsets = [0, N, 2*N, 3*N, 4*N, ..., 43*N];
+
+        // Concatenate buffers (or use separate calls)
+        // Call CUB segmented reduce
+        self.reducer.sum_f32(combined, totals, offsets, 43)?;
+
+        // Download only 43 floats
+        let totals_bytes = self.client.read_one(self.totals.clone());
+        // Parse into GpuDerivativeResult
+    }
+}
+```
+
+**Step 4: Add tests**
+
+- `test_segmented_reduce_simple` - Basic CUB reduce test
+- `test_gradient_kernel_column_major` - Verify new layout
+- `test_hessian_kernel_column_major` - Verify new layout
+- `test_gpu_reduction_matches_cpu` - End-to-end validation
+
+#### Data Transfer Comparison
+
+| Metric | Current (CPU reduce) | With CUB (Phase 12.6) |
+|--------|---------------------|----------------------|
+| Download per iteration | N × 43 × 4 bytes | 43 × 4 = 172 bytes |
+| For N=1000, 30 iters | 5.2 MB | 5.2 KB |
+| Reduction | 1000× more data | 1000× less |
+
+#### Files to Modify
+
+| File | Changes |
+|------|---------|
+| `src/cuda_ffi/cuda/segmented_reduce.cu` | NEW - CUB wrapper |
+| `src/cuda_ffi/src/segmented_reduce.rs` | NEW - Rust bindings |
+| `src/cuda_ffi/src/lib.rs` | Add module export |
+| `src/cuda_ffi/build.rs` | Add CUDA compilation |
+| `src/ndt_cuda/src/derivatives/gpu.rs` | Column-major output |
+| `src/ndt_cuda/src/derivatives/pipeline.rs` | Use CUB reduction |
+
+#### Estimated Effort
+
+- cuda_ffi CUB bindings: ~150 lines C++ + ~100 lines Rust
+- Kernel modifications: ~20 lines
+- Pipeline integration: ~50 lines
+- Tests: ~100 lines
+- **Total**: ~420 lines
 
 ## Dependencies
 
