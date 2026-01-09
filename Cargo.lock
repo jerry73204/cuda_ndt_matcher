@@ -946,6 +946,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cuda_ffi"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "cuda_ndt_matcher"
 version = "0.1.0"
 dependencies = [

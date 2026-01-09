@@ -1,0 +1,18 @@
+[package]
+name = "cuda_ffi"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "FFI bindings for CUDA libraries (CUB, cuSOLVER) used by cuda_ndt_matcher"
+build = "build.rs"
+
+[dependencies]
+# Error handling
+thiserror = { workspace = true }
+
+[build-dependencies]
+# For finding CUDA installation
+cc = "1.0"
+
+[features]
+default = []
