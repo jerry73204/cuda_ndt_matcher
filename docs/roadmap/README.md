@@ -2,25 +2,26 @@
 
 This document outlines the plan to implement custom CUDA kernels for NDT scan matching using [CubeCL](https://github.com/tracel-ai/cubecl), phasing out the fast-gicp dependency.
 
-## Current Status (2026-01-05)
+## Current Status (2026-01-09)
 
-| Phase                          | Status         | Notes                                                    |
-|--------------------------------|----------------|----------------------------------------------------------|
-| Phase 1: Voxel Grid            | ✅ Complete    | CPU + GPU hybrid implementation with KD-tree search      |
-| Phase 2: Derivatives           | ✅ Complete    | CPU multi-voxel matching, GPU kernels defined            |
-| Phase 3: Newton Solver         | ✅ Complete    | More-Thuente line search implemented                     |
-| Phase 4: Scoring               | ✅ Complete    | NVTL and transform probability                           |
-| Phase 5: Integration           | ✅ Complete    | API complete, GPU runtime implemented                    |
-| Phase 6: Validation            | ⚠️ Partial      | Algorithm verified, rosbag testing pending               |
-| Phase 7: ROS Features          | ✅ Complete    | TF, map loading, multi-NDT, Monte Carlo viz, GPU scoring |
-| Phase 8: Missing Features      | ✅ Complete    | All sub-phases complete including 8.6 multi-grid         |
-| Phase 9: Full GPU Acceleration | ⚠️ Partial     | 9.1 workaround, 9.2 GPU voxel grid complete              |
-| Phase 10: SmartPoseBuffer      | ✅ Complete    | Pose interpolation for timestamp-aligned initial guess   |
-| Phase 11: GPU Zero-Copy Pipeline | 🔲 Planned   | Eliminate CPU-GPU transfers between pipeline stages      |
+| Phase                            | Status         | Notes                                                    |
+|----------------------------------|----------------|----------------------------------------------------------|
+| Phase 1: Voxel Grid              | ✅ Complete    | CPU + GPU hybrid implementation with KD-tree search      |
+| Phase 2: Derivatives             | ✅ Complete    | CPU multi-voxel matching, GPU kernels defined            |
+| Phase 3: Newton Solver           | ✅ Complete    | More-Thuente line search implemented                     |
+| Phase 4: Scoring                 | ✅ Complete    | NVTL and transform probability                           |
+| Phase 5: Integration             | ✅ Complete    | API complete, GPU runtime implemented                    |
+| Phase 6: Validation              | ⚠️ Partial     | Algorithm verified, rosbag testing pending               |
+| Phase 7: ROS Features            | ✅ Complete    | TF, map loading, multi-NDT, Monte Carlo viz, GPU scoring |
+| Phase 8: Missing Features        | ✅ Complete    | All sub-phases complete including 8.6 multi-grid         |
+| Phase 9: Full GPU Acceleration   | ⚠️ Partial     | 9.1 workaround, 9.2 GPU voxel grid complete              |
+| Phase 10: SmartPoseBuffer        | ✅ Complete    | Pose interpolation for timestamp-aligned initial guess   |
+| Phase 11: GPU Zero-Copy Voxel    | ✅ Complete    | CubeCL-cuda_ffi interop, radix sort + segment on GPU     |
+| Phase 12: GPU Derivative Pipeline| 🔲 Planned     | Zero-copy derivatives in optimization loop (2-3x speedup)|
 
 **Core NDT algorithm is fully implemented on CPU and matches Autoware's pclomp.**
 **GPU runtime is implemented with CubeCL for accelerated scoring and voxel grid construction.**
-**351 tests pass (282 ndt_cuda + 56 cuda_ndt_matcher + 13 cuda_ffi). All GPU tests enabled and passing.**
+**358 tests pass (289 ndt_cuda + 56 cuda_ndt_matcher + 13 cuda_ffi). All GPU tests enabled and passing.**
 
 ## Phase Documents
 
@@ -34,7 +35,8 @@ This document outlines the plan to implement custom CUDA kernels for NDT scan ma
 - [Phase 8: Missing Features (Autoware Parity)](phase-8-autoware-parity.md)
 - [Phase 9: Full GPU Acceleration](phase-9-gpu-acceleration.md)
 - [Phase 10: SmartPoseBuffer](phase-10-smart-pose-buffer.md)
-- [Phase 11: GPU Zero-Copy Pipeline](phase-11-gpu-zero-copy-pipeline.md)
+- [Phase 11: GPU Zero-Copy Voxel Pipeline](phase-11-gpu-zero-copy-pipeline.md) ✅
+- [Phase 12: GPU Derivative Pipeline](phase-12-gpu-derivative-pipeline.md) 🔲
 - [Implementation Notes](implementation-notes.md) - Dependencies, risks, references
 
 ## Background
@@ -110,16 +112,17 @@ cuda_ndt_matcher/
 
 | Phase                                | Estimated Duration | Priority     | Status         |
 |--------------------------------------|--------------------|--------------|----------------|
-| Phase 6: Validation                  | 1-2 weeks          | High         | Pending        |
+| Phase 6: Validation                  | 1-2 weeks          | High         | ⚠️ Partial     |
 | Phase 9.3: GPU Derivatives           | 1-2 weeks          | Medium       | 🔲 Not started |
 | Phase 9.4: GPU Memory Pooling        | 3-4 days           | Low          | 🔲 Not started |
 | Phase 9.5: Async GPU Execution       | 1 week             | Low          | 🔲 Not started |
-| Phase 11: GPU Zero-Copy Pipeline     | 1-2 weeks          | Medium       | 🔲 Not started |
-| **Total Remaining**                  | **~3-4 weeks**     |              | 6, 9.3-9.5, 11 |
+| Phase 11: GPU Zero-Copy Voxel        | 1-2 weeks          | Medium       | ✅ Complete    |
+| Phase 12: GPU Derivative Pipeline    | 1-2 weeks          | High         | 🔲 Not started |
+| **Total Remaining**                  | **~3-4 weeks**     |              | 6, 9.3-9.5, 12 |
 
 ### Priority Order
 
 1. **Phase 6: Validation** - Run rosbag comparison to verify algorithm correctness
-2. **Phase 9.3: GPU Derivatives** - Performance improvement for optimization loop
-3. **Phase 11: GPU Zero-Copy Pipeline** - Eliminate CPU-GPU transfers (3x fewer transfers)
+2. **Phase 12: GPU Derivative Pipeline** - Zero-copy derivatives in optimization loop (2-3x speedup)
+3. **Phase 9.3: GPU Derivatives** - Additional GPU kernels for scoring path
 4. **Phase 9.4-9.5: GPU Optimization** - Memory pooling and async execution

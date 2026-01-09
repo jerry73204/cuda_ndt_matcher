@@ -78,24 +78,55 @@ The `build_zero_copy()` method uses a GPU-accelerated pipeline with minimal CPU-
 
 | Feature                     | Status | GPU | Autoware Diff                  | GPU Rationale                                                             |
 |-----------------------------|--------|-----|--------------------------------|---------------------------------------------------------------------------|
-| Jacobian computation        | ✅     | 🔲  | Same formulas (Magnusson 2009) | GPU kernels exist but **only used for scoring**, not optimization loop    |
-| Hessian computation         | ✅     | 🔲  | Same formulas                  | Same as above                                                             |
+| Jacobian computation        | ✅     | ⚠️  | Same formulas (Magnusson 2009) | GPU kernels exist, used in `NdtCudaRuntime`, not in optimization loop     |
+| Hessian computation         | ✅     | ⚠️  | Same formulas                  | Same as above                                                             |
 | Angular derivatives (j_ang) | ✅     | —   | All 8 terms match              | Precomputed once per iteration, tiny                                      |
 | Point Hessian (h_ang)       | ✅     | —   | All 15 terms match             | Precomputed once per iteration                                            |
-| Gradient accumulation       | ✅     | 🔲  | Same algorithm                 | **Should be GPU** - main bottleneck. Blocked by CubeCL control flow bugs  |
-| Hessian accumulation        | ✅     | 🔲  | Same algorithm                 | **Should be GPU** - paired with gradient                                  |
+| Gradient accumulation       | ✅     | ⚠️  | Same algorithm                 | GPU kernel exists, not integrated into optimization loop                  |
+| Hessian accumulation        | ✅     | ⚠️  | Same algorithm                 | GPU kernel exists, not integrated into optimization loop                  |
 
-### GPU Optimization Loop Status
+### GPU Derivative Kernels (Implemented)
 
-| Component            | Current | Target | Blocker                                  |
-|----------------------|---------|--------|------------------------------------------|
-| Point transformation | GPU ✅  | GPU    | -                                        |
-| Radius search        | GPU ✅  | GPU    | -                                        |
-| Gradient computation | CPU     | GPU    | CubeCL optimizer panics on complex loops |
-| Hessian computation  | CPU     | GPU    | Same as gradient                         |
-| Newton solve         | CPU     | CPU    | 6x6 too small for GPU                    |
+All kernels exist in `derivatives/gpu.rs` and are functional:
 
-**Potential speedup**: 2-3x per alignment if GPU derivatives enabled in optimization loop.
+| Kernel | Location | Status | Notes |
+|--------|----------|--------|-------|
+| `radius_search_kernel` | Line 61 | ✅ Working | Brute-force O(N×V), bounded loop workaround |
+| `compute_ndt_score_kernel` | Line 145 | ✅ Working | Per-point score with neighbor accumulation |
+| `compute_ndt_gradient_kernel` | Line 473 | ✅ Working | Unrolled 6-element gradient accumulator |
+| `compute_ndt_hessian_kernel` | Line 796 | ✅ Working | Combined jacobians+hessians parameter |
+
+### GPU Runtime Integration
+
+`NdtCudaRuntime::compute_derivatives()` in `runtime.rs:345` chains all kernels:
+1. Transform points (GPU)
+2. Radius search (GPU)
+3. Compute scores (GPU)
+4. Compute gradients (GPU)
+5. Compute Hessians (GPU)
+6. **Reduce on CPU** (download N×6 gradients, N×36 Hessians, sum)
+
+### Optimization Loop Status
+
+| Component            | Current | Target | Blocker                                       |
+|----------------------|---------|--------|-----------------------------------------------|
+| Point transformation | GPU ✅  | GPU    | -                                             |
+| Radius search        | GPU ✅  | GPU    | -                                             |
+| Gradient computation | CPU     | GPU    | Integration: solver uses `compute_derivatives_cpu` |
+| Hessian computation  | CPU     | GPU    | Same - needs zero-copy pipeline integration   |
+| GPU reduction        | N/A     | GPU    | Not implemented - currently reduces on CPU    |
+| Newton solve         | CPU     | CPU    | 6×6 too small for GPU                         |
+
+**Why CPU in solver?** The `NdtOptimizer` at `solver.rs:156` calls `compute_derivatives_cpu_with_metric()`
+instead of `NdtCudaRuntime::compute_derivatives()`. This is not due to kernel bugs (kernels work),
+but due to integration complexity:
+- Each iteration would upload source points, voxel data, transforms
+- Downloads scores, gradients, hessians (N×43 floats)
+- ~6 transfers per iteration × 30 iterations = 180 transfers
+
+**Solution**: Zero-copy derivative pipeline (see `docs/roadmap/phase-12-gpu-derivative-pipeline.md`)
+
+**Potential speedup**: 2-3x per alignment with zero-copy GPU derivatives.
 
 ---
 
@@ -292,13 +323,16 @@ The `build_zero_copy()` method uses a GPU-accelerated pipeline with minimal CPU-
 |-------------------------|--------------------------------------------|--------------------------|
 | Voxel grid construction | Morton, sort, segments, statistics (6/7)   | Eigendecomposition (1/7) |
 
-### Should Be on GPU, Blocked (🔲)
+### Kernels Exist, Need Integration (⚠️)
 
-| Component                     | Blocker                    | Speedup |
-|-------------------------------|----------------------------|---------|
-| Gradient in optimization loop | CubeCL optimizer bugs      | 2-3x    |
-| Hessian in optimization loop  | Same                       | 2-3x    |
-| Batch alignment pipeline      | Architecture change needed | 3-5x    |
+| Component                     | Kernel Status | Blocker                          | Speedup |
+|-------------------------------|---------------|----------------------------------|---------|
+| Gradient in optimization loop | ✅ Working    | Zero-copy pipeline not built     | 2-3x    |
+| Hessian in optimization loop  | ✅ Working    | Same                             | 2-3x    |
+| GPU reduction (sum)           | ❌ Missing    | Need atomic/parallel reduce      | Minor   |
+| Batch alignment pipeline      | ❌ Missing    | Architecture change needed       | 3-5x    |
+
+See `docs/roadmap/phase-12-gpu-derivative-pipeline.md` for implementation plan.
 
 ### CPU by Design (—)
 
