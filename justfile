@@ -92,8 +92,11 @@ test-cuda-ndt-matcher:
     source {{local_setup}}
     cargo test --manifest-path {{manifest}} --config {{cargo_config}} -p cuda_ndt_matcher
 
-# Run all tests (Rust unit tests + Python integration tests)
-test: test-rust test-integration
+# Run Rust unit tests only (fast)
+test: test-rust
+
+# Run all tests including integration tests (slow, requires sample data)
+test-all: test-rust test-integration
 
 # Run Python integration tests (prepares data if needed)
 test-integration: ensure-test-data
