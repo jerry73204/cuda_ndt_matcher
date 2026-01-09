@@ -2,16 +2,27 @@
 //!
 //! This crate provides Rust bindings for:
 //! - CUB DeviceRadixSort (GPU radix sort)
+//! - CUB DeviceScan (prefix sum)
+//! - CUB DeviceSelect (stream compaction)
+//! - GPU segment detection for voxel boundaries
 //!
 //! # Example
 //!
 //! ```ignore
-//! use cuda_ffi::radix_sort::RadixSorter;
+//! use cuda_ffi::{RadixSorter, SegmentDetector};
 //!
 //! let sorter = RadixSorter::new()?;
-//! let sorted = sorter.sort_pairs(&keys, &values)?;
+//! let (sorted_keys, sorted_values) = sorter.sort_pairs(&keys, &values)?;
+//!
+//! let detector = SegmentDetector::new()?;
+//! let segments = detector.detect_segments(&sorted_keys)?;
 //! ```
 
 pub mod radix_sort;
+pub mod segment_detect;
 
-pub use radix_sort::{CudaError, RadixSorter};
+pub use radix_sort::{radix_sort_temp_size, sort_pairs_inplace, CudaError, RadixSorter};
+pub use segment_detect::{
+    detect_segments_inplace, segment_detect_temp_sizes, SegmentCounts, SegmentDetector,
+    SegmentResult,
+};
