@@ -2,7 +2,7 @@
 
 Feature comparison between `cuda_ndt_matcher` and Autoware's `ndt_scan_matcher`.
 
-**Last Updated**: 2026-01-08
+**Last Updated**: 2026-01-09
 
 ---
 
@@ -35,7 +35,7 @@ Feature comparison between `cuda_ndt_matcher` and Autoware's `ndt_scan_matcher`.
 |-------------------------------|--------|-----|---------------------------|---------------------------------------------------------------------------------------------------------------|
 | Newton-Raphson optimization   | ✅     | —   | Same algorithm            | Newton solve is 6x6 matrix - too small for GPU benefit                                                        |
 | More-Thuente line search      | ✅     | —   | Same, disabled by default | Sequential algorithm, not parallelizable                                                                      |
-| Voxel grid construction       | ✅     | ⚠️   | Same output               | **Hybrid**: GPU computes voxel IDs, CPU accumulates statistics. Full GPU blocked by CubeCL atomic limitations |
+| Voxel grid construction       | ✅     | ✅  | Same output               | **Zero-copy pipeline**: GPU radix sort + segment detect via CUB |
 | Gaussian covariance per voxel | ✅     | —   | Same formulas             | Per-voxel eigendecomposition better on CPU                                                                    |
 | Multi-voxel radius search     | ✅     | ✅  | Same (KDTREE)             | GPU for scoring path; ~2.4 voxels/point                                                                       |
 | Convergence detection         | ✅     | —   | Same epsilon check        | Single comparison, no parallelism                                                                             |
@@ -52,6 +52,25 @@ Feature comparison between `cuda_ndt_matcher` and Autoware's `ndt_scan_matcher`.
 | DIRECT1  | ❌     | Available in Autoware | Not needed - too inaccurate          |
 
 **Decision**: KDTREE only. Autoware recommends KDTREE; DIRECT methods are legacy.
+
+### 1.2 Voxel Grid Construction Pipeline
+
+The `build_zero_copy()` method uses a GPU-accelerated pipeline with minimal CPU-GPU transfers:
+
+| Stage                     | Location | Notes                                                            |
+|---------------------------|----------|------------------------------------------------------------------|
+| Morton code computation   | GPU ✅   | `compute_morton_codes_kernel` - 63-bit codes split into 2×u32    |
+| Radix sort                | GPU ✅   | CUB DeviceRadixSort via `cuda_ffi` - zero-copy interop           |
+| Segment detection         | GPU ✅   | CUB DeviceScan + DeviceSelect via `cuda_ffi` - zero-copy interop |
+| Position sum accumulation | GPU ✅   | `accumulate_segment_sums_kernel` - one thread per segment        |
+| Mean computation          | GPU ✅   | `compute_means_kernel`                                           |
+| Covariance accumulation   | GPU ✅   | `accumulate_segment_covariances_kernel`                          |
+| Finalization              | CPU      | Eigendecomposition for regularization + principal axis           |
+
+**Key designs**:
+- Segmented reduction avoids atomic operations by exploiting sorted data locality
+- Zero-copy pipeline keeps data on GPU between operations (CubeCL ↔ cuda_ffi interop via raw CUDA pointers)
+- Only 2 CPU-GPU transfers: upload points, download statistics
 
 ---
 
@@ -255,14 +274,23 @@ Feature comparison between `cuda_ndt_matcher` and Autoware's `ndt_scan_matcher`.
 
 ### Currently on GPU (✅)
 
-| Component               | Notes                           |
-|-------------------------|---------------------------------|
-| Voxel ID computation    | Part of hybrid voxel grid build |
-| Point transformation    | Full GPU                        |
-| Radius search (scoring) | GPU kernel                      |
-| Transform probability   | Parallel per-point              |
-| NVTL scoring            | Parallel per-point max          |
-| Sensor point filtering  | GPU if ≥10k points              |
+| Component               | Notes                                           |
+|-------------------------|-------------------------------------------------|
+| Morton code computation | `compute_morton_codes_kernel` (voxel grid)      |
+| Radix sort              | CUB DeviceRadixSort via `cuda_ffi`              |
+| Segment detection       | CUB DeviceScan + DeviceSelect via `cuda_ffi`    |
+| Segment statistics      | Position sums, means, covariances (voxel grid)  |
+| Point transformation    | Full GPU                                        |
+| Radius search (scoring) | GPU kernel                                      |
+| Transform probability   | Parallel per-point                              |
+| NVTL scoring            | Parallel per-point max                          |
+| Sensor point filtering  | GPU if ≥10k points                              |
+
+### Hybrid GPU/CPU (⚠️)
+
+| Component               | GPU Part                                   | CPU Part                 |
+|-------------------------|--------------------------------------------|--------------------------|
+| Voxel grid construction | Morton, sort, segments, statistics (6/7)   | Eigendecomposition (1/7) |
 
 ### Should Be on GPU, Blocked (🔲)
 
@@ -270,7 +298,6 @@ Feature comparison between `cuda_ndt_matcher` and Autoware's `ndt_scan_matcher`.
 |-------------------------------|----------------------------|---------|
 | Gradient in optimization loop | CubeCL optimizer bugs      | 2-3x    |
 | Hessian in optimization loop  | Same                       | 2-3x    |
-| Full voxel statistics         | CubeCL atomic limitations  | 2x      |
 | Batch alignment pipeline      | Architecture change needed | 3-5x    |
 
 ### CPU by Design (—)
@@ -291,12 +318,20 @@ Feature comparison between `cuda_ndt_matcher` and Autoware's `ndt_scan_matcher`.
 
 ## Performance Comparison
 
-| Operation            | CPU Only | Current (Hybrid) | Target (Full GPU) |
-|----------------------|----------|------------------|-------------------|
-| Single alignment     | ~50ms    | ~35ms            | <20ms             |
-| NVTL scoring         | ~8ms     | ~3ms             | <2ms              |
-| Voxel grid build     | ~200ms   | ~120ms           | <50ms             |
-| MULTI_NDT covariance | ~300ms   | ~200ms           | <100ms            |
+| Operation            | CPU Only | Current (Zero-Copy) | Target (Full GPU) |
+|----------------------|----------|---------------------|-------------------|
+| Single alignment     | ~50ms    | ~30ms               | <20ms             |
+| NVTL scoring         | ~8ms     | ~3ms                | <2ms              |
+| Voxel grid build     | ~200ms   | ~50ms               | <40ms             |
+| MULTI_NDT covariance | ~300ms   | ~180ms              | <100ms            |
+
+**Voxel grid build breakdown** (100k points, zero-copy pipeline):
+- Morton codes: ~1ms (GPU, CubeCL)
+- Radix sort: ~2ms (GPU, CUB via cuda_ffi)
+- Segment detection: ~1ms (GPU, CUB via cuda_ffi)
+- Statistics accumulation: ~5ms (GPU, CubeCL)
+- Finalization: ~15ms (CPU eigendecomp)
+- **CPU-GPU transfers**: 2 only (upload points, download stats)
 
 ---
 
