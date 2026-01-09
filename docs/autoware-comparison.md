@@ -76,25 +76,25 @@ The `build_zero_copy()` method uses a GPU-accelerated pipeline with minimal CPU-
 
 ## 2. Derivative Computation
 
-| Feature                     | Status | GPU | Autoware Diff                  | GPU Rationale                                                             |
-|-----------------------------|--------|-----|--------------------------------|---------------------------------------------------------------------------|
-| Jacobian computation        | ✅     | ⚠️  | Same formulas (Magnusson 2009) | GPU kernels exist, used in `NdtCudaRuntime`, not in optimization loop     |
-| Hessian computation         | ✅     | ⚠️  | Same formulas                  | Same as above                                                             |
-| Angular derivatives (j_ang) | ✅     | —   | All 8 terms match              | Precomputed once per iteration, tiny                                      |
-| Point Hessian (h_ang)       | ✅     | —   | All 15 terms match             | Precomputed once per iteration                                            |
-| Gradient accumulation       | ✅     | ⚠️  | Same algorithm                 | GPU kernel exists, not integrated into optimization loop                  |
-| Hessian accumulation        | ✅     | ⚠️  | Same algorithm                 | GPU kernel exists, not integrated into optimization loop                  |
+| Feature                     | Status | GPU | Autoware Diff                  | GPU Rationale                                                         |
+|-----------------------------|--------|-----|--------------------------------|-----------------------------------------------------------------------|
+| Jacobian computation        | ✅     | ⚠️   | Same formulas (Magnusson 2009) | GPU kernels exist, used in `NdtCudaRuntime`, not in optimization loop |
+| Hessian computation         | ✅     | ⚠️   | Same formulas                  | Same as above                                                         |
+| Angular derivatives (j_ang) | ✅     | —   | All 8 terms match              | Precomputed once per iteration, tiny                                  |
+| Point Hessian (h_ang)       | ✅     | —   | All 15 terms match             | Precomputed once per iteration                                        |
+| Gradient accumulation       | ✅     | ⚠️   | Same algorithm                 | GPU kernel exists, not integrated into optimization loop              |
+| Hessian accumulation        | ✅     | ⚠️   | Same algorithm                 | GPU kernel exists, not integrated into optimization loop              |
 
 ### GPU Derivative Kernels (Implemented)
 
 All kernels exist in `derivatives/gpu.rs` and are functional:
 
-| Kernel | Location | Status | Notes |
-|--------|----------|--------|-------|
-| `radius_search_kernel` | Line 61 | ✅ Working | Brute-force O(N×V), bounded loop workaround |
-| `compute_ndt_score_kernel` | Line 145 | ✅ Working | Per-point score with neighbor accumulation |
-| `compute_ndt_gradient_kernel` | Line 473 | ✅ Working | Unrolled 6-element gradient accumulator |
-| `compute_ndt_hessian_kernel` | Line 796 | ✅ Working | Combined jacobians+hessians parameter |
+| Kernel                        | Location | Status     | Notes                                       |
+|-------------------------------|----------|------------|---------------------------------------------|
+| `radius_search_kernel`        | Line 61  | ✅ Working | Brute-force O(N×V), bounded loop workaround |
+| `compute_ndt_score_kernel`    | Line 145 | ✅ Working | Per-point score with neighbor accumulation  |
+| `compute_ndt_gradient_kernel` | Line 473 | ✅ Working | Unrolled 6-element gradient accumulator     |
+| `compute_ndt_hessian_kernel`  | Line 796 | ✅ Working | Combined jacobians+hessians parameter       |
 
 ### GPU Runtime Integration
 
