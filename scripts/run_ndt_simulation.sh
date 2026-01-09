@@ -54,7 +54,8 @@ source "$PROJECT_DIR/install/setup.bash"
 if [[ "$USE_CUDA" == "true" && -z "${NDT_DEBUG:-}" ]]; then
     export NDT_DEBUG=1
     export NDT_DEBUG_FILE="${NDT_DEBUG_FILE:-/tmp/ndt_cuda_debug.jsonl}"
-    echo "CUDA NDT debug enabled: $NDT_DEBUG_FILE"
+    export NDT_DEBUG_VPP=1  # Enable voxel-per-point distribution logging
+    echo "CUDA NDT debug enabled: $NDT_DEBUG_FILE (VPP debug on)"
 fi
 
 # Export NDT_AUTOWARE_DEBUG if builtin mode and not already set

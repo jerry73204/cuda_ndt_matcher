@@ -40,7 +40,8 @@ echo "  Recording to: $BAG_NAME"
 if [[ -n "$USE_CUDA" ]]; then
     export NDT_DEBUG=1
     export NDT_DEBUG_FILE="${NDT_DEBUG_FILE:-/tmp/ndt_cuda_debug.jsonl}"
-    echo "CUDA NDT debug enabled: $NDT_DEBUG_FILE"
+    export NDT_DEBUG_VPP=1  # Enable voxel-per-point distribution logging
+    echo "CUDA NDT debug enabled: $NDT_DEBUG_FILE (VPP debug on)"
 else
     export NDT_AUTOWARE_DEBUG=1
     export NDT_AUTOWARE_DEBUG_FILE="${NDT_AUTOWARE_DEBUG_FILE:-/tmp/ndt_autoware_debug.jsonl}"
