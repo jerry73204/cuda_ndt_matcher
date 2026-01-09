@@ -456,8 +456,6 @@ impl NdtScanMatcherNode {
             }
         }
 
-        let start_time = Instant::now();
-
         // Convert sensor points first - needed for align service even before we have initial pose
         let raw_points = match pointcloud::from_pointcloud2(&msg) {
             Ok(pts) => pts,
@@ -654,6 +652,9 @@ impl NdtScanMatcherNode {
             .evaluate_nvtl(&sensor_points, map, &initial_pose.pose.pose, 0.55)
             .unwrap_or(0.0);
 
+        // Start execution timer here to measure only NDT alignment (matches Autoware's scope)
+        let align_start_time = Instant::now();
+
         let result = if debug_enabled {
             // Use debug variant and write to file
             match manager.align_with_debug(
@@ -692,6 +693,9 @@ impl NdtScanMatcherNode {
             }
         };
 
+        // Calculate execution time immediately after alignment (matches Autoware's scope)
+        let exe_time_ms = align_start_time.elapsed().as_secs_f32() * 1000.0;
+
         // ---- Compute scores for filtering decision ----
         // Like Autoware, we compute NVTL and transform_probability before deciding to publish
 
@@ -702,9 +706,6 @@ impl NdtScanMatcherNode {
         let nvtl_score = manager
             .evaluate_nvtl(&sensor_points, map, &result.pose, 0.55)
             .unwrap_or(0.0);
-
-        // Calculate execution time (needed for diagnostics regardless of publish decision)
-        let exe_time_ms = start_time.elapsed().as_secs_f32() * 1000.0;
 
         // ---- Convergence gating (matching Autoware's behavior) ----
         // Autoware gates pose publishing on three conditions:
