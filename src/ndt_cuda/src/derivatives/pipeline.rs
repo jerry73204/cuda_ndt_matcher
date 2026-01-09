@@ -83,6 +83,11 @@ pub struct GpuDerivativePipeline {
     reduce_temp_bytes: usize, // Size of temp storage
     reduce_offsets: Handle,   // Segment offsets [44] for 43 segments
     reduce_output: Handle,    // Reduction output [43] floats
+
+    // CPU-side cache to avoid GPU downloads per iteration (P2 optimization)
+    cached_source_points: Vec<[f32; 3]>, // Cached source points for Jacobian computation
+    cached_gauss_d1: f32,                // Cached Gaussian d1 parameter
+    cached_gauss_d2: f32,                // Cached Gaussian d2 parameter
 }
 
 impl GpuDerivativePipeline {
@@ -156,6 +161,9 @@ impl GpuDerivativePipeline {
             reduce_temp_bytes,
             reduce_offsets,
             reduce_output,
+            cached_source_points: Vec::new(),
+            cached_gauss_d1: 0.0,
+            cached_gauss_d2: 0.0,
         })
     }
 
@@ -204,6 +212,12 @@ impl GpuDerivativePipeline {
         self.num_voxels = num_voxels;
         self.search_radius_sq = search_radius * search_radius;
 
+        // Cache source points on CPU for Jacobian computation (P2 optimization)
+        // This avoids downloading source_points every iteration
+        self.cached_source_points = source_points.to_vec();
+        self.cached_gauss_d1 = gauss_d1;
+        self.cached_gauss_d2 = gauss_d2;
+
         // Flatten source points
         let source_flat: Vec<f32> = source_points
             .iter()
@@ -224,11 +238,6 @@ impl GpuDerivativePipeline {
         // Upload Gaussian parameters
         let gauss_params = [gauss_d1, gauss_d2];
         self.gauss_params = self.client.create(f32::as_bytes(&gauss_params));
-
-        // Precompute Jacobians on CPU and upload
-        // Note: Jacobians depend on source point positions and pose angles
-        // For now, we'll recompute per iteration since pose changes
-        // Future optimization: only recompute when angles change significantly
 
         Ok(())
     }
@@ -262,21 +271,10 @@ impl GpuDerivativePipeline {
         let transform = pose_to_transform_matrix(pose);
         self.transform = self.client.create(f32::as_bytes(&transform));
 
-        // Compute Jacobians and point Hessians on CPU
-        // This is fast (~1ms for 1000 points) and avoids complex GPU kernels
-        let source_points_bytes = self.client.read_one(self.source_points.clone());
-        let source_points: Vec<[f32; 3]> = source_points_bytes
-            .chunks(12)
-            .map(|chunk| {
-                let x = f32::from_le_bytes(chunk[0..4].try_into().unwrap());
-                let y = f32::from_le_bytes(chunk[4..8].try_into().unwrap());
-                let z = f32::from_le_bytes(chunk[8..12].try_into().unwrap());
-                [x, y, z]
-            })
-            .collect();
-
-        let jacobians = compute_point_jacobians_cpu(&source_points, pose);
-        let point_hessians = compute_point_hessians_cpu(&source_points, pose);
+        // Compute Jacobians and point Hessians on CPU using cached source points
+        // (P2 optimization: avoids downloading source_points every iteration)
+        let jacobians = compute_point_jacobians_cpu(&self.cached_source_points, pose);
+        let point_hessians = compute_point_hessians_cpu(&self.cached_source_points, pose);
 
         // Upload Jacobians
         self.jacobians = self.client.create(f32::as_bytes(&jacobians));
@@ -321,11 +319,7 @@ impl GpuDerivativePipeline {
             );
         }
 
-        // Step 3: Compute scores
-        let gauss_params_bytes = self.client.read_one(self.gauss_params.clone());
-        let gauss_d1 = f32::from_le_bytes(gauss_params_bytes[0..4].try_into().unwrap());
-        let gauss_d2 = f32::from_le_bytes(gauss_params_bytes[4..8].try_into().unwrap());
-
+        // Step 3: Compute scores (using cached Gaussian parameters - P2 optimization)
         unsafe {
             compute_ndt_score_kernel::launch_unchecked::<f32, CudaRuntime>(
                 &self.client,
@@ -341,8 +335,8 @@ impl GpuDerivativePipeline {
                     1,
                 ),
                 ArrayArg::from_raw_parts::<u32>(&self.neighbor_counts, num_points, 1),
-                ScalarArg::new(gauss_d1),
-                ScalarArg::new(gauss_d2),
+                ScalarArg::new(self.cached_gauss_d1),
+                ScalarArg::new(self.cached_gauss_d2),
                 ScalarArg::new(num_points as u32),
                 ArrayArg::from_raw_parts::<f32>(&self.scores, num_points, 1),
                 ArrayArg::from_raw_parts::<u32>(&self.correspondences, num_points, 1),
@@ -366,8 +360,8 @@ impl GpuDerivativePipeline {
                     1,
                 ),
                 ArrayArg::from_raw_parts::<u32>(&self.neighbor_counts, num_points, 1),
-                ScalarArg::new(gauss_d1),
-                ScalarArg::new(gauss_d2),
+                ScalarArg::new(self.cached_gauss_d1),
+                ScalarArg::new(self.cached_gauss_d2),
                 ScalarArg::new(num_points as u32),
                 ArrayArg::from_raw_parts::<f32>(&self.gradients, num_points * 6, 1),
             );
@@ -481,20 +475,10 @@ impl GpuDerivativePipeline {
         let transform = pose_to_transform_matrix(pose);
         self.transform = self.client.create(f32::as_bytes(&transform));
 
-        // Compute Jacobians and point Hessians on CPU (needed for gradient/hessian kernels)
-        let source_points_bytes = self.client.read_one(self.source_points.clone());
-        let source_points: Vec<[f32; 3]> = source_points_bytes
-            .chunks(12)
-            .map(|chunk| {
-                let x = f32::from_le_bytes(chunk[0..4].try_into().unwrap());
-                let y = f32::from_le_bytes(chunk[4..8].try_into().unwrap());
-                let z = f32::from_le_bytes(chunk[8..12].try_into().unwrap());
-                [x, y, z]
-            })
-            .collect();
-
-        let jacobians = compute_point_jacobians_cpu(&source_points, pose);
-        let point_hessians = compute_point_hessians_cpu(&source_points, pose);
+        // Compute Jacobians and point Hessians on CPU using cached source points
+        // (P2 optimization: avoids downloading source_points every iteration)
+        let jacobians = compute_point_jacobians_cpu(&self.cached_source_points, pose);
+        let point_hessians = compute_point_hessians_cpu(&self.cached_source_points, pose);
 
         // Upload Jacobians
         self.jacobians = self.client.create(f32::as_bytes(&jacobians));
@@ -540,12 +524,7 @@ impl GpuDerivativePipeline {
             );
         }
 
-        // Read Gaussian parameters
-        let gauss_params_bytes = self.client.read_one(self.gauss_params.clone());
-        let gauss_d1 = f32::from_le_bytes(gauss_params_bytes[0..4].try_into().unwrap());
-        let gauss_d2 = f32::from_le_bytes(gauss_params_bytes[4..8].try_into().unwrap());
-
-        // Score kernel
+        // Score kernel (using cached Gaussian parameters - P2 optimization)
         unsafe {
             compute_ndt_score_kernel::launch_unchecked::<f32, CudaRuntime>(
                 &self.client,
@@ -561,8 +540,8 @@ impl GpuDerivativePipeline {
                     1,
                 ),
                 ArrayArg::from_raw_parts::<u32>(&self.neighbor_counts, num_points, 1),
-                ScalarArg::new(gauss_d1),
-                ScalarArg::new(gauss_d2),
+                ScalarArg::new(self.cached_gauss_d1),
+                ScalarArg::new(self.cached_gauss_d2),
                 ScalarArg::new(num_points as u32),
                 ArrayArg::from_raw_parts::<f32>(&self.scores, num_points, 1),
                 ArrayArg::from_raw_parts::<u32>(&self.correspondences, num_points, 1),
@@ -586,8 +565,8 @@ impl GpuDerivativePipeline {
                     1,
                 ),
                 ArrayArg::from_raw_parts::<u32>(&self.neighbor_counts, num_points, 1),
-                ScalarArg::new(gauss_d1),
-                ScalarArg::new(gauss_d2),
+                ScalarArg::new(self.cached_gauss_d1),
+                ScalarArg::new(self.cached_gauss_d2),
                 ScalarArg::new(num_points as u32),
                 ArrayArg::from_raw_parts::<f32>(&self.gradients, num_points * 6, 1),
             );
