@@ -194,12 +194,23 @@ impl NdtManager {
         self.matcher.evaluate_nvtl(source_points, &isometry)
     }
 
+    /// Evaluate transform probability at a given pose
+    pub fn evaluate_transform_probability(
+        &self,
+        source_points: &[[f32; 3]],
+        pose: &Pose,
+    ) -> Result<f64> {
+        let isometry = pose_to_isometry(pose);
+        self.matcher
+            .evaluate_transform_probability(source_points, &isometry)
+    }
+
     /// Evaluate NVTL at multiple poses in parallel (GPU-accelerated via Rayon).
     ///
     /// This is optimized for multi-NDT covariance estimation where we need
     /// to evaluate NVTL at many offset poses quickly.
     pub fn evaluate_nvtl_batch(
-        &self,
+        &mut self,
         source_points: &[[f32; 3]],
         poses: &[Pose],
     ) -> Result<Vec<f64>> {
@@ -264,6 +275,21 @@ impl NdtManager {
     /// Check if regularization is enabled.
     pub fn is_regularization_enabled(&self) -> bool {
         self.matcher.is_regularization_enabled()
+    }
+
+    /// Compute per-point scores for visualization.
+    ///
+    /// Returns transformed points in map frame and their max NDT scores.
+    /// This is used to create colored point cloud visualizations showing
+    /// alignment quality at each point.
+    pub fn compute_per_point_scores_for_visualization(
+        &mut self,
+        source_points: &[[f32; 3]],
+        pose: &Pose,
+    ) -> Result<(Vec<[f32; 3]>, Vec<f32>)> {
+        let isometry = pose_to_isometry(pose);
+        self.matcher
+            .compute_per_point_scores_for_visualization(source_points, &isometry)
     }
 }
 

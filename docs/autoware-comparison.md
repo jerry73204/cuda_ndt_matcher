@@ -2,7 +2,7 @@
 
 Feature comparison between `cuda_ndt_matcher` and Autoware's `ndt_scan_matcher`.
 
-**Last Updated**: 2026-01-09 (Phase 12 GPU Derivative Pipeline complete)
+**Last Updated**: 2026-01-09 (Per-point Score Visualization complete)
 
 ---
 
@@ -132,19 +132,35 @@ Larger point clouds (typical 1000+ points) expected to show better speedups.
 | NVTL scoring           | ✅     | ✅  | Same formula        | Parallel per-point max           |
 | Convergence threshold  | ✅     | —   | Same check          | Single comparison                |
 | Skip on low score      | ✅     | —   | Same behavior       | Control flow only                |
-| No-ground scoring      | ❌     | -   | **Missing**         | Would use same GPU path          |
-| Per-point score colors | ❌     | -   | **Missing** (debug) | CPU sufficient for visualization |
+| No-ground scoring      | ✅     | —   | Same algorithm      | CPU filtering (small point count)|
+| Per-point score colors | ✅     | ✅  | Same algorithm      | GPU per-point max scores         |
 
-### Missing: Ground Point Filtering
+### Ground Point Filtering (✅ Implemented)
 
-**Autoware behavior**:
-- Filters ground points (z < min_z + margin)
-- Computes separate `no_ground_transform_probability` and `no_ground_nvtl`
-- Publishes `points_aligned_no_ground`
+**Implementation** (`main.rs`, enabled via `score_estimation.no_ground_points.enable`):
+- Filters ground points using z-height threshold (same algorithm as Autoware)
+- Computes `no_ground_transform_probability` and `no_ground_nvtl` on filtered points
+- Publishes `points_aligned_no_ground` point cloud
 
-**Why implement**: Improves robustness on flat roads where ground dominates score.
+**Parameters**:
+- `enable`: boolean, default false
+- `z_margin_for_ground_removal`: f32, default 0.8m
 
-**GPU consideration**: Yes - same parallel filtering as existing z-height filter.
+**GPU consideration**: CPU filtering is sufficient - post-alignment filtering operates on small point subsets (~100-500 points).
+
+### Per-Point Score Visualization (✅ Implemented)
+
+**Implementation** (`GpuScoringPipeline::compute_per_point_scores` + `colors.rs`):
+- Computes per-point max NDT scores via GPU kernel
+- Maps scores to RGB colors using Autoware's 4-quadrant color scheme (blue→cyan→green→yellow→red)
+- Publishes `voxel_score_points` PointCloud2 with RGB for RViz visualization
+
+**Color mapping** (same as Autoware's `exchange_color_crc`):
+- Score range: [1.0, 3.5] (configurable via `DEFAULT_SCORE_LOWER/UPPER`)
+- Blue (low score) → Cyan → Green → Yellow → Red (high score)
+- Uses sine-based smooth gradient in each quadrant
+
+**GPU acceleration**: Full GPU path via `compute_per_point_scores_for_visualization()` method.
 
 ---
 
@@ -154,19 +170,23 @@ Larger point clouds (typical 1000+ points) expected to show better speedups.
 |-----------------------|--------|-----|-------------------------|------------------------------------------------------------------|
 | FIXED mode            | ✅     | —   | Same                    | Returns constant matrix                                          |
 | LAPLACE mode          | ✅     | —   | Same (Hessian inverse)  | 6x6 inversion - CPU faster                                       |
-| MULTI_NDT mode        | ✅     | 🔲  | Same algorithm          | Runs batch alignments. **Could benefit from GPU batch pipeline** |
-| MULTI_NDT_SCORE mode  | ✅     | ✅  | Same (softmax weighted) | Uses GPU NVTL batch                                              |
+| MULTI_NDT mode        | ✅     | 🔲  | Same algorithm          | Runs batch alignments via Rayon                                  |
+| MULTI_NDT_SCORE mode  | ✅     | ✅  | Same (softmax weighted) | **GPU batch scoring via `GpuScoringPipeline`**                   |
 | Covariance rotation   | ✅     | —   | Same                    | 6x6 rotation - trivial                                           |
 | Temperature parameter | ✅     | —   | Same default            | Single scalar                                                    |
 | Scale factor          | ✅     | —   | Same                    | Single scalar                                                    |
 
-### MULTI_NDT GPU Opportunity
+### MULTI_NDT_SCORE GPU Pipeline (✅ Complete)
 
-**Current**: 6+ alignments run via Rayon parallel CPU.
+**Implementation** (`GpuScoringPipeline` in `scoring/pipeline.rs`):
+- Single kernel launch for M poses × N points (`compute_scores_batch_kernel`)
+- Brute-force neighbor search per transformed point (O(N×V))
+- CUB DeviceSegmentedReduce for aggregation
+- Returns `transform_probability` and `nvtl` per pose
 
-**Opportunity**: Single GPU kernel with shared voxel grid, different poses.
+**Performance**: GPU batch scoring replaces Rayon parallel CPU path.
 
-**Potential speedup**: 3-5x for MULTI_NDT covariance mode.
+See `docs/roadmap/phase-13-gpu-scoring-pipeline.md` for implementation details.
 
 ---
 
@@ -228,7 +248,7 @@ Larger point clouds (typical 1000+ points) expected to show better speedups.
 | Distance metrics      | ✅     | —   | Same          | Pose difference           |
 | Skip counter          | ✅     | —   | Same          | Counter                   |
 | Map update status     | ✅     | —   | Same          | Status flags              |
-| No-ground metrics     | ❌     | -   | **Missing**   | Requires ground filtering |
+| No-ground metrics     | ✅     | —   | Same          | Published when enabled    |
 
 **GPU consideration**: Diagnostics are metrics publication - no GPU benefit.
 
@@ -248,7 +268,8 @@ Larger point clouds (typical 1000+ points) expected to show better speedups.
 | `trigger_node_srv` service     | ✅     | Same                |
 | `ndt_align_srv` service        | ✅     | Same                |
 | 12 debug publishers            | ✅     | Same topics         |
-| `no_ground_*` publishers (2)   | ❌     | **Missing**         |
+| `no_ground_*` publishers (3)   | ✅     | Same topics         |
+| `voxel_score_points` pub       | ✅     | Same (RGB colors)   |
 | `multi_ndt_pose` PoseArray     | ❌     | **Missing** (debug) |
 | `multi_initial_pose` PoseArray | ❌     | **Missing** (debug) |
 | `debug/loaded_pointcloud_map`  | ❌     | **Missing** (debug) |
@@ -272,16 +293,12 @@ Larger point clouds (typical 1000+ points) expected to show better speedups.
 
 ### Functional Gaps (affects behavior)
 
-| Feature                   | Priority | Effort | GPU |
-|---------------------------|----------|--------|-----|
-| Ground point filtering    | Medium   | Low    | Yes |
-| No-ground scoring metrics | Medium   | Low    | Yes |
+All functional features are implemented. Ground point filtering was added in Phase 13.8.
 
 ### Debug/Visualization Gaps (no runtime impact)
 
 | Feature                     | Priority | Effort | GPU |
 |-----------------------------|----------|--------|-----|
-| Per-point score colors      | Low      | Low    | No  |
 | Multi-NDT PoseArray         | Low      | Low    | No  |
 | Debug map publisher         | Low      | Low    | No  |
 | Distance old/new publishers | Low      | Low    | No  |
@@ -314,6 +331,8 @@ Larger point clouds (typical 1000+ points) expected to show better speedups.
 | Derivative reduction         | CUB DeviceSegmentedReduce (43 segments → 43)    |
 | Transform probability        | Parallel per-point                              |
 | NVTL scoring                 | Parallel per-point max                          |
+| Batch scoring (MULTI_NDT)    | `GpuScoringPipeline` - M poses × N points       |
+| Per-point score visualization| GPU max-score extraction + CPU color mapping    |
 | Sensor point filtering       | GPU if ≥10k points                              |
 
 ### Hybrid GPU/CPU (⚠️)
@@ -330,6 +349,7 @@ Larger point clouds (typical 1000+ points) expected to show better speedups.
 | Gradient in optimization loop | ✅ Working    | ✅ Integrated     | 1.58x     |
 | Hessian in optimization loop  | ✅ Working    | ✅ Integrated     | (combined)|
 | GPU reduction (sum)           | ✅ Working    | ✅ Integrated     | Minor     |
+| Batch scoring pipeline        | ✅ Working    | ✅ Integrated     | ~15x      |
 | Batch alignment pipeline      | ❌ Missing    | Not started       | 3-5x      |
 
 See `docs/roadmap/phase-12-gpu-derivative-pipeline.md` for implementation details.
@@ -385,13 +405,13 @@ See `docs/roadmap/phase-12-gpu-derivative-pipeline.md` for implementation detail
 
 1. ~~**GPU optimization loop derivatives**~~ ✅ Complete - 1.58x speedup via `align_gpu()`
 2. ~~**GPU reduction kernel**~~ ✅ Complete - CUB DeviceSegmentedReduce, downloads only 43 floats
-3. **Ground point filtering** - Functional improvement for flat roads
+3. ~~**GPU batch scoring (Phase 13)**~~ ✅ Complete - GPU batch scoring for MULTI_NDT_SCORE
+4. ~~**Ground point filtering**~~ ✅ Complete - No-ground scoring for flat road robustness
 
 ### Medium Priority
 
-4. **No-ground scoring** - Pairs with ground filtering
 5. **GPU batch alignment** - Benefits MULTI_NDT mode (3-5x)
 
 ### Low Priority
 
-6. Debug visualization features - No runtime benefit
+6. ~~Debug visualization features~~ Partially complete - Per-point score visualization done; remaining debug publishers low impact

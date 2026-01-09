@@ -64,12 +64,23 @@ pub struct ValidationParams {
     pub skipping_publish_num: i32,
 }
 
+/// No-ground points configuration for score estimation
+#[derive(Clone)]
+pub struct NoGroundPointsParams {
+    /// Enable no-ground scoring (computes scores excluding ground points)
+    pub enable: bool,
+    /// Z threshold for ground removal: points with z - base_link_z <= threshold are ground
+    pub z_margin_for_ground_removal: f32,
+}
+
 /// Score estimation configuration
 #[derive(Clone)]
 pub struct ScoreParams {
     pub converged_param_type: i32,
     pub converged_param_transform_probability: f64,
     pub converged_param_nearest_voxel_transformation_likelihood: f64,
+    /// No-ground scoring parameters
+    pub no_ground_points: NoGroundPointsParams,
 }
 
 /// Covariance estimation type
@@ -322,6 +333,20 @@ impl NdtParams {
                     .default(2.3)
                     .mandatory()?
                     .get(),
+                no_ground_points: NoGroundPointsParams {
+                    enable: node
+                        .declare_parameter("score_estimation.no_ground_points.enable")
+                        .default(false)
+                        .mandatory()?
+                        .get(),
+                    z_margin_for_ground_removal: node
+                        .declare_parameter(
+                            "score_estimation.no_ground_points.z_margin_for_ground_removal",
+                        )
+                        .default(0.8)
+                        .mandatory()?
+                        .get() as f32,
+                },
             },
             covariance: CovarianceParams {
                 output_pose_covariance: default_covariance(),

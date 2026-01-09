@@ -321,7 +321,7 @@ pub fn estimate_xy_covariance_by_multi_ndt(
 /// 2. Uses softmax weights based on NVTL scores
 /// 3. Computes weighted covariance from offset poses
 pub fn estimate_xy_covariance_by_multi_ndt_score(
-    ndt_manager: &NdtManager,
+    ndt_manager: &mut NdtManager,
     sensor_points: &[[f32; 3]],
     _map_points: &[[f32; 3]], // Not needed, target already set
     result_pose: &Pose,
@@ -397,7 +397,7 @@ pub fn estimate_covariance_full(
     params: &CovarianceParams,
     hessian: &[[f64; 6]; 6],
     result_pose: &Pose,
-    ndt_manager: Option<&NdtManager>,
+    ndt_manager: Option<&mut NdtManager>,
     sensor_points: Option<&[[f32; 3]]>,
     map_points: Option<&[[f32; 3]]>,
 ) -> CovarianceEstimationResult {

@@ -297,11 +297,11 @@ impl DualNdtManager {
 
     /// Evaluate NVTL at multiple poses in parallel.
     pub fn evaluate_nvtl_batch(
-        &self,
+        &mut self,
         source_points: &[[f32; 3]],
         poses: &[Pose],
     ) -> Result<Vec<f64>> {
-        let active = self.active.read();
+        let mut active = self.active.write();
         active.evaluate_nvtl_batch(source_points, poses)
     }
 
@@ -391,6 +391,10 @@ mod tests {
                 converged_param_type: 1,
                 converged_param_transform_probability: 3.0,
                 converged_param_nearest_voxel_transformation_likelihood: 2.3,
+                no_ground_points: crate::params::NoGroundPointsParams {
+                    enable: false,
+                    z_margin_for_ground_removal: 0.8,
+                },
             },
             covariance: CovarianceParams {
                 output_pose_covariance: [0.0; 36],

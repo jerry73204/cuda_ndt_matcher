@@ -18,6 +18,7 @@ use diagnostics::{DiagnosticLevel, DiagnosticsInterface, ScanMatchingDiagnostics
 use dual_ndt_manager::DualNdtManager;
 use geometry_msgs::msg::{Point, Pose, PoseStamped, PoseWithCovariance, PoseWithCovarianceStamped};
 use map_module::{DynamicMapLoader, MapUpdateModule};
+use nalgebra::{Isometry3, Quaternion as NaQuaternion, Translation3, UnitQuaternion, Vector3};
 use params::NdtParams;
 use parking_lot::Mutex;
 use pose_buffer::SmartPoseBuffer;
@@ -72,6 +73,14 @@ struct DebugPublishers {
     initial_pose_cov_pub: Publisher<PoseWithCovarianceStamped>,
     initial_to_result_distance_pub: Publisher<Float32Stamped>,
     initial_to_result_relative_pose_pub: Publisher<PoseStamped>,
+
+    // No-ground scoring (debug)
+    no_ground_points_aligned_pub: Publisher<PointCloud2>,
+    no_ground_transform_probability_pub: Publisher<Float32Stamped>,
+    no_ground_nvtl_pub: Publisher<Float32Stamped>,
+
+    // Per-point score visualization (voxel_score_points with RGB colors)
+    voxel_score_points_pub: Publisher<PointCloud2>,
 }
 
 // Note: Many fields appear "unused" but are actually used via cloned references
@@ -194,6 +203,14 @@ impl NdtScanMatcherNode {
             initial_to_result_distance_pub: node.create_publisher("initial_to_result_distance")?,
             initial_to_result_relative_pose_pub: node
                 .create_publisher("initial_to_result_relative_pose")?,
+            // No-ground scoring debug
+            no_ground_points_aligned_pub: node.create_publisher("points_aligned_no_ground")?,
+            no_ground_transform_probability_pub: node
+                .create_publisher("no_ground_transform_probability")?,
+            no_ground_nvtl_pub: node
+                .create_publisher("no_ground_nearest_voxel_transformation_likelihood")?,
+            // Per-point score visualization
+            voxel_score_points_pub: node.create_publisher("voxel_score_points")?,
         };
 
         // Create diagnostics interface
@@ -694,7 +711,7 @@ impl NdtScanMatcherNode {
                 &params.covariance,
                 &result.hessian,
                 &result.pose,
-                Some(&*manager), // Reuse existing lock to avoid deadlock
+                Some(&mut *manager), // Reuse existing lock to avoid deadlock
                 Some(&sensor_points),
                 Some(map),
             );
@@ -829,6 +846,96 @@ impl NdtScanMatcherNode {
             .collect();
         let aligned_msg = pointcloud::to_pointcloud2(&aligned_points, &header);
         let _ = debug_pubs.points_aligned_pub.publish(&aligned_msg);
+
+        // ---- Per-Point Score Visualization ----
+        // Compute per-point NDT scores and publish as RGB-colored point cloud.
+        // This matches Autoware's voxel_score_points output for debugging.
+        if let Ok((score_points, scores)) =
+            manager.compute_per_point_scores_for_visualization(&sensor_points, &result.pose)
+        {
+            // Convert scores to RGB colors using Autoware's color scheme
+            let rgb_values: Vec<u32> = scores
+                .iter()
+                .map(|&score| {
+                    ndt_cuda::scoring::color_to_rgb_packed(&ndt_cuda::scoring::ndt_score_to_color(
+                        score,
+                        ndt_cuda::scoring::DEFAULT_SCORE_LOWER,
+                        ndt_cuda::scoring::DEFAULT_SCORE_UPPER,
+                    ))
+                })
+                .collect();
+
+            let score_cloud_msg =
+                pointcloud::to_pointcloud2_with_rgb(&score_points, &rgb_values, &header);
+            let _ = debug_pubs.voxel_score_points_pub.publish(&score_cloud_msg);
+        }
+
+        // ---- No-Ground Scoring (optional) ----
+        // When enabled, filters out ground points and computes scores on the remaining points.
+        // Ground is defined as points with transformed_z - base_link_z <= z_margin.
+        if params.score.no_ground_points.enable {
+            // Build isometry from result pose for transforming points
+            let p = &result.pose.position;
+            let q = &result.pose.orientation;
+            let translation = Translation3::new(p.x, p.y, p.z);
+            let quaternion = UnitQuaternion::from_quaternion(NaQuaternion::new(q.w, q.x, q.y, q.z));
+            let pose_isometry: Isometry3<f64> = Isometry3::from_parts(translation, quaternion);
+            let base_link_z = p.z;
+            let z_threshold = params.score.no_ground_points.z_margin_for_ground_removal as f64;
+
+            // Filter sensor points: keep those whose transformed z is above ground threshold
+            let no_ground_points: Vec<[f32; 3]> = sensor_points
+                .iter()
+                .filter(|pt| {
+                    // Transform point to map frame
+                    let sensor_pt = Vector3::new(pt[0] as f64, pt[1] as f64, pt[2] as f64);
+                    let map_pt = pose_isometry * nalgebra::Point3::from(sensor_pt);
+                    // Keep if point_z - base_link_z > threshold
+                    map_pt.z - base_link_z > z_threshold
+                })
+                .copied()
+                .collect();
+
+            if !no_ground_points.is_empty() {
+                // Compute scores on filtered (non-ground) points
+                let no_ground_tp = manager
+                    .evaluate_transform_probability(&no_ground_points, &result.pose)
+                    .unwrap_or(0.0);
+                let no_ground_nvtl = manager
+                    .evaluate_nvtl(&no_ground_points, map, &result.pose, 0.55)
+                    .unwrap_or(0.0);
+
+                // Publish filtered point cloud (in map frame for visualization)
+                let no_ground_aligned: Vec<[f32; 3]> = no_ground_points
+                    .iter()
+                    .map(|pt| {
+                        let sensor_pt = Vector3::new(pt[0] as f64, pt[1] as f64, pt[2] as f64);
+                        let map_pt = pose_isometry * nalgebra::Point3::from(sensor_pt);
+                        [map_pt.x as f32, map_pt.y as f32, map_pt.z as f32]
+                    })
+                    .collect();
+                let no_ground_cloud_msg = pointcloud::to_pointcloud2(&no_ground_aligned, &header);
+                let _ = debug_pubs
+                    .no_ground_points_aligned_pub
+                    .publish(&no_ground_cloud_msg);
+
+                // Publish no-ground transform probability
+                let no_ground_tp_msg = Float32Stamped {
+                    stamp: msg.header.stamp.clone(),
+                    data: no_ground_tp as f32,
+                };
+                let _ = debug_pubs
+                    .no_ground_transform_probability_pub
+                    .publish(&no_ground_tp_msg);
+
+                // Publish no-ground NVTL
+                let no_ground_nvtl_msg = Float32Stamped {
+                    stamp: msg.header.stamp.clone(),
+                    data: no_ground_nvtl as f32,
+                };
+                let _ = debug_pubs.no_ground_nvtl_pub.publish(&no_ground_nvtl_msg);
+            }
+        }
 
         // ---- Diagnostics ----
         // Collect and publish scan matching diagnostics
