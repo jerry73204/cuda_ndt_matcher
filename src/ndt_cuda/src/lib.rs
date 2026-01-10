@@ -40,6 +40,7 @@ pub mod optimization;
 pub mod runtime;
 pub mod scoring;
 pub mod test_utils;
+pub mod timing;
 pub mod voxel_grid;
 
 pub use derivatives::{
@@ -54,6 +55,7 @@ pub use scoring::{
     compute_nvtl, compute_per_point_scores, compute_transform_probability, NvtlConfig, NvtlResult,
     ScoringResult,
 };
+pub use timing::{AlignmentTiming, IterationTiming, Timer, TimingCollector};
 pub use voxel_grid::{Voxel, VoxelGrid, VoxelGridConfig};
 
 // GPU-accelerated voxel grid construction

@@ -17,7 +17,7 @@ pub mod regularization;
 pub mod solver;
 pub mod types;
 
-pub use debug::{AlignmentDebug, IterationDebug};
+pub use debug::{AlignmentDebug, AlignmentTimingDebug, IterationDebug, IterationTimingDebug};
 pub use line_search::{LineSearchConfig, LineSearchResult};
 pub use more_thuente::{more_thuente_search, MoreThuenteConfig, MoreThuenteResult};
 pub use newton::{newton_step, newton_step_regularized};

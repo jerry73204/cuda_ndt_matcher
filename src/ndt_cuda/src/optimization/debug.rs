@@ -6,6 +6,23 @@
 use nalgebra::{Matrix6, Vector6};
 use serde::Serialize;
 
+/// Timing breakdown for a single iteration (only populated when profiling feature is enabled).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct IterationTimingDebug {
+    /// Total iteration time in milliseconds.
+    pub total_ms: f64,
+    /// Time to transform source points.
+    pub transform_ms: f64,
+    /// Time to find correspondences (voxel search).
+    pub correspondence_ms: f64,
+    /// Time to compute derivatives (Jacobian/Hessian).
+    pub derivatives_ms: f64,
+    /// Time to solve linear system (Newton step).
+    pub solver_ms: f64,
+    /// Time for line search (if used).
+    pub line_search_ms: f64,
+}
+
 /// Debug information captured at each optimization iteration.
 #[derive(Debug, Clone, Serialize)]
 pub struct IterationDebug {
@@ -53,6 +70,10 @@ pub struct IterationDebug {
 
     /// Pose after applying the step.
     pub pose_after: Vec<f64>,
+
+    /// Timing breakdown (populated when profiling feature is enabled).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timing: Option<IterationTimingDebug>,
 }
 
 impl IterationDebug {
@@ -74,7 +95,13 @@ impl IterationDebug {
             line_search_converged: false,
             num_correspondences: 0,
             pose_after: vec![0.0; 6],
+            timing: None,
         }
+    }
+
+    /// Set timing from IterationTimingDebug.
+    pub fn set_timing(&mut self, timing: IterationTimingDebug) {
+        self.timing = Some(timing);
     }
 
     /// Set pose from array.
@@ -125,6 +152,23 @@ impl IterationDebug {
     }
 }
 
+/// Timing breakdown for the entire alignment (only populated when profiling feature is enabled).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AlignmentTimingDebug {
+    /// Total alignment time in milliseconds.
+    pub total_ms: f64,
+    /// Time to set up source points.
+    pub setup_ms: f64,
+    /// Total time in derivative computation.
+    pub derivatives_total_ms: f64,
+    /// Total time in solver.
+    pub solver_total_ms: f64,
+    /// Total time in line search.
+    pub line_search_total_ms: f64,
+    /// Time to compute final scores (NVTL, transform probability).
+    pub scoring_ms: f64,
+}
+
 /// Complete debug history for one NDT alignment call.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct AlignmentDebug {
@@ -158,6 +202,10 @@ pub struct AlignmentDebug {
     /// Maximum consecutive oscillation count detected.
     /// Oscillation indicates the optimizer is bouncing between poses.
     pub oscillation_count: usize,
+
+    /// Timing breakdown (populated when profiling feature is enabled).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timing: Option<AlignmentTimingDebug>,
 }
 
 impl AlignmentDebug {

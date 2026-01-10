@@ -164,12 +164,15 @@ impl NdtScanMatcherNode {
         let latest_sensor_points: Arc<ArcSwap<Option<Vec<[f32; 3]>>>> =
             Arc::new(ArcSwap::from_pointee(None));
         let enabled = Arc::new(AtomicBool::new(true));
-        // Track processed timestamps to prevent duplicate processing.
-        // Use a HashSet since messages may arrive out of order.
-        let processed_timestamps = Arc::new(Mutex::new(HashSet::<u64>::with_capacity(1000)));
-
         // Track consecutive skips due to low score (like Autoware's skipping_publish_num)
         let skip_counter = Arc::new(AtomicI32::new(0));
+
+        // Debug counters for callback tracking
+        let callback_count = Arc::new(AtomicI32::new(0));
+        let align_count = Arc::new(AtomicI32::new(0));
+
+        // Note: We rely on QoS KeepLast(1) to prevent duplicate message processing,
+        // matching Autoware's approach. No explicit timestamp deduplication needed.
 
         // Initialize map update module
         let map_module = Arc::new(MapUpdateModule::new(params.dynamic_map.clone()));
@@ -248,7 +251,6 @@ impl NdtScanMatcherNode {
             let pose_buffer = Arc::clone(&pose_buffer);
             let latest_sensor_points = Arc::clone(&latest_sensor_points);
             let enabled = Arc::clone(&enabled);
-            let processed_timestamps = Arc::clone(&processed_timestamps);
             let pose_pub = pose_pub.clone();
             let pose_cov_pub = pose_cov_pub.clone();
             let debug_pubs = debug_pubs.clone();
@@ -256,6 +258,8 @@ impl NdtScanMatcherNode {
             let params = Arc::clone(&params);
             let tf_handler = Arc::clone(&tf_handler);
             let skip_counter = Arc::clone(&skip_counter);
+            let callback_count = Arc::clone(&callback_count);
+            let align_count = Arc::clone(&align_count);
 
             let mut opts = SubscriptionOptions::new("points_raw");
             opts.qos = sensor_qos;
@@ -270,8 +274,9 @@ impl NdtScanMatcherNode {
                     &pose_buffer,
                     &latest_sensor_points,
                     &enabled,
-                    &processed_timestamps,
                     &skip_counter,
+                    &callback_count,
+                    &align_count,
                     &pose_pub,
                     &pose_cov_pub,
                     &debug_pubs,
@@ -395,6 +400,23 @@ impl NdtScanMatcherNode {
             )?
         };
 
+        // Clear debug file at startup if NDT_DEBUG is enabled (prevents accumulation across runs)
+        if std::env::var("NDT_DEBUG").is_ok() {
+            let debug_file = std::env::var("NDT_DEBUG_FILE")
+                .unwrap_or_else(|_| "/tmp/ndt_cuda_debug.jsonl".to_string());
+            // Truncate the file by opening with write-only (not append)
+            if let Ok(mut file) = std::fs::File::create(&debug_file) {
+                use std::io::Write;
+                use std::time::SystemTime;
+                let timestamp = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let _ = writeln!(file, r#"{{"run_start": true, "unix_timestamp": {timestamp}}}"#);
+                log_info!(NODE_NAME, "Debug output cleared: {debug_file}");
+            }
+        }
+
         log_info!(NODE_NAME, "NDT scan matcher node initialized");
 
         Ok(Self {
@@ -431,8 +453,9 @@ impl NdtScanMatcherNode {
         pose_buffer: &Arc<SmartPoseBuffer>,
         latest_sensor_points: &Arc<ArcSwap<Option<Vec<[f32; 3]>>>>,
         enabled: &Arc<AtomicBool>,
-        processed_timestamps: &Arc<Mutex<HashSet<u64>>>,
         skip_counter: &Arc<AtomicI32>,
+        callback_count: &Arc<AtomicI32>,
+        align_count: &Arc<AtomicI32>,
         pose_pub: &Publisher<PoseStamped>,
         pose_cov_pub: &Publisher<PoseWithCovarianceStamped>,
         debug_pubs: &DebugPublishers,
@@ -845,6 +868,18 @@ impl NdtScanMatcherNode {
         }
 
         // ---- Debug Publishers (always publish for monitoring) ----
+
+        // Track successful alignment
+        let align_num = align_count.fetch_add(1, Ordering::SeqCst) + 1;
+
+        // Log periodic summary every 50 alignments
+        if align_num % 50 == 0 {
+            let total_cb = callback_count.load(Ordering::SeqCst);
+            log_info!(
+                NODE_NAME,
+                "Callback stats: total={total_cb}, aligned={align_num}"
+            );
+        }
 
         // Publish execution time
         let exe_time_msg = Float32Stamped {

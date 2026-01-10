@@ -43,3 +43,5 @@ approx = { workspace = true }
 [features]
 default = ["cuda"]
 cuda = []
+# Enable detailed timing instrumentation for profiling
+profiling = []
