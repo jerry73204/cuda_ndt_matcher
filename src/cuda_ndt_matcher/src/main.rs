@@ -413,7 +413,10 @@ impl NdtScanMatcherNode {
                     .duration_since(SystemTime::UNIX_EPOCH)
                     .map(|d| d.as_secs())
                     .unwrap_or(0);
-                let _ = writeln!(file, r#"{{"run_start": true, "unix_timestamp": {timestamp}}}"#);
+                let _ = writeln!(
+                    file,
+                    r#"{{"run_start": true, "unix_timestamp": {timestamp}}}"#
+                );
                 log_info!(NODE_NAME, "Debug output cleared: {debug_file}");
             }
         }

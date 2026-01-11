@@ -4,9 +4,9 @@
 //! Without the feature, all timing macros compile to no-ops.
 
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 #[cfg(feature = "profiling")]
 use std::time::Instant;
-use std::time::Duration;
 
 /// Timing breakdown for a single NDT alignment.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
