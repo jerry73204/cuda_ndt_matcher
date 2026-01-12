@@ -573,11 +573,12 @@ mod tests {
         };
         let gpu_grid = GpuVoxelGrid::from_points(&points_flat, &gpu_config);
 
-        // Both implementations should produce at least one valid voxel.
-        // Note: Exact counts may differ because:
-        // - GPU uses relative coordinates (normalized to grid_min)
-        // - Autoware uses absolute coordinates for voxel assignment
-        // This affects how points near coordinate boundaries are assigned to voxels.
+        // Both implementations should produce valid voxels.
+        // Note: The GPU now aligns grid_min to resolution boundaries to match
+        // Autoware's floor(coord / resolution) voxel assignment. However, exact
+        // counts may still differ slightly due to:
+        // - Numerical differences in covariance regularization
+        // - Different eigenvalue thresholds for validity
         let autoware_count = autoware_leaves.len();
         let gpu_count = gpu_grid.num_valid_voxels();
 

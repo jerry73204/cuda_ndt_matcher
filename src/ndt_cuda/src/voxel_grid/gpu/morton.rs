@@ -228,7 +228,16 @@ pub fn compute_morton_codes_cpu(points: &[f32], resolution: f32) -> MortonCodeRe
         max_z = max_z.max(pz);
     }
 
-    let grid_min = [min_x, min_y, min_z];
+    // Align min bounds to resolution boundary (Autoware-style)
+    // This ensures voxel boundaries match Autoware's global grid:
+    // Autoware uses floor(coord / resolution) for voxel assignment.
+    // By aligning our grid origin to resolution boundaries, we get the same
+    // voxel assignments and thus the same point groupings and statistics.
+    let aligned_min_x = (min_x / resolution).floor() * resolution;
+    let aligned_min_y = (min_y / resolution).floor() * resolution;
+    let aligned_min_z = (min_z / resolution).floor() * resolution;
+
+    let grid_min = [aligned_min_x, aligned_min_y, aligned_min_z];
     let grid_max = [max_x, max_y, max_z];
     let inv_resolution = 1.0 / resolution;
 
@@ -241,9 +250,11 @@ pub fn compute_morton_codes_cpu(points: &[f32], resolution: f32) -> MortonCodeRe
         let py = points[i * 3 + 1];
         let pz = points[i * 3 + 2];
 
-        let gx = (px - min_x) * inv_resolution;
-        let gy = (py - min_y) * inv_resolution;
-        let gz = (pz - min_z) * inv_resolution;
+        // Use aligned bounds for Morton code computation
+        // This matches Autoware's floor(coord / resolution) voxel assignment
+        let gx = (px - aligned_min_x) * inv_resolution;
+        let gy = (py - aligned_min_y) * inv_resolution;
+        let gz = (pz - aligned_min_z) * inv_resolution;
 
         let ix = if gx >= 0.0 {
             Ord::min(gx as u32, 0x1FFFFF)

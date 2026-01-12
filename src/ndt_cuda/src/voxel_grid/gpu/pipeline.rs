@@ -204,14 +204,26 @@ impl GpuPipelineBuffers {
         }
 
         // Compute bounds on CPU
-        let (grid_min, grid_max) = compute_bounds_flat(points_flat);
-        self.grid_min = grid_min;
+        let (raw_min, grid_max) = compute_bounds_flat(points_flat);
+
+        // Align min bounds to resolution boundary (Autoware-style)
+        // This ensures voxel boundaries match Autoware's global grid:
+        // Autoware uses floor(coord / resolution) for voxel assignment.
+        // By aligning our grid origin to resolution boundaries, we get the same
+        // voxel assignments and thus the same point groupings and statistics.
+        let aligned_min = [
+            (raw_min[0] / resolution).floor() * resolution,
+            (raw_min[1] / resolution).floor() * resolution,
+            (raw_min[2] / resolution).floor() * resolution,
+        ];
+
+        self.grid_min = aligned_min;
         self.grid_max = grid_max;
         let inv_resolution = 1.0 / resolution;
 
         // Upload points
         let points_gpu = self.client.create(f32::as_bytes(points_flat));
-        let min_bound_gpu = self.client.create(f32::as_bytes(&grid_min));
+        let min_bound_gpu = self.client.create(f32::as_bytes(&aligned_min));
 
         // Launch Morton codes kernel
         let cube_count = num_points.div_ceil(256) as u32;
