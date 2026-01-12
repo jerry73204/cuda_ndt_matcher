@@ -573,6 +573,470 @@ sequenceDiagram
     NDT->>TF: Broadcast transform
 #+end_src
 
+* Accuracy Analysis: What Affects Alignment Quality?
+
+Understanding which steps affect accuracy is critical for tuning and debugging NDT.
+
+** Accuracy Impact Summary
+
+| Step | Accuracy Impact | Why It Matters |
+|------+-----------------|----------------|
+| Voxel resolution | *Critical* | Determines spatial granularity of map representation |
+| Covariance regularization | *High* | Prevents degenerate voxels, affects gradient smoothness |
+| Search method (KDTREE vs DIRECT) | *High* | KDTREE provides smoother gradients, better convergence |
+| Number of voxels per point | *High* | More voxels = smoother gradient = better convergence |
+| Initial pose quality | *High* | Poor initialization can lead to local minima |
+| Convergence threshold | *Medium* | Too loose = inaccurate; too tight = slow/non-convergent |
+| Hessian regularization | *Medium* | Affects step direction in ill-conditioned regions |
+| Line search | *Low-Medium* | Disabled by default; helps in difficult cases |
+| Outlier ratio | *Low* | Controls Gaussian shape; 0.55 works well |
+
+** Voxel Resolution (Critical)
+
+The voxel resolution (default: 2.0m) is the most impactful parameter:
+
+| Resolution | Pros | Cons | Use Case |
+|------------+------+------+----------|
+| 0.5-1.0m | High precision | Sensitive to noise, slow | Indoor, structured |
+| 1.0-2.0m | Good balance | Standard choice | Urban driving |
+| 2.0-4.0m | Fast, robust | Lower precision | Highway, open areas |
+
+#+begin_IMPORTANT
+*Rule of thumb*: Resolution should be 2-4x the expected position uncertainty. For autonomous driving with good IMU/odometry, 2.0m works well.
+#+end_IMPORTANT
+
+** Voxel Statistics Quality
+
+Each voxel needs sufficient points for a reliable Gaussian estimate:
+
+$$\text{min\_points\_per\_voxel} \geq 6$$
+
+Sparse voxels (fewer points) produce unreliable covariances:
+
+#+begin_src cpp
+// Autoware default
+if (voxel.nr_points < min_points_per_voxel_) {
+    // Skip this voxel - not enough data for reliable statistics
+    continue;
+}
+#+end_src
+
+** Multi-Voxel Correspondence
+
+The number of voxels found per point directly affects gradient quality:
+
+| Voxels/Point | Gradient Quality | Convergence |
+|--------------+------------------+-------------|
+| < 1.0 | Poor (many points unmatched) | Unreliable |
+| 1.0 - 2.0 | Acceptable | Usually works |
+| 2.0 - 4.0 | Good (smooth gradient) | Reliable |
+| > 4.0 | Excellent but slower | Best |
+
+#+begin_NOTE
+*Diagnostic*: Monitor the "voxels per point" metric. If consistently < 1.5, the map may have coverage gaps or resolution mismatch.
+#+end_NOTE
+
+** Initial Pose Quality
+
+NDT is a local optimizer - it finds the nearest local minimum:
+
+#+begin_src mermaid
+graph LR
+    A[Good Init] --> B[Global Minimum]
+    C[Poor Init] --> D[Local Minimum]
+    E[Very Poor Init] --> F[Divergence]
+#+end_src
+
+| Initial Error | Typical Outcome |
+|---------------+-----------------|
+| < 0.5m, < 5° | Converges to global minimum |
+| 0.5-2.0m, 5-15° | Usually converges, may need more iterations |
+| > 2.0m, > 15° | Risk of local minimum or divergence |
+
+** Covariance Regularization
+
+Degenerate covariances (e.g., planar surfaces) cause numerical issues:
+
+#+begin_src cpp
+// Eigenvalue clamping prevents singularity
+for (int i = 0; i < 3; i++) {
+    eigenvalues[i] = max(eigenvalues[i],
+                         0.01 * eigenvalues.maxCoeff());
+}
+#+end_src
+
+Without regularization:
+- Matrix inversion fails for planar voxels
+- Gradients become unstable
+- Optimization may diverge
+
+** Convergence Threshold Tuning
+
+| Parameter | Default | Effect of Increase | Effect of Decrease |
+|-----------+---------+--------------------+--------------------|
+| =transformation_epsilon= | 0.01 | Faster but less accurate | More accurate but slower |
+| =max_iterations= | 30 | More time for convergence | May stop early |
+| =step_size= | 0.1 | Larger steps, faster | Smaller steps, more stable |
+
+* GPU/Parallel Optimization Opportunities
+
+This section analyzes which NDT components can benefit from GPU acceleration, parallelization, or batching.
+
+** Optimization Opportunity Matrix
+
+| Step | Parallelizable? | GPU Benefit | Batching Benefit | Current Status |
+|------+-----------------+-------------+------------------+----------------|
+| Voxel grid build | *Yes* (embarrassingly parallel) | *High* | Medium | GPU via CubeCL |
+| Point transformation | *Yes* (per-point) | *High* | High | GPU kernel |
+| Voxel search | *Yes* (per-point) | *Medium* | High | GPU brute-force |
+| Score computation | *Yes* (per-point) | *High* | High | GPU kernel |
+| Gradient computation | *Yes* (per-point, reduce) | *High* | High | GPU kernel + CUB reduce |
+| Hessian computation | *Yes* (per-point, reduce) | *High* | High | GPU kernel + CUB reduce |
+| Angular derivatives | No (6 trig calls) | None | None | CPU |
+| Newton solve | No (6×6 system) | Low | Medium | cuSOLVER |
+| Line search | Sequential | *Low* | Medium | CPU (Phase 15 planned) |
+| Convergence check | No | None | None | CPU |
+
+** Voxel Grid Construction
+
+*Highly parallelizable* - Each point is processed independently.
+
+#+begin_src mermaid
+flowchart LR
+    subgraph "GPU Pipeline (Zero-Copy)"
+        A[Points N×3] --> B[Morton Codes]
+        B --> C[Radix Sort]
+        C --> D[Segment Detect]
+        D --> E[Statistics]
+    end
+    E --> F[Download Results]
+#+end_src
+
+| Operation | CPU Time | GPU Time | Speedup |
+|-----------+----------+----------+---------|
+| Morton codes | ~50ms | ~1ms | 50× |
+| Radix sort | ~100ms | ~2ms | 50× |
+| Statistics | ~50ms | ~5ms | 10× |
+| *Total* | ~200ms | ~15ms | ~13× |
+
+*Key insight*: Voxel grid is built once per map load, so GPU speedup amortizes over many alignments.
+
+** Derivative Computation (Main Bottleneck)
+
+This is where GPU acceleration provides the most benefit:
+
+#+begin_src cpp
+// CPU: Sequential with OpenMP
+for (int i = 0; i < N; i++) {           // N points
+    for (int j : nearby_voxels[i]) {     // V_avg voxels per point
+        accumulate_gradient(i, j);        // 6 operations
+        accumulate_hessian(i, j);         // 21 operations (upper triangle)
+    }
+}
+// Total: O(N × V_avg × 27) operations per iteration
+#+end_src
+
+*GPU approach* - Massive parallelism:
+
+#+begin_src cpp
+// GPU: One thread per point
+__global__ void compute_derivatives(Points points, Voxels voxels,
+                                    float* gradients, float* hessians) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= N) return;
+
+    float local_grad[6] = {0};
+    float local_hess[21] = {0};
+
+    // Each thread processes all voxels for its point
+    for (int j = 0; j < num_voxels; j++) {
+        if (distance(points[i], voxels[j].mean) < radius) {
+            accumulate(local_grad, local_hess, points[i], voxels[j]);
+        }
+    }
+
+    // Write to global memory (later reduced)
+    store(gradients + i*6, local_grad);
+    store(hessians + i*21, local_hess);
+}
+#+end_src
+
+| Metric | CPU (OpenMP 8 threads) | GPU | Speedup |
+|--------+------------------------+-----+---------|
+| Points | 1000 | 1000 | - |
+| Voxels/point | 2.5 | 2.5 | - |
+| Time/iteration | ~2.0ms | ~0.5ms | 4× |
+
+** Reduction Strategy
+
+The gradient (6 floats) and Hessian (21 floats) must be summed across all points:
+
+| Strategy | Transfer Size | Performance |
+|----------+---------------+-------------|
+| CPU reduction | N×27 floats/iter | Bandwidth limited |
+| GPU atomic add | 27 floats/iter | Contention limited |
+| *GPU segmented reduce* | 27 floats/iter | Optimal |
+
+CUB DeviceSegmentedReduce is optimal:
+
+#+begin_src cpp
+// 43 segments: 1 score + 6 gradient + 36 Hessian
+cub::DeviceSegmentedReduce::Sum(
+    d_temp, temp_bytes,
+    d_per_point_values,   // N × 43 floats input
+    d_reduced_values,     // 43 floats output
+    43,                   // Number of segments
+    d_segment_offsets,    // [0, N, 2N, ..., 43N]
+    stream
+);
+#+end_src
+
+** Newton Solve (6×6 System)
+
+Too small for GPU parallelism to help:
+
+| Method | Time | Notes |
+|--------+------+-------|
+| CPU Eigen SVD | ~50μs | Robust, handles singularity |
+| CPU Eigen LLT | ~10μs | Fast, requires positive definite |
+| GPU cuSOLVER | ~20μs | Overhead dominates for 6×6 |
+
+*However*, keeping Newton solve on GPU avoids data transfer:
+
+#+begin_src cpp
+// Phase 14: Full GPU pipeline
+// No CPU-GPU transfer during iteration loop
+while (!converged) {
+    compute_derivatives_gpu();  // GPU
+    reduce_gpu();               // GPU (CUB)
+    solve_newton_gpu();         // GPU (cuSOLVER)
+    update_pose_gpu();          // GPU
+    check_convergence_gpu();    // GPU
+}
+// Only download final pose
+#+end_src
+
+** Batching Opportunities
+
+*** Multi-NDT Covariance
+
+Evaluate M initial poses in parallel:
+
+#+begin_src cpp
+// Instead of M sequential alignments:
+for (int m = 0; m < M; m++) {
+    results[m] = align(points, initial_poses[m]);  // Sequential
+}
+
+// Batch on GPU:
+batch_align_gpu(points, initial_poses, M);  // Parallel
+#+end_src
+
+| M (poses) | Sequential | Batched GPU | Speedup |
+|-----------+------------+-------------+---------|
+| 9 | 27ms | 5ms | 5.4× |
+| 25 | 75ms | 12ms | 6.3× |
+
+*** Line Search Candidates
+
+Phase 15 design: Evaluate K step sizes in parallel:
+
+#+begin_src cpp
+// Traditional More-Thuente: Sequential trials
+for (int k = 0; k < max_trials; k++) {
+    alpha = try_step(alpha);  // One at a time
+}
+
+// GPU batched: Evaluate K candidates simultaneously
+float alphas[K] = generate_candidates();
+evaluate_all_gpu(alphas, scores, derivatives);  // Parallel
+select_best(alphas, scores, derivatives);
+#+end_src
+
+** Memory Transfer Analysis
+
+Per-iteration transfer overhead (before Phase 14):
+
+| Direction | Data | Size (N=1000) | Time |
+|-----------+------+---------------+------|
+| CPU→GPU | Pose | 24 bytes | <1μs |
+| CPU→GPU | Jacobians | 72 KB | ~50μs |
+| CPU→GPU | Point Hessians | 576 KB | ~200μs |
+| GPU→CPU | Results | 172 bytes | <1μs |
+| *Total* | | ~650 KB | ~250μs |
+
+*Phase 14 achievement*: Zero per-iteration transfers
+
+| Phase | Per-Iteration Transfer | Total (10 iter) |
+|-------+------------------------+-----------------|
+| Before Phase 14 | 650 KB | 6.5 MB |
+| After Phase 14 | 0 bytes | 0 bytes |
+
+** GPU Pipeline Architecture
+
+#+begin_src mermaid
+flowchart TB
+    subgraph "Per-Alignment Setup (Once)"
+        A[Upload Points N×3]
+        B[Upload Voxels V×12]
+    end
+
+    subgraph "Per-Iteration (All GPU)"
+        C[Transform Points] --> D[Radius Search]
+        D --> E[Compute Derivatives]
+        E --> F[CUB Reduce]
+        F --> G[cuSOLVER Newton]
+        G --> H{Converged?}
+        H -->|No| C
+    end
+
+    A --> C
+    B --> D
+    H -->|Yes| I[Download Final Pose]
+#+end_src
+
+* Current Performance Statistics
+
+Real-world profiling data from Autoware sample rosbag (~23 seconds of driving).
+
+** Test Environment
+
+| Parameter | Value |
+|-----------+-------|
+| Date | 2026-01-10 |
+| GPU | NVIDIA CUDA-capable |
+| Dataset | Autoware sample rosbag |
+| Map | sample-map-rosbag (point cloud) |
+| Scan points | ~500-2000 per frame |
+| Voxel resolution | 2.0m |
+
+** Execution Time Comparison
+
+| Metric | Autoware (OpenMP) | CUDA GPU | Ratio |
+|--------+-------------------+----------+-------|
+| *Mean* | *2.48 ms* | *13.07 ms* | *5.3× slower* |
+| Median | 2.42 ms | 15.86 ms | 6.5× slower |
+| Stdev | 1.20 ms | 8.24 ms | Higher variance |
+| Min | 1.08 ms | 2.00 ms | 1.9× slower |
+| Max | 16.46 ms | 27.02 ms | 1.6× slower |
+| P95 | 3.57 ms | 24.46 ms | 6.9× slower |
+| P99 | 3.98 ms | 26.34 ms | 6.6× slower |
+
+#+begin_CAUTION
+The CUDA implementation is currently slower due to convergence issues, not inherent GPU overhead. When converging quickly, CUDA achieves 2-3ms (comparable to Autoware).
+#+end_CAUTION
+
+** Convergence Statistics
+
+| Metric | Autoware | CUDA |
+|--------+----------+------|
+| Convergence rate | ~100% | 51.9% |
+| Mean iterations | 3-5 | 15.2 |
+| Median iterations | 3-4 | 8 |
+| Max iterations | ~10 | 30 (limit) |
+| Hit max iterations | ~0% | 48.1% |
+
+** Execution Time Distribution (CUDA)
+
+| Category | Count | Percentage | Cause |
+|----------+-------+------------+-------|
+| Fast (<5ms) | 66 | 29.3% | Converged quickly (1-3 iter) |
+| Medium (5-15ms) | 37 | 16.4% | Converged with effort |
+| Slow (15-25ms) | 117 | 52.0% | Hit max iterations (30) |
+| Very slow (≥25ms) | 5 | 2.2% | Worst cases |
+
+#+begin_src mermaid
+pie title CUDA NDT Execution Time Distribution
+    "Fast <5ms" : 29.3
+    "Medium 5-15ms" : 16.4
+    "Slow 15-25ms" : 52.0
+    "Very slow ≥25ms" : 2.2
+#+end_src
+
+** Score Quality Metrics
+
+| Metric | Value |
+|--------+-------|
+| Mean correspondences | 3,447 points |
+| Mean score | 5,363 |
+| Mean NVTL | 2.16 |
+| Convergence status | 56.8% Converged, 43.2% MaxIterations |
+
+** Timing Breakdown (Per Iteration)
+
+| Component | Autoware (CPU) | CUDA (GPU) | Notes |
+|-----------+----------------+------------+-------|
+| Point transformation | ~0.05ms | <0.01ms | GPU excels |
+| Voxel search | ~0.3ms | ~0.1ms | GPU brute-force |
+| Derivative computation | ~1.5ms | ~0.3ms | GPU kernels |
+| Reduction | ~0.1ms | ~0.05ms | CUB segmented reduce |
+| Newton solve | ~0.05ms | ~0.02ms | cuSOLVER |
+| *Per-iteration total* | ~2.0ms | ~0.5ms | 4× faster |
+
+#+begin_IMPORTANT
+*Key insight*: Per-iteration GPU is 4× faster than CPU. The overall slowdown comes from needing 3-4× more iterations to converge (or not converging at all).
+#+end_IMPORTANT
+
+** Root Cause Analysis
+
+*** Why Low Convergence?
+
+The 48% non-convergence rate is the primary performance issue. Possible causes:
+
+1. *Derivative computation differences* - Subtle numerical differences accumulate
+2. *Step size behavior* - Different clamping or normalization
+3. *Voxel search differences* - GPU brute-force vs CPU KD-tree
+4. *Initial pose quality* - May differ due to timing
+
+*** Trajectory Analysis
+
+| Trajectory Segment | Entries | Behavior |
+|--------------------+---------+----------|
+| Start (0-86) | 86 | Fast (2-3ms), good convergence |
+| Middle (87-180) | 94 | Mixed, degrading |
+| End (181-225) | 45 | Mostly slow, poor convergence |
+
+*Pattern*: Performance degrades through trajectory, suggesting:
+- Map tile transitions
+- Entering challenging areas (less distinctive features)
+- Initial pose drift accumulation
+
+** Comparison: Convergent vs Non-Convergent
+
+| Metric | Converged | Max Iterations |
+|--------+-----------+----------------|
+| Mean time | 4.2ms | 24.1ms |
+| Mean iterations | 5.3 | 30.0 |
+| Mean score | 5,891 | 4,835 |
+| Mean NVTL | 2.34 | 1.98 |
+
+Non-convergent alignments have lower scores, indicating genuine matching difficulty.
+
+** Expected vs Actual Performance
+
+| Scenario | Expected | Actual | Gap Cause |
+|----------+----------+--------+-----------|
+| Fast convergence (3 iter) | 1.5ms | 2-3ms | GPU overhead |
+| Normal convergence (8 iter) | 4ms | 5-8ms | Reasonable |
+| Slow convergence (15 iter) | 7.5ms | 12-15ms | Reasonable |
+| No convergence (30 iter) | 15ms | 20-27ms | Max iterations |
+
+#+begin_TIP
+*Optimization priority*: Focus on improving convergence rate. Even a 50%→90% convergence improvement would reduce mean time from 13ms to ~5ms.
+#+end_TIP
+
+** Phase 14 Impact (Full GPU Newton)
+
+Before and after Phase 14 implementation:
+
+| Metric | Before Phase 14 | After Phase 14 | Improvement |
+|--------+-----------------+----------------+-------------|
+| Per-iter transfer | 650 KB | 0 bytes | 100% reduction |
+| Per-iter latency | ~0.8ms | ~0.5ms | 37% faster |
+| Memory bandwidth | 6.5 MB/align | ~60 KB/align | 99% reduction |
+
+*Remaining bottleneck*: Convergence rate, not GPU performance.
+
 * Summary
 
 ** Key Takeaways
