@@ -2,7 +2,7 @@
 
 Feature comparison between `cuda_ndt_matcher` and Autoware's `ndt_scan_matcher`.
 
-**Last Updated**: 2026-01-12 (GPU GNSS Regularization added)
+**Last Updated**: 2026-01-12 (GPU Oscillation Detection added)
 
 ---
 
@@ -39,7 +39,7 @@ Feature comparison between `cuda_ndt_matcher` and Autoware's `ndt_scan_matcher`.
 | Gaussian covariance per voxel | ✅     | —   | Same formulas             | Per-voxel eigendecomposition better on CPU                                                                    |
 | Multi-voxel radius search     | ✅     | ✅  | Same (KDTREE)             | GPU for scoring path; ~2.4 voxels/point                                                                       |
 | Convergence detection         | ✅     | ✅  | Same epsilon check        | GPU kernel checks ||α×δ|| < ε                                                                                 |
-| Oscillation detection         | ⚠️     | —   | Same (gated at count > 10) | CPU path only; GPU path returns 0                                                                             |
+| Oscillation detection         | ✅     | ✅  | Same (gated at count > 10) | GPU tracks pose history (24 bytes/iter download)                                                              |
 | Step size clamping            | ✅     | ✅  | Same limits               | GPU kernel applies max step                                                                                   |
 
 ### 1.1 Search Methods
@@ -122,11 +122,10 @@ All kernels exist in `derivatives/gpu.rs` and are functional:
 | Reduction            | N/A                | GPU ✅                 | CUB DeviceSegmentedReduce (43 out) |
 | Newton solve         | CPU                | GPU ✅                 | cuSOLVER Cholesky (6×6)            |
 
-**Full GPU path (Phase 15)**: When `NDT_USE_GPU=1` (default), the entire Newton optimization with line search runs on GPU. Per-iteration transfer is ~200 bytes (Newton solve requires f64 precision).
+**Full GPU path (Phase 15)**: When `NDT_USE_GPU=1` (default), the entire Newton optimization with line search runs on GPU. Per-iteration transfer is ~224 bytes (Newton solve requires f64 precision + pose download for oscillation tracking).
 
-**GPU path limitations** (falls back to CPU path or missing features):
+**GPU path limitations** (falls back to CPU path):
 - Debug output not supported (`align_with_debug()` uses CPU path)
-- Oscillation detection not tracked (returns 0 in GPU path)
 
 ---
 
@@ -418,10 +417,11 @@ None - all debug publishers are implemented.
 
 ### Hybrid GPU/CPU (⚠️)
 
-| Component               | GPU Part                                        | CPU Part                     |
-|-------------------------|------------------------------------------------|------------------------------|
-| Voxel grid construction | Morton, pack, sort, segments, statistics (7/8) | Eigendecomposition (1/8)     |
-| Derivative reduction    | CUB DeviceSegmentedReduce (43 segments)         | Correspondences count (u32)  |
+| Component               | GPU Part                                        | CPU Part                      |
+|-------------------------|------------------------------------------------|-------------------------------|
+| Voxel grid construction | Morton, pack, sort, segments, statistics (7/8) | Eigendecomposition (1/8)      |
+| Derivative reduction    | CUB DeviceSegmentedReduce (43 segments)         | Correspondences count (u32)   |
+| Oscillation detection   | Pose update kernel on GPU                       | History tracking (24 bytes/iter download) |
 
 ### Integrated via `align_full_gpu()` (✅)
 
@@ -441,7 +441,6 @@ See `docs/roadmap/phase-15-gpu-line-search.md` for implementation details.
 |-----------------------|-----------------------------------------------------|
 | Covariance matrix ops | 6x6 matrices too small                              |
 | TPE optimization      | Sequential Bayesian method                          |
-| Oscillation detection | Sequential history (GPU path returns 0)             |
 | All diagnostics       | Metrics publication, not compute                    |
 | All ROS interface     | Message handling, not compute                       |
 | Map management        | I/O bound, not compute bound                        |
@@ -479,7 +478,8 @@ All major compute operations are now on GPU. No further GPU migration planned.
 - CUB reduction: 43 floats
 - Newton solve: cuSOLVER (requires f64 precision)
 - Line search (if enabled): K=8 batched candidates
-- **CPU-GPU transfers per iteration**: ~200 bytes total
+- Oscillation tracking: pose download (24 bytes) for CPU history
+- **CPU-GPU transfers per iteration**: ~224 bytes total
 
 ---
 
@@ -518,7 +518,7 @@ Per iteration:
   Download: reduced results [43 floats]
 ```
 
-**Current: `FullGpuPipelineV2`** (~200 bytes per-iteration, Phase 15):
+**Current: `FullGpuPipelineV2`** (~224 bytes per-iteration, Phase 15):
 ```
 Once per alignment:
   Upload: source_points [N×3], voxel_means [V×3], voxel_inv_covs [V×9]
@@ -537,10 +537,13 @@ Per iteration:
 
   Phase C - Update State (GPU):
     pose += α×δ → convergence check
+    Download: 24 bytes (pose for oscillation tracking)
     Download: 4 bytes (converged flag)
+    CPU: Track pose history for oscillation detection
 
 After convergence:
-  Download: final pose [24 bytes]
+  CPU: Compute oscillation count from pose history
+  Download: final pose [24 bytes] (already in history)
 ```
 
 ### 3. Scoring Pipeline (`GpuScoringPipeline`)
@@ -563,8 +566,7 @@ Per batch (M poses):
 
 ## Completion Summary
 
-**Feature parity**: Near-complete. The CUDA implementation is a drop-in replacement for Autoware's `ndt_scan_matcher` with the following limitations in GPU path:
-- Oscillation detection not tracked (returns 0)
+**Feature parity**: Complete. The CUDA implementation is a drop-in replacement for Autoware's `ndt_scan_matcher`.
 
 **GPU acceleration**: All compute-heavy operations run on GPU:
 - Voxel grid construction (zero-copy pipeline)
@@ -573,20 +575,20 @@ Per batch (M poses):
 - Batch scoring (`GpuScoringPipeline`)
 - Batch alignment (`align_batch_gpu()`)
 
-**Full GPU Newton with Line Search (Phase 15)**: The default path (`NDT_USE_GPU=1`) runs the entire Newton optimization on GPU with ~200 bytes per-iteration transfer:
+**Full GPU Newton with Line Search (Phase 15)**: The default path (`NDT_USE_GPU=1`) runs the entire Newton optimization on GPU with ~224 bytes per-iteration transfer:
 - Jacobians and Point Hessians computed on GPU
 - Newton solve via cuSOLVER (6×6 Cholesky) - requires f64, hence ~200 bytes download/upload
 - More-Thuente line search with K=8 batched candidates (GPU)
 - GNSS regularization penalty (GPU kernel)
 - Convergence check on GPU
+- Oscillation detection via pose history download (24 bytes/iter)
 
 **GPU path current limitations**:
 - Debug output requested → use CPU path (`align_with_debug()`)
-- Oscillation count always returns 0 in GPU path
 
 **Behavioral compatibility**: Convergence gating matches Autoware:
 - Max iterations check (gates if hit max iterations)
-- Oscillation count > 10 (gates if oscillating) - **CPU path only**
+- Oscillation count > 10 (gates if oscillating)
 - Score threshold (gates if below threshold)
 
 ---
@@ -616,19 +618,20 @@ See `docs/profiling-results.md` for detailed profiling data.
 - Initial pose quality differences
 - Voxel search radius differences
 
-#### 2. Per-Iteration Memory Transfer (~200 bytes)
+#### 2. Per-Iteration Memory Transfer (~224 bytes)
 
-Phase 15 reduced per-iteration transfer from ~490 KB to ~200 bytes:
+Phase 15 reduced per-iteration transfer from ~490 KB to ~224 bytes:
 
-| Direction | Data             | Size          |
-|-----------|------------------|---------------|
-| GPU → CPU | Reduced results  | 172 bytes     |
-| CPU → GPU | Newton delta     | 24 bytes      |
-| GPU → CPU | Converged flag   | 4 bytes       |
+| Direction | Data                         | Size          |
+|-----------|------------------------------|---------------|
+| GPU → CPU | Reduced results              | 172 bytes     |
+| CPU → GPU | Newton delta                 | 24 bytes      |
+| GPU → CPU | Pose (oscillation tracking)  | 24 bytes      |
+| GPU → CPU | Converged flag               | 4 bytes       |
 
-**Total per iteration**: ~200 bytes
+**Total per iteration**: ~224 bytes
 
-The Newton solve requires f64 precision (cuSOLVER), which necessitates downloading the f32 reduce output, converting to f64, solving, and uploading the f32 delta back. This is the minimum transfer possible given the precision requirement.
+The Newton solve requires f64 precision (cuSOLVER), which necessitates downloading the f32 reduce output, converting to f64, solving, and uploading the f32 delta back. Additionally, pose is downloaded each iteration for CPU-side oscillation detection (tracking direction reversals).
 
 #### 3. No Batch Processing for Incoming Scans
 

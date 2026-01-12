@@ -31,19 +31,21 @@
 //!
 //!   PHASE C: Update state
 //!     16. update_pose_kernel(pose += best_alpha × delta)
-//!     17. check_convergence_kernel(→ converged_flag)
-//!     18. Download converged_flag (4 bytes)
+//!     17. Download pose for oscillation tracking (24 bytes)
+//!     18. check_convergence_kernel(→ converged_flag)
+//!     19. Download converged_flag (4 bytes)
 //!
-//! Once at end (download ~220 bytes):
-//!   Download: final_pose [48B], score [8B], H [288B]
+//! Once at end:
+//!   CPU: Compute oscillation count from pose history
+//!   Download: final_pose (already in history), score, H [~300 bytes]
 //! ```
 //!
 //! # Transfer Analysis
 //!
 //! | Phase | Transfer Size | Notes |
 //! |-------|---------------|-------|
-//! | Phase 14 (current) | ~490 KB/iter | J/PH combine roundtrip |
-//! | Phase 15 V2 | ~200 bytes/iter | Newton solve (f32→f64) + convergence |
+//! | Phase 14 (legacy) | ~490 KB/iter | J/PH combine roundtrip |
+//! | Phase 15 V2 | ~224 bytes/iter | Newton solve (f32→f64) + pose (oscillation) + convergence |
 
 use anyhow::Result;
 use cubecl::client::ComputeClient;
@@ -89,6 +91,8 @@ pub struct FullGpuOptimizationResultV2 {
     pub used_line_search: bool,
     /// Average alpha (step size) across iterations
     pub avg_alpha: f64,
+    /// Maximum consecutive oscillation count
+    pub oscillation_count: usize,
 }
 
 /// Configuration for the V2 pipeline.
@@ -530,6 +534,7 @@ impl FullGpuPipelineV2 {
                 num_correspondences: 0,
                 used_line_search: false,
                 avg_alpha: 1.0,
+                oscillation_count: 0,
             });
         }
 
@@ -545,6 +550,11 @@ impl FullGpuPipelineV2 {
         let mut iterations = 0u32;
         let mut alpha_sum = 0.0f32;
         let mut alpha_count = 0u32;
+
+        // Track pose history for oscillation detection (stores [x, y, z, roll, pitch, yaw])
+        // We need at least 3 poses to detect oscillation, so capacity = max_iterations + 1
+        let mut pose_history: Vec<[f64; 6]> = Vec::with_capacity(max_iterations as usize + 1);
+        pose_history.push(*initial_pose);
 
         // Cache for final results (updated each iteration)
         let mut last_reduce_output = vec![0.0f32; 43];
@@ -993,6 +1003,19 @@ impl FullGpuPipelineV2 {
                 );
             }
 
+            // Download pose for oscillation tracking (24 bytes = 6 f32s)
+            // This small transfer is needed to track pose history on CPU for oscillation detection
+            let pose_bytes = self.client.read_one(self.pose_gpu.clone());
+            let pose_f32 = f32::from_bytes(&pose_bytes);
+            pose_history.push([
+                pose_f32[0] as f64,
+                pose_f32[1] as f64,
+                pose_f32[2] as f64,
+                pose_f32[3] as f64,
+                pose_f32[4] as f64,
+                pose_f32[5] as f64,
+            ]);
+
             // Step 17: Check convergence on GPU
             unsafe {
                 check_convergence_kernel::launch_unchecked::<f32, CudaRuntime>(
@@ -1013,6 +1036,12 @@ impl FullGpuPipelineV2 {
             }
         }
 
+        // Compute oscillation count from pose history
+        let oscillation_result = super::oscillation::count_oscillation_from_arrays(
+            &pose_history,
+            super::oscillation::DEFAULT_OSCILLATION_THRESHOLD,
+        );
+
         // Download final results
         self.download_final_results(
             iterations,
@@ -1022,6 +1051,7 @@ impl FullGpuPipelineV2 {
                 1.0
             },
             &last_reduce_output,
+            oscillation_result.max_oscillation_count,
         )
     }
 
@@ -1031,6 +1061,7 @@ impl FullGpuPipelineV2 {
         iterations: u32,
         avg_alpha: f32,
         last_reduce_output: &[f32],
+        oscillation_count: usize,
     ) -> Result<FullGpuOptimizationResultV2> {
         // Download final pose
         let pose_bytes = self.client.read_one(self.pose_gpu.clone());
@@ -1068,6 +1099,7 @@ impl FullGpuPipelineV2 {
             num_correspondences: num_correspondences as usize,
             used_line_search: self.config.use_line_search,
             avg_alpha: avg_alpha as f64,
+            oscillation_count,
         })
     }
 }
@@ -1354,5 +1386,60 @@ mod tests {
 
         // Should complete normally (regularization shouldn't affect result)
         assert!(result.iterations > 0 || result.converged);
+    }
+
+    #[test]
+    fn test_pipeline_v2_oscillation_tracking() {
+        // Test that oscillation count is tracked in GPU path
+        let config = PipelineV2Config {
+            use_line_search: true,
+            num_candidates: 8,
+            ..Default::default()
+        };
+        let mut pipeline = FullGpuPipelineV2::with_config(1000, 5000, config).unwrap();
+
+        // Create source points
+        let source_points = vec![
+            [1.0f32, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+        ];
+
+        // Create voxel at origin
+        let voxel_data = GpuVoxelData {
+            means: vec![0.0, 0.0, 0.0],
+            inv_covariances: vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            principal_axes: vec![0.0, 0.0, 1.0],
+            valid: vec![1],
+            num_voxels: 1,
+        };
+
+        pipeline
+            .upload_alignment_data(&source_points, &voxel_data, 0.55, 0.4, 2.0)
+            .unwrap();
+
+        // Run optimization from a small offset
+        let result = pipeline
+            .optimize(&[0.1, 0.05, 0.0, 0.0, 0.0, 0.0], 30, 0.001)
+            .unwrap();
+
+        // Verify that oscillation_count field is populated (not necessarily > 0)
+        // The optimization may or may not oscillate depending on the problem geometry
+        println!(
+            "Oscillation tracking test: {} iterations, converged={}, oscillation_count={}",
+            result.iterations, result.converged, result.oscillation_count
+        );
+
+        // The field should exist and the result should be reasonable (not some garbage value)
+        // Note: oscillation_count is usize, so it's always >= 0. Just verify it's reasonable.
+        assert!(
+            result.oscillation_count <= result.iterations as usize,
+            "Oscillation count should not exceed iteration count"
+        );
+
+        // With line search on this geometry, we expect some iterations
+        assert!(result.iterations > 0, "Should run at least one iteration");
     }
 }
