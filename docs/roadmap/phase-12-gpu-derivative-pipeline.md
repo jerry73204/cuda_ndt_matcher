@@ -1,8 +1,13 @@
 # Phase 12: GPU Zero-Copy Derivative Pipeline
 
-**Status**: ✅ Complete
+**Status**: ⚠️ Superseded by `FullGpuPipelineV2` (Phase 15)
 **Priority**: High
 **Measured Speedup**: 1.6x per alignment (500 points, 57 voxels); GPU reduction (12.6) eliminates N×43 download overhead
+
+> **Note**: The `GpuDerivativePipeline` described in this document has been removed.
+> It was superseded by `FullGpuPipelineV2` in `optimization/full_gpu_pipeline_v2.rs`,
+> which provides a more complete GPU Newton optimization with integrated line search.
+> This document is kept for historical reference.
 
 ## Overview
 

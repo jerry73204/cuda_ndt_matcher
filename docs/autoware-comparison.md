@@ -78,12 +78,12 @@ The `build_zero_copy()` method uses a GPU-accelerated pipeline with minimal CPU-
 
 | Feature                     | Status | GPU | Autoware Diff                  | GPU Rationale                                                         |
 |-----------------------------|--------|-----|--------------------------------|-----------------------------------------------------------------------|
-| Jacobian computation        | ✅     | ✅  | Same formulas (Magnusson 2009) | GPU pipeline via `align_gpu()` method                                 |
-| Hessian computation         | ✅     | ✅  | Same formulas                  | GPU pipeline via `align_gpu()` method                                 |
-| Angular derivatives (j_ang) | ✅     | —   | All 8 terms match              | Precomputed on CPU, uploaded once per alignment                       |
-| Point Hessian (h_ang)       | ✅     | —   | All 15 terms match             | Precomputed on CPU, uploaded once per alignment                       |
-| Gradient accumulation       | ✅     | ✅  | Same algorithm                 | GPU kernel + CPU reduction                                            |
-| Hessian accumulation        | ✅     | ✅  | Same algorithm                 | GPU kernel + CPU reduction                                            |
+| Jacobian computation        | ✅     | ✅  | Same formulas (Magnusson 2009) | Full GPU via `FullGpuPipelineV2`                                      |
+| Hessian computation         | ✅     | ✅  | Same formulas                  | Full GPU via `FullGpuPipelineV2`                                      |
+| Angular derivatives (j_ang) | ✅     | ✅  | All 8 terms match              | GPU kernel `compute_jacobians_kernel`                                 |
+| Point Hessian (h_ang)       | ✅     | ✅  | All 15 terms match             | GPU kernel `compute_point_hessians_kernel`                            |
+| Gradient accumulation       | ✅     | ✅  | Same algorithm                 | GPU kernel + CUB segmented reduce                                     |
+| Hessian accumulation        | ✅     | ✅  | Same algorithm                 | GPU kernel + CUB segmented reduce                                     |
 
 ### GPU Derivative Kernels (Implemented)
 
@@ -183,13 +183,14 @@ All kernels exist in `derivatives/gpu.rs` and are functional:
 ### MULTI_NDT GPU Batch Alignment (✅ Complete)
 
 **Implementation** (`NdtOptimizer::align_batch_gpu` in `optimization/solver.rs`):
-- Creates `GpuDerivativePipeline` once for all M alignments
-- Uploads voxel data once (shared across all poses)
-- Runs M sequential Newton optimizations, each reusing the pipeline
+- Creates `FullGpuPipelineV2` once for all M alignments
+- Uploads source points and voxel data once (shared across all poses)
+- Runs M sequential Newton optimizations via `pipeline.optimize()`, reusing the pipeline
+- Each alignment has full GPU Newton iteration with optional line search
 - Falls back to CPU Rayon path if GPU fails
 
 **Key optimization**: Voxel data upload is expensive; sharing it across M alignments
-provides ~2-3× speedup over M independent `align_gpu()` calls.
+provides ~2-3× speedup over M independent `align_full_gpu()` calls.
 
 **API**:
 ```rust
@@ -448,7 +449,7 @@ None - all debug publishers are implemented.
 | Transform probability           | Parallel per-point                                |
 | NVTL scoring                    | Parallel per-point max                            |
 | Batch scoring (MULTI_NDT_SCORE) | `GpuScoringPipeline` - M poses × N points         |
-| Batch alignment (MULTI_NDT)     | `GpuDerivativePipeline` - shared voxel data       |
+| Batch alignment (MULTI_NDT)     | `FullGpuPipelineV2` - shared voxel data           |
 | Per-point score visualization   | GPU max-score extraction + CPU color mapping      |
 | Sensor point filtering          | GPU if ≥10k points                                |
 
