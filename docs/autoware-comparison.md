@@ -2,7 +2,7 @@
 
 Feature comparison between `cuda_ndt_matcher` and Autoware's `ndt_scan_matcher`.
 
-**Last Updated**: 2026-01-12 (Phase 15 GPU Line Search complete)
+**Last Updated**: 2026-01-12 (GPU GNSS Regularization added)
 
 ---
 
@@ -125,7 +125,6 @@ All kernels exist in `derivatives/gpu.rs` and are functional:
 **Full GPU path (Phase 15)**: When `NDT_USE_GPU=1` (default), the entire Newton optimization with line search runs on GPU. Per-iteration transfer is ~200 bytes (Newton solve requires f64 precision).
 
 **GPU path limitations** (falls back to CPU path or missing features):
-- GNSS regularization not supported (requires per-iteration CPU involvement)
 - Debug output not supported (`align_with_debug()` uses CPU path)
 - Oscillation detection not tracked (returns 0 in GPU path)
 
@@ -259,10 +258,10 @@ See `docs/roadmap/phase-13-gpu-scoring-pipeline.md` for implementation details.
 | Regularization buffer | ✅     | —   | Same SmartPoseBuffer | Same as initial pose |
 | Scale factor          | ✅     | —   | Same default (0.01)  | Single scalar        |
 | Enable/disable flag   | ✅     | —   | Same parameter       | Config only          |
-| Gradient penalty      | ⚠️      | —   | Same formula         | CPU path only        |
-| Hessian contribution  | ⚠️      | —   | Same formula         | CPU path only        |
+| Gradient penalty      | ✅     | ✅  | Same formula         | GPU kernel           |
+| Hessian contribution  | ✅     | ✅  | Same formula         | GPU kernel           |
 
-**GPU consideration**: GNSS regularization is only available in CPU path (`align()`, `align_gpu()`). The full GPU path (`align_full_gpu()`) does not support regularization as it requires per-iteration CPU state modification.
+**GPU implementation**: GNSS regularization is supported in both CPU and GPU paths. The GPU path uses `apply_regularization_kernel` which modifies the reduced score/gradient/Hessian after CUB reduction.
 
 ---
 
@@ -443,7 +442,6 @@ See `docs/roadmap/phase-15-gpu-line-search.md` for implementation details.
 | Covariance matrix ops | 6x6 matrices too small                              |
 | TPE optimization      | Sequential Bayesian method                          |
 | Oscillation detection | Sequential history (GPU path returns 0)             |
-| GNSS regularization   | Per-iteration CPU state (GPU path doesn't support)  |
 | All diagnostics       | Metrics publication, not compute                    |
 | All ROS interface     | Message handling, not compute                       |
 | Map management        | I/O bound, not compute bound                        |
@@ -566,12 +564,12 @@ Per batch (M poses):
 ## Completion Summary
 
 **Feature parity**: Near-complete. The CUDA implementation is a drop-in replacement for Autoware's `ndt_scan_matcher` with the following limitations in GPU path:
-- GNSS regularization not supported (use CPU path)
 - Oscillation detection not tracked (returns 0)
 
 **GPU acceleration**: All compute-heavy operations run on GPU:
 - Voxel grid construction (zero-copy pipeline)
 - NDT alignment with line search (full GPU Newton via `FullGpuPipelineV2`)
+- GNSS regularization (`apply_regularization_kernel`)
 - Batch scoring (`GpuScoringPipeline`)
 - Batch alignment (`align_batch_gpu()`)
 
@@ -579,10 +577,10 @@ Per batch (M poses):
 - Jacobians and Point Hessians computed on GPU
 - Newton solve via cuSOLVER (6×6 Cholesky) - requires f64, hence ~200 bytes download/upload
 - More-Thuente line search with K=8 batched candidates (GPU)
+- GNSS regularization penalty (GPU kernel)
 - Convergence check on GPU
 
 **GPU path current limitations**:
-- GNSS regularization enabled → use CPU path (`align()` or `align_gpu()`)
 - Debug output requested → use CPU path (`align_with_debug()`)
 - Oscillation count always returns 0 in GPU path
 

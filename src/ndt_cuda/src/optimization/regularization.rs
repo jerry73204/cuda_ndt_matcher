@@ -73,6 +73,11 @@ impl RegularizationTerm {
         self.reference_pose.is_some()
     }
 
+    /// Get the reference translation [x, y, z] if set.
+    pub fn reference_translation(&self) -> Option<[f64; 3]> {
+        self.reference_translation
+    }
+
     /// Set the reference pose (from GNSS).
     pub fn set_reference_pose(&mut self, pose: Isometry3<f64>) {
         let translation = pose.translation;

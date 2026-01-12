@@ -60,9 +60,10 @@ use crate::derivatives::gpu_jacobian::{
 };
 use crate::optimization::gpu_newton::GpuNewtonSolver;
 use crate::optimization::gpu_pipeline_kernels::{
-    batch_score_gradient_kernel, batch_transform_kernel, check_convergence_kernel,
-    compute_transform_from_sincos_kernel, dot_product_6_kernel, generate_candidates_kernel,
-    more_thuente_kernel, update_pose_kernel, DEFAULT_NUM_CANDIDATES,
+    apply_regularization_kernel, batch_score_gradient_kernel, batch_transform_kernel,
+    cast_u32_to_f32_kernel, check_convergence_kernel, compute_transform_from_sincos_kernel,
+    dot_product_6_kernel, generate_candidates_kernel, more_thuente_kernel, update_pose_kernel,
+    DEFAULT_NUM_CANDIDATES,
 };
 use crate::voxel_grid::kernels::transform_points_kernel;
 
@@ -107,6 +108,10 @@ pub struct PipelineV2Config {
     pub armijo_mu: f32,
     /// Curvature parameter (nu) for Strong Wolfe condition
     pub wolfe_nu: f32,
+    /// Whether GNSS regularization is enabled
+    pub regularization_enabled: bool,
+    /// Scale factor for regularization term
+    pub regularization_scale_factor: f32,
 }
 
 impl Default for PipelineV2Config {
@@ -119,6 +124,8 @@ impl Default for PipelineV2Config {
             step_max: 10.0,
             armijo_mu: 1e-4,
             wolfe_nu: 0.9,
+            regularization_enabled: false,
+            regularization_scale_factor: 0.01,
         }
     }
 }
@@ -171,12 +178,13 @@ pub struct FullGpuPipelineV2 {
     // ========================================================================
     // Reduction buffers
     // ========================================================================
-    scores: Handle,           // [N]
-    correspondences: Handle,  // [N]
-    gradients: Handle,        // [N × 6] column-major
-    hessians: Handle,         // [N × 36] column-major
-    reduce_output: Handle,    // [43] = score + grad[6] + H[36]
-    gradient_reduced: Handle, // [6] - copy of reduced gradient for dot product
+    scores: Handle,              // [N]
+    correspondences: Handle,     // [N] u32
+    correspondences_f32: Handle, // [N] f32 - for reduction (cast from u32)
+    gradients: Handle,           // [N × 6] column-major
+    hessians: Handle,            // [N × 36] column-major
+    reduce_output: Handle,       // [43] = score + grad[6] + H[36]
+    gradient_reduced: Handle,    // [6] - copy of reduced gradient for dot product
 
     // ========================================================================
     // Line search buffers
@@ -211,6 +219,13 @@ pub struct FullGpuPipelineV2 {
     gauss_params: Handle, // [2] - gauss_d1, gauss_d2
     batch_params: Handle, // [4] - gauss_d1, gauss_d2, num_points, num_candidates
     ls_params: Handle,    // [3] - num_candidates, mu, nu
+
+    // ========================================================================
+    // Regularization buffers
+    // ========================================================================
+    reg_params: Handle,         // [4] - ref_x, ref_y, scale_factor, enabled
+    correspondence_sum: Handle, // [1] - sum of all correspondences
+    corr_offsets: Handle,       // [2] - offsets for correspondence sum reduction
 
     // ========================================================================
     // Gaussian parameters (cached values)
@@ -279,6 +294,7 @@ impl FullGpuPipelineV2 {
         // Reduction buffers
         let scores = client.empty(max_points * std::mem::size_of::<f32>());
         let correspondences = client.empty(max_points * std::mem::size_of::<u32>());
+        let correspondences_f32 = client.empty(max_points * std::mem::size_of::<f32>());
         let gradients = client.empty(max_points * 6 * std::mem::size_of::<f32>());
         let hessians = client.empty(max_points * 36 * std::mem::size_of::<f32>());
         let reduce_output = client.empty(43 * std::mem::size_of::<f32>());
@@ -321,6 +337,13 @@ impl FullGpuPipelineV2 {
         ];
         let ls_params = client.create(f32::as_bytes(&ls_params_data));
 
+        // Regularization buffers
+        // [ref_x, ref_y, scale_factor, enabled] - enabled as 0.0/1.0
+        let reg_params_data = [0.0f32, 0.0, config.regularization_scale_factor, 0.0];
+        let reg_params = client.create(f32::as_bytes(&reg_params_data));
+        let correspondence_sum = client.empty(std::mem::size_of::<f32>());
+        let corr_offsets = client.create(i32::as_bytes(&[0i32, max_points as i32]));
+
         // Newton solver
         let newton_solver = GpuNewtonSolver::new(0)?;
 
@@ -348,6 +371,7 @@ impl FullGpuPipelineV2 {
             neighbor_counts,
             scores,
             correspondences,
+            correspondences_f32,
             gradients,
             hessians,
             reduce_output,
@@ -370,6 +394,9 @@ impl FullGpuPipelineV2 {
             gauss_params,
             batch_params,
             ls_params,
+            reg_params,
+            correspondence_sum,
+            corr_offsets,
             gauss_d1: 0.0,
             gauss_d2: 0.0,
             search_radius_sq: 0.0,
@@ -433,6 +460,9 @@ impl FullGpuPipelineV2 {
         let phi_offsets: Vec<i32> = (0..=k).map(|i| (i * num_points) as i32).collect();
         self.phi_offsets = self.client.create(i32::as_bytes(&phi_offsets));
 
+        // Update correspondence sum offsets
+        self.corr_offsets = self.client.create(i32::as_bytes(&[0i32, n]));
+
         // Update parameter buffers
         self.gauss_params = self.client.create(f32::as_bytes(&[gauss_d1, gauss_d2]));
         self.batch_params = self.client.create(f32::as_bytes(&[
@@ -443,6 +473,41 @@ impl FullGpuPipelineV2 {
         ]));
 
         Ok(())
+    }
+
+    /// Set the regularization reference pose (from GNSS).
+    ///
+    /// This enables GNSS regularization if the pipeline is configured for it.
+    /// The reference pose provides the x, y coordinates that the optimizer
+    /// will be penalized for deviating from in the vehicle's longitudinal direction.
+    ///
+    /// # Arguments
+    /// * `ref_x` - Reference x coordinate (from GNSS)
+    /// * `ref_y` - Reference y coordinate (from GNSS)
+    pub fn set_regularization_pose(&mut self, ref_x: f64, ref_y: f64) {
+        let enabled = if self.config.regularization_enabled {
+            1.0f32
+        } else {
+            0.0f32
+        };
+        let reg_params_data = [
+            ref_x as f32,
+            ref_y as f32,
+            self.config.regularization_scale_factor,
+            enabled,
+        ];
+        self.reg_params = self.client.create(f32::as_bytes(&reg_params_data));
+    }
+
+    /// Clear the regularization reference pose (disables regularization for this alignment).
+    pub fn clear_regularization_pose(&mut self) {
+        let reg_params_data = [
+            0.0f32,
+            0.0f32,
+            self.config.regularization_scale_factor,
+            0.0f32, // disabled
+        ];
+        self.reg_params = self.client.create(f32::as_bytes(&reg_params_data));
     }
 
     /// Run full GPU Newton optimization with integrated line search.
@@ -685,6 +750,47 @@ impl FullGpuPipelineV2 {
                     36,
                     self.raw_ptr(&self.hess_offsets),
                 )?;
+            }
+
+            // Step 8b: Apply regularization (if enabled)
+            if self.config.regularization_enabled {
+                // Cast correspondences (u32) to f32 for reduction
+                unsafe {
+                    cast_u32_to_f32_kernel::launch_unchecked::<f32, CudaRuntime>(
+                        &self.client,
+                        CubeCount::Static(cube_count, 1, 1),
+                        CubeDim::new(256, 1, 1),
+                        ArrayArg::from_raw_parts::<u32>(&self.correspondences, num_points, 1),
+                        ScalarArg::new(num_points as u32),
+                        ArrayArg::from_raw_parts::<f32>(&self.correspondences_f32, num_points, 1),
+                    );
+                }
+
+                // Reduce correspondences_f32 -> correspondence_sum
+                cubecl::future::block_on(self.client.sync());
+                unsafe {
+                    cuda_ffi::segmented_reduce_sum_f32_inplace(
+                        self.raw_ptr(&self.reduce_temp),
+                        self.reduce_temp_bytes,
+                        self.raw_ptr(&self.correspondences_f32),
+                        self.raw_ptr(&self.correspondence_sum),
+                        1,
+                        self.raw_ptr(&self.corr_offsets),
+                    )?;
+                }
+
+                // Apply regularization kernel
+                unsafe {
+                    apply_regularization_kernel::launch_unchecked::<f32, CudaRuntime>(
+                        &self.client,
+                        CubeCount::Static(1, 1, 1),
+                        CubeDim::new(1, 1, 1),
+                        ArrayArg::from_raw_parts::<f32>(&self.pose_gpu, 6, 1),
+                        ArrayArg::from_raw_parts::<f32>(&self.reg_params, 4, 1),
+                        ArrayArg::from_raw_parts::<f32>(&self.correspondence_sum, 1, 1),
+                        ArrayArg::from_raw_parts::<f32>(&self.reduce_output, 43, 1),
+                    );
+                }
             }
 
             // Step 9: Newton solve
@@ -943,10 +1049,11 @@ impl FullGpuPipelineV2 {
             }
         }
 
-        // Download correspondences count
+        // Download correspondences count (only num_points elements are valid)
         let corr_bytes = self.client.read_one(self.correspondences.clone());
         let correspondences = u32::from_bytes(&corr_bytes);
-        let num_correspondences: u32 = correspondences.iter().sum();
+        // Only sum the first num_points entries; the rest may contain garbage
+        let num_correspondences: u32 = correspondences.iter().take(self.num_points).copied().sum();
 
         // Download convergence flag
         let flag_bytes = self.client.read_one(self.converged_flag.clone());
@@ -1150,5 +1257,102 @@ mod tests {
             "With line search test: {} iterations, converged={}, avg_alpha={}",
             result.iterations, result.converged, result.avg_alpha
         );
+    }
+
+    #[test]
+    fn test_pipeline_v2_with_regularization() {
+        // Use a small scale factor to avoid making the Hessian non-positive-definite
+        let config = PipelineV2Config {
+            use_line_search: false,
+            regularization_enabled: true,
+            regularization_scale_factor: 0.001, // Small scale to keep Hessian PD
+            ..Default::default()
+        };
+        let mut pipeline = FullGpuPipelineV2::with_config(1000, 5000, config).unwrap();
+
+        // Create more source points for better conditioning
+        let source_points = vec![
+            [1.0f32, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
+            [0.5, 0.5, 0.0],
+            [-0.5, -0.5, 0.0],
+        ];
+
+        // Create voxel at origin with smaller inv covariance (less constraining)
+        let voxel_data = GpuVoxelData {
+            means: vec![0.0, 0.0, 0.0],
+            inv_covariances: vec![0.5, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.5],
+            principal_axes: vec![0.0, 0.0, 1.0],
+            valid: vec![1],
+            num_voxels: 1,
+        };
+
+        pipeline
+            .upload_alignment_data(&source_points, &voxel_data, 0.55, 0.4, 2.0)
+            .unwrap();
+
+        // Set regularization reference pose at (0.1, 0.0) - small offset
+        pipeline.set_regularization_pose(0.1, 0.0);
+
+        // Run from identity pose
+        let result = pipeline
+            .optimize(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 20, 0.001)
+            .unwrap();
+
+        println!(
+            "Regularization test: {} iterations, converged={}, score={}, pose=({:.4}, {:.4})",
+            result.iterations, result.converged, result.score, result.pose[0], result.pose[1]
+        );
+
+        // Should complete iterations with regularization active
+        assert!(
+            result.iterations > 0,
+            "Should run at least one iteration with regularization"
+        );
+    }
+
+    #[test]
+    fn test_pipeline_v2_regularization_disabled() {
+        // Regularization disabled in config
+        let config = PipelineV2Config {
+            use_line_search: false,
+            regularization_enabled: false,
+            regularization_scale_factor: 0.01,
+            ..Default::default()
+        };
+        let mut pipeline = FullGpuPipelineV2::with_config(1000, 5000, config).unwrap();
+
+        let source_points = vec![[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0]];
+
+        let voxel_data = GpuVoxelData {
+            means: vec![0.0, 0.0, 0.0],
+            inv_covariances: vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            principal_axes: vec![0.0, 0.0, 1.0],
+            valid: vec![1],
+            num_voxels: 1,
+        };
+
+        pipeline
+            .upload_alignment_data(&source_points, &voxel_data, 0.55, 0.4, 2.0)
+            .unwrap();
+
+        // Set a regularization pose (should be ignored since disabled)
+        pipeline.set_regularization_pose(10.0, 10.0);
+
+        let result = pipeline
+            .optimize(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 10, 0.01)
+            .unwrap();
+
+        println!(
+            "Regularization disabled test: {} iterations, pose=({:.4}, {:.4})",
+            result.iterations, result.pose[0], result.pose[1]
+        );
+
+        // Should complete normally (regularization shouldn't affect result)
+        assert!(result.iterations > 0 || result.converged);
     }
 }

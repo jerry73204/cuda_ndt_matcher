@@ -18,6 +18,33 @@ pub const MAX_NEIGHBORS: u32 = 8;
 pub const DEFAULT_NUM_CANDIDATES: u32 = 8;
 
 // ============================================================================
+// Utility: U32 to F32 Conversion Kernel
+// ============================================================================
+
+/// Convert u32 values to f32 for reduction.
+///
+/// This is needed because CUB segmented reduce only supports f32/f64.
+///
+/// # Arguments
+/// * `input` - [N] u32 values
+/// * `num_elements` - Number of elements
+/// * `output` - [N] f32 values
+#[cube(launch_unchecked)]
+pub fn cast_u32_to_f32_kernel<F: Float>(
+    input: &Array<u32>,
+    num_elements: u32,
+    output: &mut Array<F>,
+) {
+    let i = ABSOLUTE_POS;
+
+    if i >= num_elements {
+        terminate!();
+    }
+
+    output[i] = F::cast_from(input[i]);
+}
+
+// ============================================================================
 // Phase 15.1: GPU Transform Matrix Kernel
 // ============================================================================
 
@@ -228,6 +255,102 @@ pub fn check_convergence_kernel<F: Float>(
     } else {
         converged[0] = 0u32;
     }
+}
+
+// ============================================================================
+// GNSS Regularization Kernel
+// ============================================================================
+
+/// Apply GNSS regularization penalty to score, gradient, and Hessian.
+///
+/// This kernel adds a quadratic penalty in the vehicle's longitudinal direction,
+/// penalizing deviation from a reference GNSS pose.
+///
+/// The regularization term is:
+/// - Score: -scale × weight × longitudinal_distance²
+/// - Gradient[0]: scale × weight × 2 × cos(yaw) × longitudinal_distance
+/// - Gradient[1]: scale × weight × 2 × sin(yaw) × longitudinal_distance
+/// - Hessian[0,0]: -scale × weight × 2 × cos²(yaw)
+/// - Hessian[0,1] = Hessian[1,0]: -scale × weight × 2 × cos(yaw) × sin(yaw)
+/// - Hessian[1,1]: -scale × weight × 2 × sin²(yaw)
+///
+/// Where:
+/// - longitudinal_distance = (ref_y - y) × sin(yaw) + (ref_x - x) × cos(yaw)
+/// - weight = correspondence_sum (number of point-voxel correspondences)
+///
+/// # Arguments
+/// * `pose` - [6]: tx, ty, tz, roll, pitch, yaw
+/// * `reg_params` - [4]: ref_x, ref_y, scale_factor, enabled (0.0 or 1.0)
+/// * `correspondence_sum` - [1]: sum of correspondences (weight)
+/// * `reduce_output` - [43] in/out: score[1] + gradient[6] + hessian[36]
+#[cube(launch_unchecked)]
+pub fn apply_regularization_kernel<F: Float>(
+    pose: &Array<F>,
+    reg_params: &Array<F>,
+    correspondence_sum: &Array<F>,
+    reduce_output: &mut Array<F>,
+) {
+    // Single thread kernel
+    if ABSOLUTE_POS != 0 {
+        terminate!();
+    }
+
+    let enabled = reg_params[3];
+
+    // Early exit if not enabled (enabled == 0.0)
+    if enabled < F::new(0.5) {
+        terminate!();
+    }
+
+    let ref_x = reg_params[0];
+    let ref_y = reg_params[1];
+    let scale = reg_params[2];
+    let weight = correspondence_sum[0];
+
+    // Current pose
+    let x = pose[0];
+    let y = pose[1];
+    let yaw = pose[5];
+
+    // Compute sin/cos of yaw
+    let sin_yaw = F::sin(yaw);
+    let cos_yaw = F::cos(yaw);
+
+    // Difference from reference
+    let dx = ref_x - x;
+    let dy = ref_y - y;
+
+    // Longitudinal distance in vehicle frame
+    let longitudinal = dy * sin_yaw + dx * cos_yaw;
+
+    // Score delta: -scale × weight × distance²
+    let score_delta = F::new(0.0) - scale * weight * longitudinal * longitudinal;
+
+    // Gradient deltas
+    let two = F::new(2.0);
+    let grad_x_delta = scale * weight * two * cos_yaw * longitudinal;
+    let grad_y_delta = scale * weight * two * sin_yaw * longitudinal;
+
+    // Hessian deltas (note: these are negative because the score is negative)
+    let h00_delta = F::new(0.0) - scale * weight * two * cos_yaw * cos_yaw;
+    let h01_delta = F::new(0.0) - scale * weight * two * cos_yaw * sin_yaw;
+    let h11_delta = F::new(0.0) - scale * weight * two * sin_yaw * sin_yaw;
+
+    // Add to reduce_output
+    // reduce_output layout: [score, grad[6], hess[36]] (row-major Hessian)
+    reduce_output[0] = reduce_output[0] + score_delta; // score
+    reduce_output[1] = reduce_output[1] + grad_x_delta; // gradient[0]
+    reduce_output[2] = reduce_output[2] + grad_y_delta; // gradient[1]
+
+    // Hessian is row-major 6×6, so:
+    // H[0,0] is at index 7+0 = 7
+    // H[0,1] is at index 7+1 = 8
+    // H[1,0] is at index 7+6 = 13
+    // H[1,1] is at index 7+7 = 14
+    reduce_output[7] = reduce_output[7] + h00_delta; // H[0,0]
+    reduce_output[8] = reduce_output[8] + h01_delta; // H[0,1]
+    reduce_output[13] = reduce_output[13] + h01_delta; // H[1,0]
+    reduce_output[14] = reduce_output[14] + h11_delta; // H[1,1]
 }
 
 // ============================================================================

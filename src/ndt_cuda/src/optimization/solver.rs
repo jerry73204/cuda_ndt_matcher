@@ -496,11 +496,8 @@ impl NdtOptimizer {
     /// Returns an error if GPU pipeline initialization or computation fails.
     ///
     /// # Note
-    /// This method currently does not support:
-    /// - GNSS regularization (regularization terms are ignored)
-    /// - Oscillation detection
-    ///
-    /// These features require per-iteration CPU involvement and will be added in future.
+    /// This method supports GNSS regularization if configured.
+    /// Oscillation detection is not tracked in GPU mode.
     pub fn align_full_gpu(
         &self,
         source_points: &[[f32; 3]],
@@ -515,6 +512,8 @@ impl NdtOptimizer {
         let config = PipelineV2Config {
             use_line_search: self.config.ndt.use_line_search,
             step_max: self.config.ndt.step_size as f32,
+            regularization_enabled: self.config.regularization.enabled,
+            regularization_scale_factor: self.config.regularization.scale_factor as f32,
             ..PipelineV2Config::default()
         };
 
@@ -529,6 +528,13 @@ impl NdtOptimizer {
             self.gauss.d2 as f32,
             self.config.ndt.resolution as f32,
         )?;
+
+        // Set regularization pose if enabled and available
+        if self.config.regularization.enabled && self.regularization.has_reference_pose() {
+            if let Some(ref_pose) = self.regularization.reference_translation() {
+                pipeline.set_regularization_pose(ref_pose[0], ref_pose[1]);
+            }
+        }
 
         // Convert initial guess to pose vector
         let initial_pose = isometry_to_pose_vector(&initial_guess);
