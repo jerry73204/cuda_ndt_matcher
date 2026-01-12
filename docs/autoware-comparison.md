@@ -124,8 +124,7 @@ All kernels exist in `derivatives/gpu.rs` and are functional:
 
 **Full GPU path (Phase 15)**: When `NDT_USE_GPU=1` (default), the entire Newton optimization with line search runs on GPU. Per-iteration transfer is ~224 bytes (Newton solve requires f64 precision + pose download for oscillation tracking).
 
-**GPU path limitations** (falls back to CPU path):
-- Debug output not supported (`align_with_debug()` uses CPU path)
+**GPU path debug support**: Set `enable_debug: true` in `PipelineV2Config` to collect per-iteration debug data with zero additional GPU transfer overhead (uses data already downloaded for Newton solve and oscillation tracking).
 
 ---
 
@@ -279,6 +278,44 @@ See `docs/roadmap/phase-13-gpu-scoring-pipeline.md` for implementation details.
 | No-ground metrics     | ✅     | —   | Same          | Published when enabled    |
 
 **GPU consideration**: Diagnostics are metrics publication - no GPU benefit.
+
+### 8.1 Per-Iteration Debug Data
+
+When `enable_debug: true` is set in `PipelineV2Config`, the GPU path collects detailed per-iteration debug data with **zero additional GPU transfer overhead** (reuses data already downloaded for Newton solve and oscillation tracking).
+
+| Field                    | Description                                    | Source                          |
+|--------------------------|------------------------------------------------|---------------------------------|
+| `iteration`              | Iteration number (0-indexed)                   | Loop counter                    |
+| `pose`                   | Pose at start of iteration [x,y,z,r,p,y]       | pose_history                    |
+| `score`                  | NDT score at current pose                      | reduce_output[0]                |
+| `gradient`               | Gradient vector (6 elements)                   | reduce_output[1..7]             |
+| `hessian`                | Hessian matrix (6×6, row-major)                | reduce_output[7..43]            |
+| `newton_step`            | Newton step before line search                 | cuSOLVER output                 |
+| `newton_step_norm`       | Norm of Newton step                            | Computed from newton_step       |
+| `step_length`            | Step size from line search (or 1.0)            | Line search result              |
+| `direction_reversed`     | Whether Newton step was reversed (not ascent)  | gradient · delta ≤ 0            |
+| `directional_derivative` | Gradient · step_direction                      | Computed                        |
+| `pose_after`             | Pose after applying step                       | pose_history[i+1]               |
+| `used_line_search`       | Whether line search was used                   | Config flag                     |
+
+**Usage** (in `cuda_ndt_matcher` or tests):
+```rust
+let config = PipelineV2Config {
+    enable_debug: true,
+    ..Default::default()
+};
+let mut pipeline = FullGpuPipelineV2::with_config(max_points, max_voxels, config)?;
+
+let result = pipeline.optimize(&initial_pose, max_iterations, epsilon)?;
+
+if let Some(debug_vec) = &result.iterations_debug {
+    for iter in debug_vec {
+        println!("iter={} score={:.4} step={:.6}", iter.iteration, iter.score, iter.step_length);
+    }
+}
+```
+
+**Output format**: The debug data uses the same `IterationDebug` struct as the CPU path (`optimization/debug.rs`), enabling direct comparison with Autoware's debug output.
 
 ---
 
@@ -582,9 +619,7 @@ Per batch (M poses):
 - GNSS regularization penalty (GPU kernel)
 - Convergence check on GPU
 - Oscillation detection via pose history download (24 bytes/iter)
-
-**GPU path current limitations**:
-- Debug output requested → use CPU path (`align_with_debug()`)
+- Per-iteration debug data collection (when `enable_debug: true`)
 
 **Behavioral compatibility**: Convergence gating matches Autoware:
 - Max iterations check (gates if hit max iterations)

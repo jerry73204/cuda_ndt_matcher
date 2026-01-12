@@ -93,6 +93,8 @@ pub struct FullGpuOptimizationResultV2 {
     pub avg_alpha: f64,
     /// Maximum consecutive oscillation count
     pub oscillation_count: usize,
+    /// Per-iteration debug data (populated when `enable_debug` is true in config)
+    pub iterations_debug: Option<Vec<super::debug::IterationDebug>>,
 }
 
 /// Configuration for the V2 pipeline.
@@ -116,6 +118,8 @@ pub struct PipelineV2Config {
     pub regularization_enabled: bool,
     /// Scale factor for regularization term
     pub regularization_scale_factor: f32,
+    /// Whether to collect per-iteration debug data
+    pub enable_debug: bool,
 }
 
 impl Default for PipelineV2Config {
@@ -130,6 +134,7 @@ impl Default for PipelineV2Config {
             wolfe_nu: 0.9,
             regularization_enabled: false,
             regularization_scale_factor: 0.01,
+            enable_debug: false,
         }
     }
 }
@@ -535,6 +540,7 @@ impl FullGpuPipelineV2 {
                 used_line_search: false,
                 avg_alpha: 1.0,
                 oscillation_count: 0,
+                iterations_debug: None,
             });
         }
 
@@ -555,6 +561,14 @@ impl FullGpuPipelineV2 {
         // We need at least 3 poses to detect oscillation, so capacity = max_iterations + 1
         let mut pose_history: Vec<[f64; 6]> = Vec::with_capacity(max_iterations as usize + 1);
         pose_history.push(*initial_pose);
+
+        // Debug buffer (only allocated when debug is enabled)
+        let mut iterations_debug: Option<Vec<super::debug::IterationDebug>> =
+            if self.config.enable_debug {
+                Some(Vec::with_capacity(max_iterations as usize))
+            } else {
+                None
+            };
 
         // Cache for final results (updated each iteration)
         let mut last_reduce_output = vec![0.0f32; 43];
@@ -1007,14 +1021,70 @@ impl FullGpuPipelineV2 {
             // This small transfer is needed to track pose history on CPU for oscillation detection
             let pose_bytes = self.client.read_one(self.pose_gpu.clone());
             let pose_f32 = f32::from_bytes(&pose_bytes);
-            pose_history.push([
+            let pose_after: [f64; 6] = [
                 pose_f32[0] as f64,
                 pose_f32[1] as f64,
                 pose_f32[2] as f64,
                 pose_f32[3] as f64,
                 pose_f32[4] as f64,
                 pose_f32[5] as f64,
-            ]);
+            ];
+            pose_history.push(pose_after);
+
+            // Collect debug data if enabled (no additional GPU transfers needed - data already on CPU)
+            if let Some(ref mut debug_vec) = iterations_debug {
+                use super::debug::IterationDebug;
+                use nalgebra::{Matrix6, Vector6};
+
+                let mut iter_debug = IterationDebug::new(iter as usize);
+
+                // Pose at start of iteration (from pose_history)
+                iter_debug.set_pose(&pose_history[iter as usize]);
+
+                // Score, gradient, Hessian from reduce_output (already downloaded for Newton solve)
+                iter_debug.score = last_reduce_output[0] as f64;
+                let grad = Vector6::new(
+                    last_reduce_output[1] as f64,
+                    last_reduce_output[2] as f64,
+                    last_reduce_output[3] as f64,
+                    last_reduce_output[4] as f64,
+                    last_reduce_output[5] as f64,
+                    last_reduce_output[6] as f64,
+                );
+                iter_debug.set_gradient(&grad);
+
+                // Hessian (row-major from reduce_output[7..43])
+                let mut hess = Matrix6::zeros();
+                for i in 0..6 {
+                    for j in 0..6 {
+                        hess[(i, j)] = last_reduce_output[7 + i * 6 + j] as f64;
+                    }
+                }
+                iter_debug.set_hessian(&hess);
+
+                // Newton step (delta computed by cuSOLVER)
+                let delta_vec =
+                    Vector6::new(delta[0], delta[1], delta[2], delta[3], delta[4], delta[5]);
+                iter_debug.set_newton_step(&delta_vec);
+
+                // Step length from line search
+                iter_debug.step_length = alpha as f64;
+                iter_debug.used_line_search = self.config.use_line_search;
+
+                // Check if Newton step is ascent direction (gradient · delta > 0)
+                let grad_dot_delta = grad.dot(&delta_vec);
+                iter_debug.direction_reversed = grad_dot_delta <= 0.0;
+                iter_debug.directional_derivative = grad_dot_delta.abs();
+
+                // Pose after step
+                iter_debug.set_pose_after(&pose_after);
+
+                // Note: num_correspondences would require downloading correspondence buffer
+                // For now, leave as 0 to avoid additional transfer. Can be added if needed.
+                iter_debug.num_correspondences = 0;
+
+                debug_vec.push(iter_debug);
+            }
 
             // Step 17: Check convergence on GPU
             unsafe {
@@ -1052,6 +1122,7 @@ impl FullGpuPipelineV2 {
             },
             &last_reduce_output,
             oscillation_result.max_oscillation_count,
+            iterations_debug,
         )
     }
 
@@ -1062,6 +1133,7 @@ impl FullGpuPipelineV2 {
         avg_alpha: f32,
         last_reduce_output: &[f32],
         oscillation_count: usize,
+        iterations_debug: Option<Vec<super::debug::IterationDebug>>,
     ) -> Result<FullGpuOptimizationResultV2> {
         // Download final pose
         let pose_bytes = self.client.read_one(self.pose_gpu.clone());
@@ -1100,6 +1172,7 @@ impl FullGpuPipelineV2 {
             used_line_search: self.config.use_line_search,
             avg_alpha: avg_alpha as f64,
             oscillation_count,
+            iterations_debug,
         })
     }
 }
@@ -1441,5 +1514,122 @@ mod tests {
 
         // With line search on this geometry, we expect some iterations
         assert!(result.iterations > 0, "Should run at least one iteration");
+    }
+
+    #[test]
+    fn test_pipeline_v2_debug_collection() {
+        // Test that debug data is collected when enabled
+        let config = PipelineV2Config {
+            use_line_search: false, // Simpler path for testing
+            enable_debug: true,
+            ..Default::default()
+        };
+        let mut pipeline = FullGpuPipelineV2::with_config(1000, 5000, config).unwrap();
+
+        // Create source points - need enough points to constrain all DOF
+        let source_points = vec![
+            [1.0f32, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, -1.0, 0.0],
+        ];
+
+        // Create voxel at origin with smaller inv covariance (less constraining)
+        let voxel_data = GpuVoxelData {
+            means: vec![0.0, 0.0, 0.0],
+            inv_covariances: vec![0.5, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.5],
+            principal_axes: vec![0.0, 0.0, 1.0],
+            valid: vec![1],
+            num_voxels: 1,
+        };
+
+        pipeline
+            .upload_alignment_data(&source_points, &voxel_data, 0.55, 0.4, 2.0)
+            .unwrap();
+
+        // Run optimization from a very small offset (to ensure convergence)
+        let result = pipeline
+            .optimize(&[0.01, 0.0, 0.0, 0.0, 0.0, 0.0], 10, 0.01)
+            .unwrap();
+
+        // Verify debug data is populated
+        assert!(
+            result.iterations_debug.is_some(),
+            "Debug data should be collected when enable_debug is true"
+        );
+
+        let debug_vec = result.iterations_debug.as_ref().unwrap();
+        assert_eq!(
+            debug_vec.len(),
+            result.iterations as usize,
+            "Should have debug entry for each iteration"
+        );
+
+        // Verify first iteration has sensible data
+        if !debug_vec.is_empty() {
+            let first = &debug_vec[0];
+            assert_eq!(first.iteration, 0);
+            assert_eq!(first.pose.len(), 6);
+            assert_eq!(first.gradient.len(), 6);
+            assert_eq!(first.hessian.len(), 36);
+            assert_eq!(first.newton_step.len(), 6);
+
+            println!(
+                "Debug test: {} iterations, first iter score={:.4}, step_len={:.6}",
+                debug_vec.len(),
+                first.score,
+                first.step_length
+            );
+
+            // Print all iterations for verification
+            for iter_debug in debug_vec {
+                println!(
+                    "  iter={} score={:.4} step={:.6} reversed={}",
+                    iter_debug.iteration,
+                    iter_debug.score,
+                    iter_debug.step_length,
+                    iter_debug.direction_reversed
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_pipeline_v2_debug_disabled() {
+        // Test that debug data is NOT collected when disabled (default)
+        let config = PipelineV2Config {
+            use_line_search: false,
+            enable_debug: false, // Explicitly disabled
+            ..Default::default()
+        };
+        let mut pipeline = FullGpuPipelineV2::with_config(1000, 5000, config).unwrap();
+
+        let source_points = vec![[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0]];
+
+        let voxel_data = GpuVoxelData {
+            means: vec![0.0, 0.0, 0.0],
+            inv_covariances: vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            principal_axes: vec![0.0, 0.0, 1.0],
+            valid: vec![1],
+            num_voxels: 1,
+        };
+
+        pipeline
+            .upload_alignment_data(&source_points, &voxel_data, 0.55, 0.4, 2.0)
+            .unwrap();
+
+        let result = pipeline
+            .optimize(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 5, 0.01)
+            .unwrap();
+
+        // Verify debug data is NOT populated when disabled
+        assert!(
+            result.iterations_debug.is_none(),
+            "Debug data should be None when enable_debug is false"
+        );
     }
 }
