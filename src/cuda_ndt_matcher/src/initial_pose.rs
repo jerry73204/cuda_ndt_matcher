@@ -3,6 +3,12 @@
 //! This module implements the initial pose estimation service that uses
 //! Tree-Structured Parzen Estimator (TPE) to efficiently search the 6D
 //! pose space and find the best match against the reference map.
+//!
+//! ## GPU Batch Acceleration
+//!
+//! The startup phase (first `n_startup_trials` particles) can be batch-processed
+//! on GPU when `use_gpu_batch_startup` is enabled. This provides significant
+//! speedup since TPE doesn't use trial data during the startup phase anyway.
 
 use crate::ndt_manager::NdtManager;
 use crate::params::InitialPoseParams;
@@ -113,7 +119,90 @@ pub fn estimate_initial_pose(
     // Evaluate particles
     let mut particles = Vec::with_capacity(params.particles_num as usize);
 
-    for _ in 0..params.particles_num {
+    // ========================================================================
+    // Startup Phase: Batch evaluate first n_startup_trials particles
+    // ========================================================================
+    // During startup, TPE samples randomly, so we can batch-evaluate all
+    // startup particles at once using GPU acceleration.
+    let startup_count = (params.n_startup_trials as usize).min(params.particles_num as usize);
+
+    if startup_count > 0 {
+        log_debug!(
+            LOGGER_NAME,
+            "Batch evaluating {startup_count} startup particles"
+        );
+
+        // Sample all startup candidates from TPE at once
+        let startup_inputs: Vec<Input> = (0..startup_count).map(|_| tpe.get_next_input()).collect();
+        let startup_poses: Vec<Pose> = startup_inputs.iter().map(input_to_pose).collect();
+
+        // Batch align using GPU (or CPU fallback)
+        let batch_results = match ndt_manager.align_batch(source_points, &startup_poses) {
+            Ok(results) => results,
+            Err(e) => {
+                log_debug!(
+                    LOGGER_NAME,
+                    "Batch alignment failed ({e}), falling back to sequential"
+                );
+                vec![] // Will fall back to sequential below
+            }
+        };
+
+        // Process batch results
+        for (i, align_result) in batch_results.into_iter().enumerate() {
+            let candidate_pose = &startup_poses[i];
+
+            // Compute fitness score for TPE guidance (higher = better)
+            let fitness_score = align_result.score;
+            let transform_probability = (-fitness_score / 10.0).exp();
+
+            // Also compute NVTL for final particle selection
+            let nvtl_score = ndt_manager
+                .evaluate_nvtl(
+                    source_points,
+                    target_points,
+                    &align_result.pose,
+                    outlier_ratio,
+                )
+                .unwrap_or(0.0);
+
+            // For final particle selection, prefer NVTL when available
+            let selection_score = if nvtl_score > 0.0 {
+                nvtl_score
+            } else {
+                transform_probability * 5.0
+            };
+
+            // Create particle with results
+            let particle = Particle::new(
+                candidate_pose.clone(),
+                align_result.pose.clone(),
+                selection_score,
+                align_result.iterations,
+            );
+            particles.push(particle);
+
+            // Update TPE with result
+            let result_input = pose_to_input(&align_result.pose);
+            tpe.add_trial(Trial {
+                input: result_input,
+                score: transform_probability,
+            });
+        }
+    }
+
+    // ========================================================================
+    // Guided Phase: Sequential evaluation for remaining particles
+    // ========================================================================
+    let remaining = params.particles_num as usize - particles.len();
+    if remaining > 0 {
+        log_debug!(
+            LOGGER_NAME,
+            "Sequentially evaluating {remaining} guided particles"
+        );
+    }
+
+    for _ in 0..remaining {
         // Get next candidate pose from TPE
         let input = tpe.get_next_input();
 

@@ -5,6 +5,7 @@
 //! - CUB DeviceScan (prefix sum)
 //! - CUB DeviceSelect (stream compaction)
 //! - GPU segment detection for voxel boundaries
+//! - cuSOLVER batched Cholesky solver
 //!
 //! # Example
 //!
@@ -18,10 +19,12 @@
 //! let segments = detector.detect_segments(&sorted_keys)?;
 //! ```
 
+pub mod batched_solve;
 pub mod radix_sort;
 pub mod segment_detect;
 pub mod segmented_reduce;
 
+pub use batched_solve::{BatchedCholeskySolver, CusolverDnHandle, CusolverError};
 pub use radix_sort::{
     radix_sort_temp_size, sort_pairs_inplace, CudaError, DeviceBuffer, RadixSorter,
 };

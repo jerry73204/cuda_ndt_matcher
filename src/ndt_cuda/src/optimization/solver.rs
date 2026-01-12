@@ -371,9 +371,7 @@ impl NdtOptimizer {
                 // Newton solver failure with singular matrix often indicates no correspondences
                 // (all points are outside the voxel grid search radius)
                 let err_msg = e.to_string();
-                if err_msg.contains("Matrix factorization failed")
-                    || err_msg.contains("info=")
-                {
+                if err_msg.contains("Matrix factorization failed") || err_msg.contains("info=") {
                     return Ok(NdtResult::no_correspondences(initial_guess));
                 }
                 return Err(e);
@@ -482,8 +480,7 @@ impl NdtOptimizer {
                 Ok(r) => r,
                 Err(e) => {
                     let err_msg = e.to_string();
-                    if err_msg.contains("Matrix factorization failed")
-                        || err_msg.contains("info=")
+                    if err_msg.contains("Matrix factorization failed") || err_msg.contains("info=")
                     {
                         // No correspondences - add failure result and continue
                         results.push(NdtResult::no_correspondences(*initial_guess));

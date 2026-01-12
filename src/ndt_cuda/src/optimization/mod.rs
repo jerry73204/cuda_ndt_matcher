@@ -10,6 +10,7 @@
 
 pub mod debug;
 pub mod full_gpu_pipeline_v2;
+pub mod gpu_initial_pose;
 pub mod gpu_newton;
 pub mod gpu_pipeline_kernels;
 pub mod line_search;
@@ -22,6 +23,9 @@ pub mod types;
 
 pub use debug::{AlignmentDebug, AlignmentTimingDebug, IterationDebug, IterationTimingDebug};
 pub use full_gpu_pipeline_v2::{FullGpuOptimizationResultV2, FullGpuPipelineV2, PipelineV2Config};
+pub use gpu_initial_pose::{
+    BatchedNdtResult, GpuInitialPoseConfig, GpuInitialPosePipeline, PipelineMemoryRequirements,
+};
 pub use gpu_newton::{GpuNewtonError, GpuNewtonSolver};
 pub use gpu_pipeline_kernels::{
     batch_score_gradient_kernel, batch_transform_kernel, check_convergence_kernel,

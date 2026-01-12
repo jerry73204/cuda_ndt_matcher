@@ -2,7 +2,7 @@
 
 Feature comparison between `cuda_ndt_matcher` and Autoware's `ndt_scan_matcher`.
 
-**Last Updated**: 2026-01-12 (GPU Oscillation Detection added)
+**Last Updated**: 2026-01-12 (Phase 16 GPU Initial Pose kernels added)
 
 ---
 
@@ -19,13 +19,13 @@ Feature comparison between `cuda_ndt_matcher` and Autoware's `ndt_scan_matcher`.
 
 ### GPU Status
 
-| Symbol | Meaning                                   |
-|--------|-------------------------------------------|
-| ✅     | On GPU (via `align_gpu()` or other path)  |
-| ⚠️      | Partial/hybrid (GPU + CPU reduction)      |
-| 🔲     | Should be GPU, blocked by technical issue |
-| —      | CPU by design (GPU not beneficial)        |
-| -      | N/A (feature not implemented)             |
+| Symbol | Meaning                                           |
+|--------|---------------------------------------------------|
+| ✅     | On GPU (via `align_full_gpu()` or scoring path)   |
+| ⚠️      | Partial/hybrid (GPU + CPU reduction)              |
+| 🔲     | Should be GPU, blocked by technical issue         |
+| —      | CPU by design (GPU not beneficial)                |
+| -      | N/A (feature not implemented)                     |
 
 ---
 
@@ -111,13 +111,13 @@ All kernels exist in `derivatives/gpu.rs` and are functional:
 
 ### Optimization Loop Status
 
-| Component            | CPU path (`align`) | GPU path (`align_gpu`) | Notes                              |
-|----------------------|--------------------|------------------------|------------------------------------|
-| Point transformation | CPU                | GPU ✅                 | -                                  |
-| Radius search        | CPU (KD-tree)      | GPU ✅                 | Brute-force O(N×V) on GPU          |
-| Jacobian computation | CPU                | GPU ✅                 | `compute_jacobians_kernel`         |
-| Point Hessian comp.  | CPU                | GPU ✅                 | `compute_point_hessians_kernel`    |
-| Gradient computation | CPU                | GPU ✅                 | Per-point kernels                  |
+| Component            | CPU path (`align`) | GPU path (`align_full_gpu`) | Notes                              |
+|----------------------|--------------------|-----------------------------|------------------------------------|
+| Point transformation | CPU                | GPU ✅                      | -                                  |
+| Radius search        | CPU (KD-tree)      | GPU ✅                      | Brute-force O(N×V) on GPU          |
+| Jacobian computation | CPU                | GPU ✅                      | `compute_jacobians_kernel`         |
+| Point Hessian comp.  | CPU                | GPU ✅                      | `compute_point_hessians_kernel`    |
+| Gradient computation | CPU                | GPU ✅                      | Per-point kernels                  |
 | Hessian computation  | CPU                | GPU ✅                 | Per-point kernels                  |
 | Reduction            | N/A                | GPU ✅                 | CUB DeviceSegmentedReduce (43 out) |
 | Newton solve         | CPU                | GPU ✅                 | cuSOLVER Cholesky (6×6)            |
@@ -225,12 +225,45 @@ See `docs/roadmap/phase-13-gpu-scoring-pipeline.md` for implementation details.
 | SmartPoseBuffer         | ✅     | —   | Same interpolation  | Sequential buffer operations                         |
 | Pose timeout validation | ✅     | —   | Same thresholds     | Single check                                         |
 | Distance tolerance      | ✅     | —   | Same thresholds     | Single check                                         |
-| TPE optimization        | ✅     | —   | Same algorithm      | Sequential Bayesian optimization                     |
+| TPE optimization        | ✅     | —   | Same algorithm      | Sequential Bayesian optimization (data dependency)   |
 | Particle evaluation     | ✅     | ✅  | Same                | Uses GPU NVTL batch                                  |
+| Batch startup alignment | 🔲     | 🔲  | N/A (our extension) | **Planned**: Batch N startup particles in single GPU pass |
 | Monte Carlo markers     | ✅     | —   | Same visualization  | ROS message creation                                 |
 | `multi_initial_pose`    | ✅     | —   | Same                | Initial offset poses for MULTI_NDT covariance        |
 
-**GPU status**: Particle NVTL evaluation already uses GPU batch. TPE itself is inherently sequential.
+### GPU Parallelization Analysis
+
+The initial pose estimation has two phases with different parallelization potential:
+
+| Phase | Particles | Current | GPU Potential | Speedup |
+|-------|-----------|---------|---------------|---------|
+| **Startup** (random sampling) | First N | Sequential (N × 16ms) | Fully parallel (~25ms) | **6x** |
+| **TPE-guided** (Bayesian opt) | Remaining | Sequential | Sequential (data dependency) | 1x |
+
+**Why startup is parallelizable**: No dependencies between particles - all use random poses.
+
+**Why TPE-guided is sequential**: Each particle depends on previous results to guide the search via kernel density estimation.
+
+### Planned: GPU Batch Startup Pipeline
+
+See `docs/roadmap/phase-16-gpu-initial-pose-pipeline.md` for implementation details.
+
+```
+Current flow (sequential):
+  FOR i = 1 to N:
+    pose[i] = random()           ─┐
+    result[i] = NDT_align(pose)   │ 16ms per particle
+    nvtl[i] = evaluate_NVTL()    ─┘
+  Total: N × 16ms = 160ms (N=10)
+
+GPU batch flow (parallel):
+  poses[1..N] = random()         ─┐
+  results = batch_NDT_align()     │ ~25ms total
+  nvtls = batch_NVTL()           ─┘
+  Total: ~25ms (6x speedup)
+```
+
+**Status**: 🔲 Planned - requires batched cuSOLVER integration
 
 ---
 
@@ -491,12 +524,12 @@ All major compute operations are now on GPU. No further GPU migration planned.
 
 ## Performance Comparison
 
-| Operation            | CPU Only | GPU Path (`align_gpu`) | Speedup |
-|----------------------|----------|------------------------|---------|
-| Single alignment     | ~4.3ms   | ~2.7ms                 | 1.58x   |
-| NVTL scoring         | ~8ms     | ~3ms                   | 2.7x    |
-| Voxel grid build     | ~200ms   | ~50ms                  | 4x      |
-| MULTI_NDT covariance | ~300ms   | ~180ms                 | 1.7x    |
+| Operation            | CPU Only | GPU Path (`align_full_gpu`) | Speedup |
+|----------------------|----------|-----------------------------|---------|
+| Single alignment     | ~4.3ms   | ~2.7ms                      | 1.58x   |
+| NVTL scoring         | ~8ms     | ~3ms                        | 2.7x    |
+| Voxel grid build     | ~200ms   | ~50ms                       | 4x      |
+| MULTI_NDT covariance | ~300ms   | ~180ms                      | 1.7x    |
 
 *Note: Alignment timing from 500 points, 57 voxels test case. Real-world cases with larger point clouds expected to show better speedups.*
 
@@ -525,11 +558,11 @@ All major compute operations are now on GPU. No further GPU migration planned.
 
 ### Three Major Pipelines
 
-| Pipeline       | Purpose                                | Location                     |
-|----------------|----------------------------------------|------------------------------|
-| **Voxel Grid** | Build NDT map from points              | `voxel_grid/gpu/pipeline.rs` |
-| **Derivative** | Compute gradient/Hessian per iteration | `derivatives/pipeline.rs`    |
-| **Scoring**    | Batch NVTL evaluation for covariance   | `scoring/pipeline.rs`        |
+| Pipeline       | Purpose                                | Location                                    |
+|----------------|----------------------------------------|---------------------------------------------|
+| **Voxel Grid** | Build NDT map from points              | `voxel_grid/gpu/pipeline.rs`                |
+| **Derivative** | Full GPU Newton optimization           | `optimization/full_gpu_pipeline_v2.rs`      |
+| **Scoring**    | Batch NVTL evaluation for covariance   | `scoring/pipeline.rs`                       |
 
 ### 1. Voxel Grid Construction Pipeline
 
@@ -543,20 +576,9 @@ Results: means [V×3], inv_covariances [V×9]
 
 **Zero-copy status**: Complete - true zero-copy from upload to download
 
-### 2. Derivative Pipeline (Two Implementations)
+### 2. Derivative Pipeline (`FullGpuPipelineV2`)
 
-**Legacy: `GpuDerivativePipeline`** (per-iteration transfers):
-```
-Once per alignment:
-  Upload: source_points [N×3], voxel_means [V×3], voxel_inv_covs [V×9]
-
-Per iteration:
-  Upload: pose [16 floats], jacobians [N×18], point_hessians [N×144]
-  GPU: transform → radius_search → score → gradient → hessian
-  Download: reduced results [43 floats]
-```
-
-**Current: `FullGpuPipelineV2`** (~224 bytes per-iteration, Phase 15):
+**Current implementation** (~224 bytes per-iteration, Phase 15):
 ```
 Once per alignment:
   Upload: source_points [N×3], voxel_means [V×3], voxel_inv_covs [V×9]

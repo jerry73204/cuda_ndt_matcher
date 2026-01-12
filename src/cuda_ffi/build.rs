@@ -29,15 +29,17 @@ fn main() {
         "csrc/radix_sort.cu",
         "csrc/segment_detect.cu",
         "csrc/segmented_reduce.cu",
+        "csrc/batched_solve.cu",
     ];
 
     for source in &cuda_sources {
         compile_cuda_source(source, &out_dir, &cuda_include);
     }
 
-    // Link against CUDA runtime
+    // Link against CUDA runtime and cuSOLVER
     println!("cargo:rustc-link-search=native={}", cuda_lib.display());
     println!("cargo:rustc-link-lib=cudart");
+    println!("cargo:rustc-link-lib=cusolver");
 
     // Link against C++ standard library (CUB uses C++ features)
     println!("cargo:rustc-link-lib=stdc++");
@@ -47,6 +49,7 @@ fn main() {
     println!("cargo:rustc-link-lib=static=radix_sort");
     println!("cargo:rustc-link-lib=static=segment_detect");
     println!("cargo:rustc-link-lib=static=segmented_reduce");
+    println!("cargo:rustc-link-lib=static=batched_solve");
 
     // Rerun if CUDA sources change
     for source in &cuda_sources {

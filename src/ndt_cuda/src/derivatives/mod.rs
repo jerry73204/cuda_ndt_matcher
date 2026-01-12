@@ -21,6 +21,7 @@
 pub mod angular;
 pub mod cpu;
 pub mod gpu;
+pub mod gpu_batch;
 pub mod gpu_jacobian;
 pub mod types;
 
@@ -30,6 +31,11 @@ pub use gpu::{
     compute_ndt_hessian_kernel, compute_ndt_hessian_kernel_v2, compute_point_hessians_cpu,
     compute_point_jacobians_cpu, pose_to_transform_matrix, GpuDerivativeResult, GpuDerivatives,
     GpuVoxelData, MAX_NEIGHBORS,
+};
+pub use gpu_batch::{
+    check_convergence_batch_kernel, compute_jacobians_batch_kernel,
+    compute_ndt_gradient_batch_kernel, compute_ndt_hessian_batch_kernel,
+    compute_ndt_score_batch_kernel, radius_search_batch_kernel, update_poses_batch_kernel,
 };
 pub use gpu_jacobian::{
     compute_jacobians_kernel, compute_point_hessians_kernel, compute_sin_cos_kernel,
