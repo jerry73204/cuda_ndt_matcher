@@ -871,7 +871,10 @@ pub fn compute_ndt_hessian_kernel<F: Float>(
     let ph_14_4 = jacobians_and_hessians[hbase + 14 * 6 + 4];
     let ph_14_5 = jacobians_and_hessians[hbase + 14 * 6 + 5];
 
-    // Block 4 (pitch): rows 16-19, non-zero in rows 17,18 cols 3-5
+    // Block 4 (pitch): rows 16-19, non-zero in rows 16 (d1,e1), 17 (b2,d2,e2), 18 (b3,d3,e3)
+    // Row 16 (x-component): cols 4,5 contain d1, e1
+    let ph_16_4 = jacobians_and_hessians[hbase + 16 * 6 + 4];
+    let ph_16_5 = jacobians_and_hessians[hbase + 16 * 6 + 5];
     let ph_17_3 = jacobians_and_hessians[hbase + 17 * 6 + 3];
     let ph_17_4 = jacobians_and_hessians[hbase + 17 * 6 + 4];
     let ph_17_5 = jacobians_and_hessians[hbase + 17 * 6 + 5];
@@ -879,7 +882,10 @@ pub fn compute_ndt_hessian_kernel<F: Float>(
     let ph_18_4 = jacobians_and_hessians[hbase + 18 * 6 + 4];
     let ph_18_5 = jacobians_and_hessians[hbase + 18 * 6 + 5];
 
-    // Block 5 (yaw): rows 20-23, non-zero in rows 21,22 cols 3-5
+    // Block 5 (yaw): rows 20-23, non-zero in rows 20 (e1,f1), 21 (c2,e2,f2), 22 (c3,e3,f3)
+    // Row 20 (x-component): cols 4,5 contain e1, f1
+    let ph_20_4 = jacobians_and_hessians[hbase + 20 * 6 + 4];
+    let ph_20_5 = jacobians_and_hessians[hbase + 20 * 6 + 5];
     let ph_21_3 = jacobians_and_hessians[hbase + 21 * 6 + 3];
     let ph_21_4 = jacobians_and_hessians[hbase + 21 * 6 + 4];
     let ph_21_5 = jacobians_and_hessians[hbase + 21 * 6 + 5];
@@ -947,12 +953,16 @@ pub fn compute_ndt_hessian_kernel<F: Float>(
                 ph_14_3,
                 ph_14_4,
                 ph_14_5,
+                ph_16_4,
+                ph_16_5,
                 ph_17_3,
                 ph_17_4,
                 ph_17_5,
                 ph_18_3,
                 ph_18_4,
                 ph_18_5,
+                ph_20_4,
+                ph_20_5,
                 ph_21_3,
                 ph_21_4,
                 ph_21_5,
@@ -1021,12 +1031,16 @@ pub fn compute_ndt_hessian_kernel<F: Float>(
                 ph_14_3,
                 ph_14_4,
                 ph_14_5,
+                ph_16_4,
+                ph_16_5,
                 ph_17_3,
                 ph_17_4,
                 ph_17_5,
                 ph_18_3,
                 ph_18_4,
                 ph_18_5,
+                ph_20_4,
+                ph_20_5,
                 ph_21_3,
                 ph_21_4,
                 ph_21_5,
@@ -1095,12 +1109,16 @@ pub fn compute_ndt_hessian_kernel<F: Float>(
                 ph_14_3,
                 ph_14_4,
                 ph_14_5,
+                ph_16_4,
+                ph_16_5,
                 ph_17_3,
                 ph_17_4,
                 ph_17_5,
                 ph_18_3,
                 ph_18_4,
                 ph_18_5,
+                ph_20_4,
+                ph_20_5,
                 ph_21_3,
                 ph_21_4,
                 ph_21_5,
@@ -1169,12 +1187,16 @@ pub fn compute_ndt_hessian_kernel<F: Float>(
                 ph_14_3,
                 ph_14_4,
                 ph_14_5,
+                ph_16_4,
+                ph_16_5,
                 ph_17_3,
                 ph_17_4,
                 ph_17_5,
                 ph_18_3,
                 ph_18_4,
                 ph_18_5,
+                ph_20_4,
+                ph_20_5,
                 ph_21_3,
                 ph_21_4,
                 ph_21_5,
@@ -1243,12 +1265,16 @@ pub fn compute_ndt_hessian_kernel<F: Float>(
                 ph_14_3,
                 ph_14_4,
                 ph_14_5,
+                ph_16_4,
+                ph_16_5,
                 ph_17_3,
                 ph_17_4,
                 ph_17_5,
                 ph_18_3,
                 ph_18_4,
                 ph_18_5,
+                ph_20_4,
+                ph_20_5,
                 ph_21_3,
                 ph_21_4,
                 ph_21_5,
@@ -1317,12 +1343,16 @@ pub fn compute_ndt_hessian_kernel<F: Float>(
                 ph_14_3,
                 ph_14_4,
                 ph_14_5,
+                ph_16_4,
+                ph_16_5,
                 ph_17_3,
                 ph_17_4,
                 ph_17_5,
                 ph_18_3,
                 ph_18_4,
                 ph_18_5,
+                ph_20_4,
+                ph_20_5,
                 ph_21_3,
                 ph_21_4,
                 ph_21_5,
@@ -1391,12 +1421,16 @@ pub fn compute_ndt_hessian_kernel<F: Float>(
                 ph_14_3,
                 ph_14_4,
                 ph_14_5,
+                ph_16_4,
+                ph_16_5,
                 ph_17_3,
                 ph_17_4,
                 ph_17_5,
                 ph_18_3,
                 ph_18_4,
                 ph_18_5,
+                ph_20_4,
+                ph_20_5,
                 ph_21_3,
                 ph_21_4,
                 ph_21_5,
@@ -1465,12 +1499,16 @@ pub fn compute_ndt_hessian_kernel<F: Float>(
                 ph_14_3,
                 ph_14_4,
                 ph_14_5,
+                ph_16_4,
+                ph_16_5,
                 ph_17_3,
                 ph_17_4,
                 ph_17_5,
                 ph_18_3,
                 ph_18_4,
                 ph_18_5,
+                ph_20_4,
+                ph_20_5,
                 ph_21_3,
                 ph_21_4,
                 ph_21_5,
@@ -1650,7 +1688,10 @@ pub fn compute_ndt_hessian_kernel_v2<F: Float>(
     let ph_14_4 = point_hessians[hbase + 14 * 6 + 4];
     let ph_14_5 = point_hessians[hbase + 14 * 6 + 5];
 
-    // Block 4 (pitch): rows 16-19, non-zero in rows 17,18 cols 3-5
+    // Block 4 (pitch): rows 16-19, non-zero in rows 16 (d1,e1), 17 (b2,d2,e2), 18 (b3,d3,e3)
+    // Row 16 (x-component): cols 4,5 contain d1, e1
+    let ph_16_4 = point_hessians[hbase + 16 * 6 + 4];
+    let ph_16_5 = point_hessians[hbase + 16 * 6 + 5];
     let ph_17_3 = point_hessians[hbase + 17 * 6 + 3];
     let ph_17_4 = point_hessians[hbase + 17 * 6 + 4];
     let ph_17_5 = point_hessians[hbase + 17 * 6 + 5];
@@ -1658,7 +1699,10 @@ pub fn compute_ndt_hessian_kernel_v2<F: Float>(
     let ph_18_4 = point_hessians[hbase + 18 * 6 + 4];
     let ph_18_5 = point_hessians[hbase + 18 * 6 + 5];
 
-    // Block 5 (yaw): rows 20-23, non-zero in rows 21,22 cols 3-5
+    // Block 5 (yaw): rows 20-23, non-zero in rows 20 (e1,f1), 21 (c2,e2,f2), 22 (c3,e3,f3)
+    // Row 20 (x-component): cols 4,5 contain e1, f1
+    let ph_20_4 = point_hessians[hbase + 20 * 6 + 4];
+    let ph_20_5 = point_hessians[hbase + 20 * 6 + 5];
     let ph_21_3 = point_hessians[hbase + 21 * 6 + 3];
     let ph_21_4 = point_hessians[hbase + 21 * 6 + 4];
     let ph_21_5 = point_hessians[hbase + 21 * 6 + 5];
@@ -1726,12 +1770,16 @@ pub fn compute_ndt_hessian_kernel_v2<F: Float>(
                 ph_14_3,
                 ph_14_4,
                 ph_14_5,
+                ph_16_4,
+                ph_16_5,
                 ph_17_3,
                 ph_17_4,
                 ph_17_5,
                 ph_18_3,
                 ph_18_4,
                 ph_18_5,
+                ph_20_4,
+                ph_20_5,
                 ph_21_3,
                 ph_21_4,
                 ph_21_5,
@@ -1800,12 +1848,16 @@ pub fn compute_ndt_hessian_kernel_v2<F: Float>(
                 ph_14_3,
                 ph_14_4,
                 ph_14_5,
+                ph_16_4,
+                ph_16_5,
                 ph_17_3,
                 ph_17_4,
                 ph_17_5,
                 ph_18_3,
                 ph_18_4,
                 ph_18_5,
+                ph_20_4,
+                ph_20_5,
                 ph_21_3,
                 ph_21_4,
                 ph_21_5,
@@ -1874,12 +1926,16 @@ pub fn compute_ndt_hessian_kernel_v2<F: Float>(
                 ph_14_3,
                 ph_14_4,
                 ph_14_5,
+                ph_16_4,
+                ph_16_5,
                 ph_17_3,
                 ph_17_4,
                 ph_17_5,
                 ph_18_3,
                 ph_18_4,
                 ph_18_5,
+                ph_20_4,
+                ph_20_5,
                 ph_21_3,
                 ph_21_4,
                 ph_21_5,
@@ -1948,12 +2004,16 @@ pub fn compute_ndt_hessian_kernel_v2<F: Float>(
                 ph_14_3,
                 ph_14_4,
                 ph_14_5,
+                ph_16_4,
+                ph_16_5,
                 ph_17_3,
                 ph_17_4,
                 ph_17_5,
                 ph_18_3,
                 ph_18_4,
                 ph_18_5,
+                ph_20_4,
+                ph_20_5,
                 ph_21_3,
                 ph_21_4,
                 ph_21_5,
@@ -2022,12 +2082,16 @@ pub fn compute_ndt_hessian_kernel_v2<F: Float>(
                 ph_14_3,
                 ph_14_4,
                 ph_14_5,
+                ph_16_4,
+                ph_16_5,
                 ph_17_3,
                 ph_17_4,
                 ph_17_5,
                 ph_18_3,
                 ph_18_4,
                 ph_18_5,
+                ph_20_4,
+                ph_20_5,
                 ph_21_3,
                 ph_21_4,
                 ph_21_5,
@@ -2096,12 +2160,16 @@ pub fn compute_ndt_hessian_kernel_v2<F: Float>(
                 ph_14_3,
                 ph_14_4,
                 ph_14_5,
+                ph_16_4,
+                ph_16_5,
                 ph_17_3,
                 ph_17_4,
                 ph_17_5,
                 ph_18_3,
                 ph_18_4,
                 ph_18_5,
+                ph_20_4,
+                ph_20_5,
                 ph_21_3,
                 ph_21_4,
                 ph_21_5,
@@ -2170,12 +2238,16 @@ pub fn compute_ndt_hessian_kernel_v2<F: Float>(
                 ph_14_3,
                 ph_14_4,
                 ph_14_5,
+                ph_16_4,
+                ph_16_5,
                 ph_17_3,
                 ph_17_4,
                 ph_17_5,
                 ph_18_3,
                 ph_18_4,
                 ph_18_5,
+                ph_20_4,
+                ph_20_5,
                 ph_21_3,
                 ph_21_4,
                 ph_21_5,
@@ -2244,12 +2316,16 @@ pub fn compute_ndt_hessian_kernel_v2<F: Float>(
                 ph_14_3,
                 ph_14_4,
                 ph_14_5,
+                ph_16_4,
+                ph_16_5,
                 ph_17_3,
                 ph_17_4,
                 ph_17_5,
                 ph_18_3,
                 ph_18_4,
                 ph_18_5,
+                ph_20_4,
+                ph_20_5,
                 ph_21_3,
                 ph_21_4,
                 ph_21_5,
@@ -2366,19 +2442,26 @@ fn accumulate_hessian_contribution<F: Float>(
     j_23: F,
     j_24: F,
     j_25: F,
-    // Point Hessian non-zero elements (18 values)
+    // Point Hessian non-zero elements (22 values)
+    // Roll block: rows 13,14 (x-row 12 is all zeros for roll)
     ph_13_3: F,
     ph_13_4: F,
     ph_13_5: F,
     ph_14_3: F,
     ph_14_4: F,
     ph_14_5: F,
+    // Pitch block: rows 16 (x-row has d1,e1), 17, 18
+    ph_16_4: F,
+    ph_16_5: F,
     ph_17_3: F,
     ph_17_4: F,
     ph_17_5: F,
     ph_18_3: F,
     ph_18_4: F,
     ph_18_5: F,
+    // Yaw block: rows 20 (x-row has e1,f1), 21, 22
+    ph_20_4: F,
+    ph_20_5: F,
     ph_21_3: F,
     ph_21_4: F,
     ph_21_5: F,
@@ -2512,30 +2595,29 @@ fn accumulate_hessian_contribution<F: Float>(
         let jtcj_55 = j_05 * cj_05 + j_15 * cj_15 + j_25 * cj_25;
 
         // Compute x'Σ⁻¹ * H_block terms (xch)
-        // xch[i][j] = cx' * H_block[i][:,j]
+        // xch[i][j] = cx' * H_block[i][:,j] = cx0 * ph[i*4, j] + cx1 * ph[i*4+1, j] + cx2 * ph[i*4+2, j]
         // Only non-zero for i >= 3, j >= 3 due to point Hessian structure
         //
         // For block i (pose parameter i), the point Hessian has structure:
         // - Blocks 0,1,2 (translation): all zeros
-        // - Block 3 (roll): rows 12-15, non-zero in rows 13,14 (y,z components)
-        // - Block 4 (pitch): rows 16-19, non-zero in rows 17,18
-        // - Block 5 (yaw): rows 20-23, non-zero in rows 21,22
-        //
-        // xch[i][j] = cx1 * ph[i*4+1, j] + cx2 * ph[i*4+2, j]
-        // (cx0 * row_x is zero, cx0 would multiply zeros anyway for i>=3)
+        // - Block 3 (roll): rows 12-15, x-row is zero, y,z rows non-zero in cols 3-5
+        // - Block 4 (pitch): rows 16-19, x-row non-zero in cols 4,5 (d1,e1), y,z rows non-zero in cols 3-5
+        // - Block 5 (yaw): rows 20-23, x-row non-zero in cols 4,5 (e1,f1), y,z rows non-zero in cols 3-5
 
-        // xch[3][3] = cx1 * ph_13_3 + cx2 * ph_14_3
+        // Block 3 (roll): row 12 is all zeros, so only need y,z components
         let xch_33 = cx1 * ph_13_3 + cx2 * ph_14_3;
         let xch_34 = cx1 * ph_13_4 + cx2 * ph_14_4;
         let xch_35 = cx1 * ph_13_5 + cx2 * ph_14_5;
 
-        let xch_43 = cx1 * ph_17_3 + cx2 * ph_18_3;
-        let xch_44 = cx1 * ph_17_4 + cx2 * ph_18_4;
-        let xch_45 = cx1 * ph_17_5 + cx2 * ph_18_5;
+        // Block 4 (pitch): row 16 has non-zero entries in cols 4,5 (d1, e1)
+        let xch_43 = cx1 * ph_17_3 + cx2 * ph_18_3; // col 3: row 16 is zero
+        let xch_44 = cx0 * ph_16_4 + cx1 * ph_17_4 + cx2 * ph_18_4; // col 4: includes d1
+        let xch_45 = cx0 * ph_16_5 + cx1 * ph_17_5 + cx2 * ph_18_5; // col 5: includes e1
 
-        let xch_53 = cx1 * ph_21_3 + cx2 * ph_22_3;
-        let xch_54 = cx1 * ph_21_4 + cx2 * ph_22_4;
-        let xch_55 = cx1 * ph_21_5 + cx2 * ph_22_5;
+        // Block 5 (yaw): row 20 has non-zero entries in cols 4,5 (e1, f1)
+        let xch_53 = cx1 * ph_21_3 + cx2 * ph_22_3; // col 3: row 20 is zero
+        let xch_54 = cx0 * ph_20_4 + cx1 * ph_21_4 + cx2 * ph_22_4; // col 4: includes e1
+        let xch_55 = cx0 * ph_20_5 + cx1 * ph_21_5 + cx2 * ph_22_5; // col 5: includes f1
 
         // Accumulate Hessian: H[i,j] += e_x_cov_x * (-d2 * cov_dxd[i] * cov_dxd[j] + xch[i][j] + jtcj[i][j])
         let neg_d2 = F::new(0.0) - gauss_d2;
