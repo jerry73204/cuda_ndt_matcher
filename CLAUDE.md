@@ -35,11 +35,6 @@ cargo --config build/ros2_cargo_config.toml test -p ndt_cuda --lib test_name
 # Demo mode with logging
 just run-cuda      # CUDA NDT
 just run-builtin   # Autoware NDT (baseline)
-
-# Service mode
-just start-ndt-cuda && just start-rosbag && just enable-ndt
-just log-ndt-cuda  # Monitor output
-just stop-ndt-cuda
 ```
 
 See `docs/rosbag-replay-guide.md` for custom rosbag testing.
@@ -61,6 +56,14 @@ src/
 | `NDT_USE_GPU=0` | Force CPU mode (default: 1 for GPU) |
 | `NDT_DEBUG=1` | Enable debug JSONL output |
 | `NDT_DEBUG_VPP=1` | Log voxel-per-point distribution |
+
+## ROS 2 Integration Notes
+
+**EKF Subscription QoS**: Uses depth 100 (matching Autoware) to buffer messages during node initialization. With depth 1, early EKF messages are lost before `spin()` starts processing callbacks.
+
+**Initial Pose**: Demo scripts always enable `user_defined_initial_pose` for reproducible testing. Without this, the EKF initializes to an unknown state. The default pose is set in `ndt_replay_simulation.launch.xml`.
+
+**SmartPoseBuffer**: Rejects interpolation when target timestamp is before first pose (matches Autoware behavior). Does NOT use fallback to first pose.
 
 ## Coding Conventions
 
@@ -88,4 +91,5 @@ src/
 - Use `timeout` parameter on Bash tool instead of `timeout` command
 - Use `run_in_background: true` for long-running processes
 - Create temp files in `$project/tmp/` not `/tmp/`
+- Always use Write/Edit tools to create files, not `cat << EOF` heredoc patterns in Bash
 - **Do NOT modify files in `external/autoware_repo`** - copy to `src/` first
