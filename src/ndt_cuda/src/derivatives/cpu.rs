@@ -345,16 +345,20 @@ pub fn transform_point(point: &[f64; 3], pose: &[f64; 6]) -> [f64; 3] {
     let (sp, cp) = pitch.sin_cos();
     let (sy, cy) = yaw.sin_cos();
 
-    // Rotation matrix R = Rz(yaw) * Ry(pitch) * Rx(roll)
-    let r00 = cy * cp;
-    let r01 = cy * sp * sr - sy * cr;
-    let r02 = cy * sp * cr + sy * sr;
-    let r10 = sy * cp;
-    let r11 = sy * sp * sr + cy * cr;
-    let r12 = sy * sp * cr - cy * sr;
-    let r20 = -sp;
-    let r21 = cp * sr;
-    let r22 = cp * cr;
+    // Rotation matrix R = Rx(roll) * Ry(pitch) * Rz(yaw)
+    // This matches Autoware's convention used in:
+    // - eulerAngles(0, 1, 2) extraction
+    // - AngleAxis composition: Translation * Rx * Ry * Rz
+    // - Jacobian/Hessian angular derivatives (j_ang, h_ang)
+    let r00 = cp * cy;
+    let r01 = -cp * sy;
+    let r02 = sp;
+    let r10 = sr * sp * cy + cr * sy;
+    let r11 = cr * cy - sr * sp * sy;
+    let r12 = -sr * cp;
+    let r20 = sr * sy - cr * sp * cy;
+    let r21 = cr * sp * sy + sr * cy;
+    let r22 = cr * cp;
 
     let x = point[0];
     let y = point[1];
