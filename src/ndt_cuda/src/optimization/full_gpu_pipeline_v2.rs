@@ -1289,20 +1289,42 @@ mod tests {
         };
         let mut pipeline = FullGpuPipelineV2::with_config(1000, 5000, config).unwrap();
 
-        // Create source points
-        let source_points = vec![[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        // Create source points at different positions
+        let source_points = vec![
+            [1.0f32, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
+            [2.0, 1.0, 0.0],
+            [-2.0, -1.0, 0.0],
+        ];
 
-        // Create voxel at origin
+        // Create multiple voxels at different positions for well-conditioned Hessian
+        // Each voxel has 3 floats for mean, 9 for inv_cov, 3 for principal_axis
         let voxel_data = GpuVoxelData {
-            means: vec![0.0, 0.0, 0.0],
-            inv_covariances: vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-            principal_axes: vec![0.0, 0.0, 1.0],
-            valid: vec![1],
-            num_voxels: 1,
+            means: vec![
+                0.0, 0.0, 0.0, // Voxel 0 at origin
+                2.0, 0.0, 0.0, // Voxel 1 at (2,0,0)
+                0.0, 2.0, 0.0, // Voxel 2 at (0,2,0)
+            ],
+            inv_covariances: vec![
+                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, // Voxel 0
+                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, // Voxel 1
+                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, // Voxel 2
+            ],
+            principal_axes: vec![
+                0.0, 0.0, 1.0, // Voxel 0
+                0.0, 0.0, 1.0, // Voxel 1
+                0.0, 0.0, 1.0, // Voxel 2
+            ],
+            valid: vec![1, 1, 1],
+            num_voxels: 3,
         };
 
         pipeline
-            .upload_alignment_data(&source_points, &voxel_data, 0.55, 0.4, 2.0)
+            .upload_alignment_data(&source_points, &voxel_data, 0.55, 0.4, 3.0)
             .unwrap();
 
         let result = pipeline
@@ -1375,7 +1397,7 @@ mod tests {
         };
         let mut pipeline = FullGpuPipelineV2::with_config(1000, 5000, config).unwrap();
 
-        // Create more source points for better conditioning
+        // Create source points at different positions
         let source_points = vec![
             [1.0f32, 0.0, 0.0],
             [-1.0, 0.0, 0.0],
@@ -1383,21 +1405,33 @@ mod tests {
             [0.0, -1.0, 0.0],
             [0.0, 0.0, 1.0],
             [0.0, 0.0, -1.0],
-            [0.5, 0.5, 0.0],
-            [-0.5, -0.5, 0.0],
+            [2.0, 1.0, 0.0],
+            [-2.0, -1.0, 0.0],
         ];
 
-        // Create voxel at origin with smaller inv covariance (less constraining)
+        // Create multiple voxels at different positions for well-conditioned Hessian
         let voxel_data = GpuVoxelData {
-            means: vec![0.0, 0.0, 0.0],
-            inv_covariances: vec![0.5, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.5],
-            principal_axes: vec![0.0, 0.0, 1.0],
-            valid: vec![1],
-            num_voxels: 1,
+            means: vec![
+                0.0, 0.0, 0.0, // Voxel 0 at origin
+                2.0, 0.0, 0.0, // Voxel 1 at (2,0,0)
+                0.0, 2.0, 0.0, // Voxel 2 at (0,2,0)
+            ],
+            inv_covariances: vec![
+                0.5, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.5, // Voxel 0
+                0.5, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.5, // Voxel 1
+                0.5, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.5, // Voxel 2
+            ],
+            principal_axes: vec![
+                0.0, 0.0, 1.0, // Voxel 0
+                0.0, 0.0, 1.0, // Voxel 1
+                0.0, 0.0, 1.0, // Voxel 2
+            ],
+            valid: vec![1, 1, 1],
+            num_voxels: 3,
         };
 
         pipeline
-            .upload_alignment_data(&source_points, &voxel_data, 0.55, 0.4, 2.0)
+            .upload_alignment_data(&source_points, &voxel_data, 0.55, 0.4, 3.0)
             .unwrap();
 
         // Set regularization reference pose at (0.1, 0.0) - small offset
@@ -1431,18 +1465,41 @@ mod tests {
         };
         let mut pipeline = FullGpuPipelineV2::with_config(1000, 5000, config).unwrap();
 
-        let source_points = vec![[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        // Create source points at different positions
+        let source_points = vec![
+            [1.0f32, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
+            [2.0, 1.0, 0.0],
+            [-2.0, -1.0, 0.0],
+        ];
 
+        // Create multiple voxels at different positions for well-conditioned Hessian
         let voxel_data = GpuVoxelData {
-            means: vec![0.0, 0.0, 0.0],
-            inv_covariances: vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-            principal_axes: vec![0.0, 0.0, 1.0],
-            valid: vec![1],
-            num_voxels: 1,
+            means: vec![
+                0.0, 0.0, 0.0, // Voxel 0 at origin
+                2.0, 0.0, 0.0, // Voxel 1 at (2,0,0)
+                0.0, 2.0, 0.0, // Voxel 2 at (0,2,0)
+            ],
+            inv_covariances: vec![
+                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, // Voxel 0
+                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, // Voxel 1
+                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, // Voxel 2
+            ],
+            principal_axes: vec![
+                0.0, 0.0, 1.0, // Voxel 0
+                0.0, 0.0, 1.0, // Voxel 1
+                0.0, 0.0, 1.0, // Voxel 2
+            ],
+            valid: vec![1, 1, 1],
+            num_voxels: 3,
         };
 
         pipeline
-            .upload_alignment_data(&source_points, &voxel_data, 0.55, 0.4, 2.0)
+            .upload_alignment_data(&source_points, &voxel_data, 0.55, 0.4, 3.0)
             .unwrap();
 
         // Set a regularization pose (should be ignored since disabled)
@@ -1608,18 +1665,41 @@ mod tests {
         };
         let mut pipeline = FullGpuPipelineV2::with_config(1000, 5000, config).unwrap();
 
-        let source_points = vec![[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        // Create source points at different positions
+        let source_points = vec![
+            [1.0f32, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
+            [2.0, 1.0, 0.0],
+            [-2.0, -1.0, 0.0],
+        ];
 
+        // Create multiple voxels at different positions for well-conditioned Hessian
         let voxel_data = GpuVoxelData {
-            means: vec![0.0, 0.0, 0.0],
-            inv_covariances: vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-            principal_axes: vec![0.0, 0.0, 1.0],
-            valid: vec![1],
-            num_voxels: 1,
+            means: vec![
+                0.0, 0.0, 0.0, // Voxel 0 at origin
+                2.0, 0.0, 0.0, // Voxel 1 at (2,0,0)
+                0.0, 2.0, 0.0, // Voxel 2 at (0,2,0)
+            ],
+            inv_covariances: vec![
+                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, // Voxel 0
+                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, // Voxel 1
+                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, // Voxel 2
+            ],
+            principal_axes: vec![
+                0.0, 0.0, 1.0, // Voxel 0
+                0.0, 0.0, 1.0, // Voxel 1
+                0.0, 0.0, 1.0, // Voxel 2
+            ],
+            valid: vec![1, 1, 1],
+            num_voxels: 3,
         };
 
         pipeline
-            .upload_alignment_data(&source_points, &voxel_data, 0.55, 0.4, 2.0)
+            .upload_alignment_data(&source_points, &voxel_data, 0.55, 0.4, 3.0)
             .unwrap();
 
         let result = pipeline
