@@ -165,8 +165,17 @@ __global__ void persistent_ndt_kernel(
     float* __restrict__ out_final_score,
     float* __restrict__ out_hessian,              // [36] for covariance
     uint32_t* __restrict__ out_num_correspondences, // Phase 18.3
-    uint32_t* __restrict__ out_max_oscillation_count // Phase 18.4
+    uint32_t* __restrict__ out_max_oscillation_count, // Phase 18.4
+    float* __restrict__ out_alpha_sum, // Phase 19.3: accumulated step sizes
+    // Debug output (Phase 19.4)
+    int32_t debug_enabled,              // 0 = disabled, 1 = enabled
+    float* __restrict__ debug_buffer    // [max_iterations * 50] or nullptr
 ) {
+    // Debug buffer layout per iteration (50 floats):
+    // [0]: iteration, [1]: score, [2-7]: pose_before, [8-13]: gradient,
+    // [14-34]: hessian_ut, [35-40]: delta, [41]: alpha, [42]: correspondences,
+    // [43]: direction_reversed, [44-49]: pose_after
+    constexpr int DEBUG_FLOATS_PER_ITER = 50;
     cg::grid_group grid = cg::this_grid();
 
     // Shared memory for block-level reduction
@@ -194,7 +203,8 @@ __global__ void persistent_ndt_kernel(
     // [83]      = dphi_0 (directional derivative at current pose)
     // [84]      = best_alpha (selected step size)
     // [85]      = ls_early_term (early termination flag)
-    // [86..95]  = reserved for alignment (total: 96 floats)
+    // [86]      = alpha_sum (accumulated step sizes for avg_alpha)
+    // [87..95]  = reserved for alignment (total: 96 floats)
     constexpr int REDUCE_SIZE = 29;  // 1 + 6 + 21 + 1
     constexpr int MAX_LS_CANDIDATES = 8;
 
@@ -218,6 +228,7 @@ __global__ void persistent_ndt_kernel(
     float* g_dphi_0 = &reduce_buffer[83];
     float* g_best_alpha = &reduce_buffer[84];
     float* g_ls_early_term = &reduce_buffer[85];
+    float* g_alpha_sum = &reduce_buffer[86];
 
     // Initialize state from input (only thread 0 of block 0)
     if (threadIdx.x == 0 && blockIdx.x == 0) {
@@ -238,6 +249,7 @@ __global__ void persistent_ndt_kernel(
         g_prev_pos[2] = initial_pose[2];
         *g_curr_osc_count = 0.0f;
         *g_max_osc_count = 0.0f;
+        *g_alpha_sum = 0.0f;
 
         // Clear reduction values
         for (int i = 0; i < REDUCE_SIZE; i++) {
@@ -254,8 +266,18 @@ __global__ void persistent_ndt_kernel(
     // ITERATION LOOP
     // ========================================================================
 
+    // Phase 19.4: Storage for pose at iteration start (for debug output)
+    float pose_before[6];
+
     int iter;
     for (iter = 0; iter < max_iterations; iter++) {
+
+        // Phase 19.4: Save pose at iteration start (before any updates)
+        if (threadIdx.x == 0 && blockIdx.x == 0) {
+            for (int i = 0; i < 6; i++) {
+                pose_before[i] = g_pose[i];
+            }
+        }
 
         // --------------------------------------------------------------------
         // PHASE A: Per-point computation
@@ -744,6 +766,11 @@ __global__ void persistent_ndt_kernel(
             g_prev_pos[1] = g_pose[1];
             g_prev_pos[2] = g_pose[2];
 
+            // Accumulate alpha for avg_alpha calculation
+            // If line search is enabled, use best_alpha; otherwise alpha = 1.0
+            float alpha_this_iter = ls_enabled ? *g_best_alpha : 1.0f;
+            *g_alpha_sum += alpha_this_iter;
+
             // Check convergence: ||delta||^2 < epsilon^2
             float delta_norm_sq = 0.0f;
             for (int i = 0; i < 6; i++) {
@@ -754,6 +781,56 @@ __global__ void persistent_ndt_kernel(
             // Save Hessian to output BEFORE clearing (for covariance estimation)
             // Expand upper triangle [21] to full symmetric matrix [36]
             expand_upper_triangle_f32(reduce_buffer + 7, out_hessian);
+
+            // Phase 19.4: Write debug data (only if enabled)
+            if (debug_enabled && debug_buffer != nullptr) {
+                float* iter_debug = &debug_buffer[iter * DEBUG_FLOATS_PER_ITER];
+
+                // [0]: iteration number
+                iter_debug[0] = (float)iter;
+
+                // [1]: score
+                iter_debug[1] = *g_final_score;
+
+                // [2-7]: pose_before (saved at iteration start)
+                for (int i = 0; i < 6; i++) {
+                    iter_debug[2 + i] = pose_before[i];
+                }
+
+                // [8-13]: gradient (from reduce_buffer, before clearing)
+                for (int i = 0; i < 6; i++) {
+                    iter_debug[8 + i] = reduce_buffer[1 + i];
+                }
+
+                // [14-34]: hessian upper triangle (21 values)
+                for (int i = 0; i < 21; i++) {
+                    iter_debug[14 + i] = reduce_buffer[7 + i];
+                }
+
+                // [35-40]: delta (Newton step)
+                for (int i = 0; i < 6; i++) {
+                    iter_debug[35 + i] = g_delta[i];
+                }
+
+                // [41]: alpha (step size)
+                iter_debug[41] = ls_enabled ? *g_best_alpha : 1.0f;
+
+                // [42]: correspondences
+                iter_debug[42] = *g_total_corr;
+
+                // [43]: direction_reversed
+                // Check if gradient · delta < 0 (not an ascent direction)
+                float gd = 0.0f;
+                for (int i = 0; i < 6; i++) {
+                    gd += reduce_buffer[1 + i] * g_delta[i];
+                }
+                iter_debug[43] = (gd < 0.0f) ? 1.0f : 0.0f;
+
+                // [44-49]: pose_after (current g_pose after update)
+                for (int i = 0; i < 6; i++) {
+                    iter_debug[44 + i] = g_pose[i];
+                }
+            }
 
             // Clear reduce buffer for next iteration
             for (int i = 0; i < REDUCE_SIZE; i++) {
@@ -784,6 +861,7 @@ __global__ void persistent_ndt_kernel(
         *out_final_score = *g_final_score;
         *out_num_correspondences = (uint32_t)(*g_total_corr);
         *out_max_oscillation_count = (uint32_t)(*g_max_osc_count);  // Phase 18.4
+        *out_alpha_sum = *g_alpha_sum;  // Phase 19.3
         // Note: out_hessian is already written in the iteration loop
     }
 }
@@ -858,6 +936,9 @@ CudaError persistent_ndt_is_supported(int* supported) {
 /// @param out_hessian       Device pointer to output Hessian [36]
 /// @param out_num_correspondences Device pointer to output correspondence count
 /// @param out_max_oscillation_count Device pointer to output max oscillation count (Phase 18.4)
+/// @param out_alpha_sum Device pointer to output accumulated step sizes (Phase 19.3)
+/// @param debug_enabled 1 to enable debug output, 0 to disable (Phase 19.4)
+/// @param debug_buffer Device pointer to debug buffer [max_iterations * 50] or nullptr
 CudaError persistent_ndt_launch(
     const float* source_points,
     const float* voxel_means,
@@ -887,7 +968,10 @@ CudaError persistent_ndt_launch(
     float* out_final_score,
     float* out_hessian,
     uint32_t* out_num_correspondences,
-    uint32_t* out_max_oscillation_count
+    uint32_t* out_max_oscillation_count,
+    float* out_alpha_sum,
+    int32_t debug_enabled,
+    float* debug_buffer
 ) {
     if (num_points == 0) {
         // Handle empty input
@@ -902,6 +986,7 @@ CudaError persistent_ndt_launch(
         cudaMemcpy(out_final_score, &zero, sizeof(float), cudaMemcpyHostToDevice);
         cudaMemcpy(out_num_correspondences, &zero_u32, sizeof(uint32_t), cudaMemcpyHostToDevice);
         cudaMemcpy(out_max_oscillation_count, &zero_u32, sizeof(uint32_t), cudaMemcpyHostToDevice);
+        cudaMemcpy(out_alpha_sum, &zero, sizeof(float), cudaMemcpyHostToDevice);
         return cudaSuccess;
     }
 
@@ -954,7 +1039,10 @@ CudaError persistent_ndt_launch(
         (void*)&out_final_score,
         (void*)&out_hessian,
         (void*)&out_num_correspondences,
-        (void*)&out_max_oscillation_count
+        (void*)&out_max_oscillation_count,
+        (void*)&out_alpha_sum,
+        (void*)&debug_enabled,
+        (void*)&debug_buffer
     };
 
     // Launch cooperative kernel

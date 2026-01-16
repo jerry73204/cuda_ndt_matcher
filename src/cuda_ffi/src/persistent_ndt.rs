@@ -84,6 +84,10 @@ extern "C" {
         out_hessian: *mut f32,
         out_num_correspondences: *mut u32,   // Phase 18.3
         out_max_oscillation_count: *mut u32, // Phase 18.4
+        out_alpha_sum: *mut f32,             // Phase 19.3
+        // Phase 19.4: Debug output
+        debug_enabled: i32,
+        debug_buffer: *mut f32, // [max_iterations * 50] or nullptr
     ) -> c_int;
 
     fn persistent_ndt_reduce_buffer_size() -> u32;
@@ -137,6 +141,9 @@ impl PersistentNdt {
 
     /// Number of reduce values per thread (score + gradient + hessian + correspondences).
     pub const REDUCE_SIZE: usize = 29;
+
+    /// Number of floats per iteration in debug buffer (Phase 19.4).
+    pub const DEBUG_FLOATS_PER_ITER: usize = 50;
 
     /// Get maximum number of blocks for cooperative launch.
     pub fn get_max_blocks() -> Result<usize, CudaError> {
@@ -193,6 +200,9 @@ impl PersistentNdt {
     /// * `out_hessian` - Device pointer to output Hessian [36]
     /// * `out_num_correspondences` - Device pointer to output correspondence count
     /// * `out_max_oscillation_count` - Device pointer to output max oscillation count
+    /// * `out_alpha_sum` - Device pointer to output accumulated step sizes
+    /// * `debug_enabled` - Whether to enable debug output
+    /// * `debug_buffer` - Device pointer to debug buffer [max_iterations * 50] or null
     ///
     /// # Errors
     ///
@@ -233,6 +243,9 @@ impl PersistentNdt {
         out_hessian: *mut f32,
         out_num_correspondences: *mut u32,
         out_max_oscillation_count: *mut u32,
+        out_alpha_sum: *mut f32,
+        debug_enabled: bool,
+        debug_buffer: *mut f32,
     ) -> Result<(), CudaError> {
         let result = persistent_ndt_launch(
             source_points,
@@ -264,6 +277,9 @@ impl PersistentNdt {
             out_hessian,
             out_num_correspondences,
             out_max_oscillation_count,
+            out_alpha_sum,
+            if debug_enabled { 1 } else { 0 },
+            debug_buffer,
         );
 
         if result == CUDA_ERROR_COOPERATIVE_LAUNCH_TOO_LARGE {
@@ -336,6 +352,9 @@ pub unsafe fn persistent_ndt_launch_raw(
     d_out_hessian: u64,
     d_out_num_correspondences: u64,
     d_out_max_oscillation_count: u64,
+    d_out_alpha_sum: u64,
+    debug_enabled: bool,
+    d_debug_buffer: u64,
 ) -> Result<(), CudaError> {
     PersistentNdt::launch(
         d_source_points as *const f32,
@@ -367,6 +386,9 @@ pub unsafe fn persistent_ndt_launch_raw(
         d_out_hessian as *mut f32,
         d_out_num_correspondences as *mut u32,
         d_out_max_oscillation_count as *mut u32,
+        d_out_alpha_sum as *mut f32,
+        debug_enabled,
+        d_debug_buffer as *mut f32,
     )
 }
 

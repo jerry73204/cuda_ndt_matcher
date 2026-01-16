@@ -182,6 +182,11 @@ pub struct FullGpuPipelineV2 {
     persistent_out_hessian: Handle,   // [36] f32
     persistent_out_correspondences: Handle, // [1] u32 - Phase 18.3
     persistent_out_oscillation: Handle, // [1] u32 - Phase 18.4
+    persistent_out_alpha_sum: Handle, // [1] f32 - Phase 19.3
+
+    // Phase 19.4: Debug buffer (only allocated when enable_debug is true)
+    persistent_debug_buffer: Option<Handle>, // [max_iterations * 50] f32
+    max_iterations_for_debug: u32,           // Cached for buffer sizing
 
     // Regularization state for persistent kernel - Phase 18.2
     regularization_ref_x: f32,
@@ -235,6 +240,7 @@ impl FullGpuPipelineV2 {
         let persistent_out_hessian = client.empty(36 * std::mem::size_of::<f32>());
         let persistent_out_correspondences = client.empty(std::mem::size_of::<u32>());
         let persistent_out_oscillation = client.empty(std::mem::size_of::<u32>());
+        let persistent_out_alpha_sum = client.empty(std::mem::size_of::<f32>());
 
         Ok(Self {
             client,
@@ -262,6 +268,9 @@ impl FullGpuPipelineV2 {
             persistent_out_hessian,
             persistent_out_correspondences,
             persistent_out_oscillation,
+            persistent_out_alpha_sum,
+            persistent_debug_buffer: None, // Allocated on-demand in optimize()
+            max_iterations_for_debug: 0,
             regularization_ref_x: 0.0,
             regularization_ref_y: 0.0,
         })
@@ -357,6 +366,105 @@ impl FullGpuPipelineV2 {
         self.regularization_ref_y = 0.0;
     }
 
+    /// Parse debug buffer into Vec<IterationDebug>.
+    ///
+    /// # Buffer Layout (per iteration, 50 floats)
+    ///
+    /// | Offset | Count | Field |
+    /// |--------|-------|-------|
+    /// | 0 | 1 | iteration |
+    /// | 1 | 1 | score |
+    /// | 2-7 | 6 | pose_before |
+    /// | 8-13 | 6 | gradient |
+    /// | 14-34 | 21 | hessian_upper_triangle |
+    /// | 35-40 | 6 | delta (Newton step) |
+    /// | 41 | 1 | alpha |
+    /// | 42 | 1 | correspondences |
+    /// | 43 | 1 | direction_reversed |
+    /// | 44-49 | 6 | pose_after |
+    fn parse_debug_buffer(
+        &self,
+        num_iterations: usize,
+    ) -> Result<Vec<super::debug::IterationDebug>> {
+        use super::debug::IterationDebug;
+
+        let buffer = self
+            .persistent_debug_buffer
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Debug buffer not allocated"))?;
+        let bytes = self.client.read_one(buffer.clone());
+        let floats = f32::from_bytes(&bytes);
+
+        const FLOATS_PER_ITER: usize =
+            cuda_ffi::persistent_ndt::PersistentNdt::DEBUG_FLOATS_PER_ITER;
+
+        let mut result = Vec::with_capacity(num_iterations);
+        for iter in 0..num_iterations {
+            let base = iter * FLOATS_PER_ITER;
+            let mut debug = IterationDebug::new(iter);
+
+            // Parse fields from buffer
+            debug.score = floats[base + 1] as f64;
+            debug.pose = (0..6).map(|i| floats[base + 2 + i] as f64).collect();
+            debug.gradient = (0..6).map(|i| floats[base + 8 + i] as f64).collect();
+
+            // Expand Hessian from upper triangle (21 floats -> 36 floats)
+            debug.hessian = Self::expand_upper_triangle(&floats[base + 14..base + 35]);
+
+            debug.newton_step = (0..6).map(|i| floats[base + 35 + i] as f64).collect();
+            debug.newton_step_norm = debug.newton_step.iter().map(|x| x * x).sum::<f64>().sqrt();
+
+            debug.step_length = floats[base + 41] as f64;
+            debug.num_correspondences = floats[base + 42] as usize;
+            debug.direction_reversed = floats[base + 43] > 0.5;
+            debug.pose_after = (0..6).map(|i| floats[base + 44 + i] as f64).collect();
+
+            // Set derived fields
+            debug.used_line_search = self.config.use_line_search;
+            // step_direction is the same as newton_step for our kernel
+            debug.step_direction = debug.newton_step.clone();
+            // directional_derivative = gradient · step_direction
+            debug.directional_derivative = debug
+                .gradient
+                .iter()
+                .zip(debug.step_direction.iter())
+                .map(|(g, d)| g * d)
+                .sum();
+
+            result.push(debug);
+        }
+
+        Ok(result)
+    }
+
+    /// Expand upper triangle Hessian (21 floats) to full 6x6 matrix (36 floats).
+    ///
+    /// Upper triangle layout:
+    /// ```text
+    /// H[0,0] H[0,1] H[0,2] H[0,3] H[0,4] H[0,5]    →  [0]  [1]  [2]  [3]  [4]  [5]
+    ///        H[1,1] H[1,2] H[1,3] H[1,4] H[1,5]    →       [6]  [7]  [8]  [9] [10]
+    ///               H[2,2] H[2,3] H[2,4] H[2,5]    →           [11] [12] [13] [14]
+    ///                      H[3,3] H[3,4] H[3,5]    →                [15] [16] [17]
+    ///                             H[4,4] H[4,5]    →                     [18] [19]
+    ///                                    H[5,5]    →                          [20]
+    /// ```
+    fn expand_upper_triangle(ut: &[f32]) -> Vec<f64> {
+        let mut full = vec![0.0f64; 36];
+
+        // Map from upper triangle index to (row, col)
+        let mut ut_idx = 0;
+        for row in 0..6 {
+            for col in row..6 {
+                let val = ut[ut_idx] as f64;
+                full[row * 6 + col] = val;
+                full[col * 6 + row] = val; // Symmetric
+                ut_idx += 1;
+            }
+        }
+
+        full
+    }
+
     /// Run full GPU Newton optimization using the persistent kernel.
     ///
     /// This runs the entire Newton optimization loop in a single kernel launch,
@@ -421,6 +529,22 @@ impl FullGpuPipelineV2 {
         self.persistent_out_hessian = self.client.create(f32::as_bytes(&zeros36));
         self.persistent_out_correspondences = self.client.create(u32::as_bytes(&zero_u32));
         self.persistent_out_oscillation = self.client.create(u32::as_bytes(&zero_u32));
+        self.persistent_out_alpha_sum = self.client.create(f32::as_bytes(&[0.0f32]));
+
+        // Phase 19.4: Allocate debug buffer if enabled
+        let (debug_enabled, debug_ptr) = if self.config.enable_debug {
+            let buffer_size = max_iterations as usize
+                * cuda_ffi::persistent_ndt::PersistentNdt::DEBUG_FLOATS_PER_ITER
+                * std::mem::size_of::<f32>();
+            self.persistent_debug_buffer = Some(self.client.empty(buffer_size));
+            self.max_iterations_for_debug = max_iterations;
+            (
+                true,
+                self.raw_ptr(self.persistent_debug_buffer.as_ref().unwrap()),
+            )
+        } else {
+            (false, 0)
+        };
 
         // Ensure all CubeCL operations are complete before cooperative kernel launch.
         // This ensures:
@@ -463,6 +587,9 @@ impl FullGpuPipelineV2 {
                 self.raw_ptr(&self.persistent_out_hessian),
                 self.raw_ptr(&self.persistent_out_correspondences),
                 self.raw_ptr(&self.persistent_out_oscillation),
+                self.raw_ptr(&self.persistent_out_alpha_sum),
+                debug_enabled,
+                debug_ptr,
             )?;
         }
 
@@ -501,6 +628,22 @@ impl FullGpuPipelineV2 {
             .read_one(self.persistent_out_oscillation.clone());
         let oscillation_count = u32::from_bytes(&osc_bytes)[0] as usize;
 
+        // Download alpha sum and compute average (Phase 19.3)
+        let alpha_sum_bytes = self.client.read_one(self.persistent_out_alpha_sum.clone());
+        let alpha_sum = f32::from_bytes(&alpha_sum_bytes)[0] as f64;
+        let avg_alpha = if iterations > 0 {
+            alpha_sum / (iterations as f64)
+        } else {
+            1.0
+        };
+
+        // Phase 19.4: Parse debug buffer if enabled
+        let iterations_debug = if self.config.enable_debug && iterations > 0 {
+            Some(self.parse_debug_buffer(iterations as usize)?)
+        } else {
+            None
+        };
+
         Ok(FullGpuOptimizationResultV2 {
             pose,
             score,
@@ -509,9 +652,9 @@ impl FullGpuPipelineV2 {
             hessian,
             num_correspondences,
             used_line_search: self.config.use_line_search,
-            avg_alpha: 1.0, // Persistent kernel doesn't track per-iteration alpha
+            avg_alpha,
             oscillation_count,
-            iterations_debug: None, // Persistent kernel doesn't support per-iteration debug yet
+            iterations_debug,
         })
     }
 }
@@ -929,7 +1072,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Persistent kernel doesn't support per-iteration debug data yet"]
     fn test_pipeline_v2_debug_collection() {
         // Test that debug data is collected when enabled
         let config = PipelineV2Config {
