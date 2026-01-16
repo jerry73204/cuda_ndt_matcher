@@ -31,6 +31,7 @@ fn main() {
         "csrc/segmented_reduce.cu",
         "csrc/batched_solve.cu",
         "csrc/voxel_hash.cu",
+        "csrc/persistent_ndt.cu",
     ];
 
     for source in &cuda_sources {
@@ -52,11 +53,15 @@ fn main() {
     println!("cargo:rustc-link-lib=static=segmented_reduce");
     println!("cargo:rustc-link-lib=static=batched_solve");
     println!("cargo:rustc-link-lib=static=voxel_hash");
+    println!("cargo:rustc-link-lib=static=persistent_ndt");
 
     // Rerun if CUDA sources change
     for source in &cuda_sources {
         println!("cargo:rerun-if-changed={source}");
     }
+    // Also watch header files
+    println!("cargo:rerun-if-changed=csrc/persistent_ndt_device.cuh");
+    println!("cargo:rerun-if-changed=csrc/cholesky_6x6.cuh");
     println!("cargo:rerun-if-changed=build.rs");
 }
 

@@ -7,6 +7,7 @@
 //! - GPU segment detection for voxel boundaries
 //! - cuSOLVER batched Cholesky solver
 //! - Spatial hash table for GPU-accelerated voxel lookup
+//! - Persistent NDT kernel with cooperative groups
 //!
 //! # Example
 //!
@@ -21,12 +22,19 @@
 //! ```
 
 pub mod batched_solve;
+pub mod persistent_ndt;
 pub mod radix_sort;
 pub mod segment_detect;
 pub mod segmented_reduce;
 pub mod voxel_hash;
 
 pub use batched_solve::{BatchedCholeskySolver, CusolverDnHandle, CusolverError};
+pub use persistent_ndt::{
+    is_supported as persistent_ndt_is_supported, persistent_ndt_buffer_size,
+    persistent_ndt_can_launch, persistent_ndt_launch_raw, persistent_ndt_max_blocks,
+    persistent_ndt_supported, reduce_buffer_size as persistent_ndt_reduce_buffer_size,
+    GridTooLargeError, PersistentNdt,
+};
 pub use radix_sort::{
     radix_sort_temp_size, sort_pairs_inplace, CudaError, DeviceBuffer, RadixSorter,
 };
@@ -67,6 +75,25 @@ pub unsafe fn cuda_memcpy_dtod(dst: u64, src: u64, size: usize) -> Result<(), Cu
         size,
         CUDA_MEMCPY_DEVICE_TO_DEVICE,
     );
+    if result != 0 {
+        Err(CudaError::from(result))
+    } else {
+        Ok(())
+    }
+}
+
+/// Synchronize the CUDA device - wait for all pending operations to complete.
+///
+/// This is a blocking call that ensures all previous CUDA operations
+/// (kernel launches, memory copies, etc.) have completed.
+pub fn cuda_device_synchronize() -> Result<(), CudaError> {
+    use std::ffi::c_int;
+
+    extern "C" {
+        fn cudaDeviceSynchronize() -> c_int;
+    }
+
+    let result = unsafe { cudaDeviceSynchronize() };
     if result != 0 {
         Err(CudaError::from(result))
     } else {
