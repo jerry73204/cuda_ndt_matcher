@@ -53,8 +53,7 @@ use cubecl::cuda::{CudaDevice, CudaRuntime};
 use cubecl::prelude::*;
 use cubecl::server::Handle;
 
-use crate::derivatives::gpu::{GpuVoxelData, MAX_NEIGHBORS};
-use crate::optimization::gpu_newton::GpuNewtonSolver;
+use crate::derivatives::gpu::GpuVoxelData;
 use crate::optimization::gpu_pipeline_kernels::DEFAULT_NUM_CANDIDATES;
 
 /// Type alias for CUDA compute client.
@@ -127,11 +126,11 @@ impl Default for PipelineV2Config {
     }
 }
 
-/// Full GPU Newton Pipeline V2 with integrated line search.
+/// Full GPU Newton Pipeline V2 using persistent kernel.
 ///
-/// This pipeline minimizes CPU-GPU transfers by keeping all intermediate
-/// state on GPU. Per-iteration transfer is ~200 bytes (Newton solve requires
-/// f64 precision which needs download/upload).
+/// This pipeline uses a single cooperative kernel launch for the entire
+/// Newton optimization loop, minimizing kernel launch overhead and
+/// CPU-GPU synchronization.
 pub struct FullGpuPipelineV2 {
     client: CudaClient,
     #[allow(dead_code)]
@@ -161,87 +160,10 @@ pub struct FullGpuPipelineV2 {
     resolution: f32,    // Voxel grid resolution for grid coordinate conversion
 
     // ========================================================================
-    // Iteration state (GPU-resident)
-    // ========================================================================
-    pose_gpu: Handle,     // [6] - current pose
-    delta_gpu: Handle,    // [6] - Newton direction
-    sin_cos: Handle,      // [6] - sin/cos of pose angles
-    transform: Handle,    // [16] - 4x4 transform matrix
-    best_alpha: Handle,   // [1] - step size from line search
-    ls_converged: Handle, // [1] - 1.0 if Wolfe satisfied
-
-    // ========================================================================
-    // Derivative buffers (reused each iteration)
-    // ========================================================================
-    jacobians: Handle,          // [N × 18]
-    point_hessians: Handle,     // [N × 144]
-    transformed_points: Handle, // [N × 3]
-    neighbor_indices: Handle,   // [N × MAX_NEIGHBORS]
-    neighbor_counts: Handle,    // [N]
-
-    // ========================================================================
-    // Reduction buffers
-    // ========================================================================
-    scores: Handle,              // [N]
-    correspondences: Handle,     // [N] u32
-    correspondences_f32: Handle, // [N] f32 - for reduction (cast from u32)
-    gradients: Handle,           // [N × 6] column-major
-    hessians: Handle,            // [N × 36] column-major
-    reduce_output: Handle,       // [43] = score + grad[6] + H[36]
-    gradient_reduced: Handle,    // [6] - copy of reduced gradient for dot product
-
-    // ========================================================================
-    // Line search buffers
-    // ========================================================================
-    candidates: Handle,        // [K]
-    batch_transformed: Handle, // [K × N × 3]
-    batch_scores: Handle,      // [K × N]
-    batch_dir_derivs: Handle,  // [K × N]
-    phi_cache: Handle,         // [K] - reduced scores per candidate
-    dphi_cache: Handle,        // [K] - reduced directional derivs per candidate
-    phi_0: Handle,             // [1] - score at current pose
-    dphi_0: Handle,            // [1] - directional derivative at current pose
-
-    // ========================================================================
-    // Convergence flag
-    // ========================================================================
-    converged_flag: Handle, // [1] u32
-
-    // ========================================================================
-    // CUB reduction buffers (pre-allocated)
-    // ========================================================================
-    reduce_temp: Handle,
-    reduce_temp_bytes: usize,
-    score_offsets: Handle, // [2] for 1 segment
-    grad_offsets: Handle,  // [7] for 6 segments
-    hess_offsets: Handle,  // [37] for 36 segments
-    phi_offsets: Handle,   // [K+1] for K segments
-
-    // ========================================================================
-    // Pre-allocated parameter buffers
-    // ========================================================================
-    gauss_params: Handle, // [2] - gauss_d1, gauss_d2
-    batch_params: Handle, // [4] - gauss_d1, gauss_d2, num_points, num_candidates
-    ls_params: Handle,    // [3] - num_candidates, mu, nu
-
-    // ========================================================================
-    // Regularization buffers
-    // ========================================================================
-    reg_params: Handle,         // [4] - ref_x, ref_y, scale_factor, enabled
-    correspondence_sum: Handle, // [1] - sum of all correspondences
-    corr_offsets: Handle,       // [2] - offsets for correspondence sum reduction
-
-    // ========================================================================
     // Gaussian parameters (cached values)
     // ========================================================================
     gauss_d1: f32,
     gauss_d2: f32,
-    search_radius_sq: f32,
-
-    // ========================================================================
-    // Newton solver
-    // ========================================================================
-    newton_solver: GpuNewtonSolver,
 
     // ========================================================================
     // Configuration
@@ -251,7 +173,7 @@ pub struct FullGpuPipelineV2 {
     // ========================================================================
     // Persistent kernel buffers (Phase 17)
     // ========================================================================
-    persistent_reduce_buffer: Handle, // [48] for persistent kernel reduction + state
+    persistent_reduce_buffer: Handle, // [96] for persistent kernel reduction + state
     persistent_initial_pose: Handle,  // [6] input pose for persistent kernel
     persistent_out_pose: Handle,      // [6] output pose from persistent kernel
     persistent_out_iterations: Handle, // [1] i32
@@ -292,8 +214,6 @@ impl FullGpuPipelineV2 {
         // This prevents race conditions when multiple pipelines are created in rapid succession
         cubecl::future::block_on(client.sync());
 
-        let k = config.num_candidates as usize;
-
         // Persistent data buffers
         let source_points = client.empty(max_points * 3 * std::mem::size_of::<f32>());
         let voxel_means = client.empty(max_voxels * 3 * std::mem::size_of::<f32>());
@@ -305,78 +225,6 @@ impl FullGpuPipelineV2 {
         let hash_table_bytes = cuda_ffi::hash_table_size(hash_capacity)?;
         let hash_table = client.empty(hash_table_bytes);
 
-        // Iteration state buffers
-        let pose_gpu = client.empty(6 * std::mem::size_of::<f32>());
-        let delta_gpu = client.empty(6 * std::mem::size_of::<f32>());
-        let sin_cos = client.empty(6 * std::mem::size_of::<f32>());
-        let transform = client.empty(16 * std::mem::size_of::<f32>());
-        let best_alpha = client.empty(std::mem::size_of::<f32>());
-        let ls_converged = client.empty(std::mem::size_of::<f32>());
-
-        // Derivative buffers
-        let jacobians = client.empty(max_points * 18 * std::mem::size_of::<f32>());
-        let point_hessians = client.empty(max_points * 144 * std::mem::size_of::<f32>());
-        let transformed_points = client.empty(max_points * 3 * std::mem::size_of::<f32>());
-        let neighbor_indices =
-            client.empty(max_points * MAX_NEIGHBORS as usize * std::mem::size_of::<i32>());
-        let neighbor_counts = client.empty(max_points * std::mem::size_of::<u32>());
-
-        // Reduction buffers
-        let scores = client.empty(max_points * std::mem::size_of::<f32>());
-        let correspondences = client.empty(max_points * std::mem::size_of::<u32>());
-        let correspondences_f32 = client.empty(max_points * std::mem::size_of::<f32>());
-        let gradients = client.empty(max_points * 6 * std::mem::size_of::<f32>());
-        let hessians = client.empty(max_points * 36 * std::mem::size_of::<f32>());
-        let reduce_output = client.empty(43 * std::mem::size_of::<f32>());
-        let gradient_reduced = client.empty(6 * std::mem::size_of::<f32>());
-
-        // Line search buffers
-        let candidates = client.empty(k * std::mem::size_of::<f32>());
-        let batch_transformed = client.empty(k * max_points * 3 * std::mem::size_of::<f32>());
-        let batch_scores = client.empty(k * max_points * std::mem::size_of::<f32>());
-        let batch_dir_derivs = client.empty(k * max_points * std::mem::size_of::<f32>());
-        let phi_cache = client.empty(k * std::mem::size_of::<f32>());
-        let dphi_cache = client.empty(k * std::mem::size_of::<f32>());
-        let phi_0 = client.empty(std::mem::size_of::<f32>());
-        let dphi_0 = client.empty(std::mem::size_of::<f32>());
-
-        // Convergence flag
-        let converged_flag = client.empty(std::mem::size_of::<u32>());
-
-        // CUB reduction temp storage
-        let reduce_temp_bytes =
-            cuda_ffi::segmented_reduce_sum_f32_temp_size(max_points * 43, 43)? as usize;
-        let reduce_temp = client.empty(reduce_temp_bytes.max(256));
-
-        // Pre-allocate offset buffers (will be updated in upload_alignment_data)
-        let score_offsets = client.create(i32::as_bytes(&[0i32, max_points as i32]));
-        let grad_offsets: Vec<i32> = (0..=6).map(|i| (i * max_points) as i32).collect();
-        let grad_offsets = client.create(i32::as_bytes(&grad_offsets));
-        let hess_offsets: Vec<i32> = (0..=36).map(|i| (i * max_points) as i32).collect();
-        let hess_offsets = client.create(i32::as_bytes(&hess_offsets));
-        let phi_offsets: Vec<i32> = (0..=k).map(|i| (i * max_points) as i32).collect();
-        let phi_offsets = client.create(i32::as_bytes(&phi_offsets));
-
-        // Pre-allocate parameter buffers
-        let gauss_params = client.empty(2 * std::mem::size_of::<f32>());
-        let batch_params = client.empty(4 * std::mem::size_of::<f32>());
-        let ls_params_data = [
-            config.num_candidates as f32,
-            config.armijo_mu,
-            config.wolfe_nu,
-        ];
-        let ls_params = client.create(f32::as_bytes(&ls_params_data));
-
-        // Regularization buffers
-        // [ref_x, ref_y, scale_factor, enabled] - enabled as 0.0/1.0
-        let reg_params_data = [0.0f32, 0.0, config.regularization_scale_factor, 0.0];
-        let reg_params = client.create(f32::as_bytes(&reg_params_data));
-        let correspondence_sum = client.empty(std::mem::size_of::<f32>());
-        let corr_offsets = client.create(i32::as_bytes(&[0i32, max_points as i32]));
-
-        // Newton solver
-        let newton_solver = GpuNewtonSolver::new(0)?;
-
         // Persistent kernel buffers (Phase 17)
         let persistent_reduce_buffer = client.empty(cuda_ffi::persistent_ndt_buffer_size());
         let persistent_initial_pose = client.empty(6 * std::mem::size_of::<f32>());
@@ -385,8 +233,8 @@ impl FullGpuPipelineV2 {
         let persistent_out_converged = client.empty(std::mem::size_of::<u32>());
         let persistent_out_score = client.empty(std::mem::size_of::<f32>());
         let persistent_out_hessian = client.empty(36 * std::mem::size_of::<f32>());
-        let persistent_out_correspondences = client.empty(std::mem::size_of::<u32>()); // Phase 18.3
-        let persistent_out_oscillation = client.empty(std::mem::size_of::<u32>()); // Phase 18.4
+        let persistent_out_correspondences = client.empty(std::mem::size_of::<u32>());
+        let persistent_out_oscillation = client.empty(std::mem::size_of::<u32>());
 
         Ok(Self {
             client,
@@ -402,49 +250,8 @@ impl FullGpuPipelineV2 {
             hash_table,
             hash_capacity,
             resolution: 0.0, // Set in upload_alignment_data
-            pose_gpu,
-            delta_gpu,
-            sin_cos,
-            transform,
-            best_alpha,
-            ls_converged,
-            jacobians,
-            point_hessians,
-            transformed_points,
-            neighbor_indices,
-            neighbor_counts,
-            scores,
-            correspondences,
-            correspondences_f32,
-            gradients,
-            hessians,
-            reduce_output,
-            gradient_reduced,
-            candidates,
-            batch_transformed,
-            batch_scores,
-            batch_dir_derivs,
-            phi_cache,
-            dphi_cache,
-            phi_0,
-            dphi_0,
-            converged_flag,
-            reduce_temp,
-            reduce_temp_bytes,
-            score_offsets,
-            grad_offsets,
-            hess_offsets,
-            phi_offsets,
-            gauss_params,
-            batch_params,
-            ls_params,
-            reg_params,
-            correspondence_sum,
-            corr_offsets,
             gauss_d1: 0.0,
             gauss_d2: 0.0,
-            search_radius_sq: 0.0,
-            newton_solver,
             config,
             persistent_reduce_buffer,
             persistent_initial_pose,
@@ -473,7 +280,6 @@ impl FullGpuPipelineV2 {
     ) -> Result<()> {
         let num_points = source_points.len();
         let num_voxels = voxel_data.num_voxels;
-        let k = self.config.num_candidates as usize;
 
         if num_points > self.max_points {
             anyhow::bail!("Too many source points: {num_points} > {}", self.max_points);
@@ -486,7 +292,6 @@ impl FullGpuPipelineV2 {
         self.num_voxels = num_voxels;
         self.gauss_d1 = gauss_d1;
         self.gauss_d2 = gauss_d2;
-        self.search_radius_sq = search_radius * search_radius;
 
         // Flatten source points
         let points_flat: Vec<f32> = source_points
@@ -529,31 +334,6 @@ impl FullGpuPipelineV2 {
         // This is critical for persistent kernel which reads the hash table
         cuda_ffi::cuda_device_synchronize()?;
 
-        // Update CUB offsets for actual num_points
-        let n = num_points as i32;
-        self.score_offsets = self.client.create(i32::as_bytes(&[0i32, n]));
-
-        let grad_offsets: Vec<i32> = (0..=6).map(|i| i * n).collect();
-        self.grad_offsets = self.client.create(i32::as_bytes(&grad_offsets));
-
-        let hess_offsets: Vec<i32> = (0..=36).map(|i| i * n).collect();
-        self.hess_offsets = self.client.create(i32::as_bytes(&hess_offsets));
-
-        let phi_offsets: Vec<i32> = (0..=k).map(|i| (i * num_points) as i32).collect();
-        self.phi_offsets = self.client.create(i32::as_bytes(&phi_offsets));
-
-        // Update correspondence sum offsets
-        self.corr_offsets = self.client.create(i32::as_bytes(&[0i32, n]));
-
-        // Update parameter buffers
-        self.gauss_params = self.client.create(f32::as_bytes(&[gauss_d1, gauss_d2]));
-        self.batch_params = self.client.create(f32::as_bytes(&[
-            gauss_d1,
-            gauss_d2,
-            num_points as f32,
-            self.config.num_candidates as f32,
-        ]));
-
         Ok(())
     }
 
@@ -567,33 +347,14 @@ impl FullGpuPipelineV2 {
     /// * `ref_x` - Reference x coordinate (from GNSS)
     /// * `ref_y` - Reference y coordinate (from GNSS)
     pub fn set_regularization_pose(&mut self, ref_x: f64, ref_y: f64) {
-        let enabled = if self.config.regularization_enabled {
-            1.0f32
-        } else {
-            0.0f32
-        };
-        let reg_params_data = [
-            ref_x as f32,
-            ref_y as f32,
-            self.config.regularization_scale_factor,
-            enabled,
-        ];
-        self.reg_params = self.client.create(f32::as_bytes(&reg_params_data));
-
-        // Store for persistent kernel (Phase 18.2)
         self.regularization_ref_x = ref_x as f32;
         self.regularization_ref_y = ref_y as f32;
     }
 
     /// Clear the regularization reference pose (disables regularization for this alignment).
     pub fn clear_regularization_pose(&mut self) {
-        let reg_params_data = [
-            0.0f32,
-            0.0f32,
-            self.config.regularization_scale_factor,
-            0.0f32, // disabled
-        ];
-        self.reg_params = self.client.create(f32::as_bytes(&reg_params_data));
+        self.regularization_ref_x = 0.0;
+        self.regularization_ref_y = 0.0;
     }
 
     /// Run full GPU Newton optimization using the persistent kernel.
