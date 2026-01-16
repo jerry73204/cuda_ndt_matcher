@@ -101,6 +101,8 @@ pub struct PipelineV2Config {
     pub armijo_mu: f32,
     /// Curvature parameter (nu) for Strong Wolfe condition
     pub wolfe_nu: f32,
+    /// Fixed step size when line search is disabled (matches Autoware's default 0.1)
+    pub fixed_step_size: f32,
     /// Whether GNSS regularization is enabled
     pub regularization_enabled: bool,
     /// Scale factor for regularization term
@@ -119,6 +121,7 @@ impl Default for PipelineV2Config {
             step_max: 10.0,
             armijo_mu: 1e-4,
             wolfe_nu: 0.9,
+            fixed_step_size: 0.1, // Matches Autoware default when line search disabled
             regularization_enabled: false,
             regularization_scale_factor: 0.01,
             enable_debug: false,
@@ -575,9 +578,10 @@ impl FullGpuPipelineV2 {
                 self.config.regularization_scale_factor,
                 self.config.regularization_enabled,
                 self.config.use_line_search,
-                8,    // ls_num_candidates (default)
-                1e-4, // ls_mu (Armijo constant)
-                0.9,  // ls_nu (curvature constant)
+                8,                           // ls_num_candidates (default)
+                1e-4,                        // ls_mu (Armijo constant)
+                0.9,                         // ls_nu (curvature constant)
+                self.config.fixed_step_size, // Step size when line search disabled
                 self.raw_ptr(&self.persistent_initial_pose),
                 self.raw_ptr(&self.persistent_reduce_buffer),
                 self.raw_ptr(&self.persistent_out_pose),
@@ -825,11 +829,11 @@ mod tests {
             .optimize(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 10, 0.01)
             .unwrap();
 
-        // Should run without line search
+        // Should run without line search, using fixed_step_size (default 0.1)
         assert!(!result.used_line_search);
         assert!(
-            (result.avg_alpha - 1.0).abs() < 1e-6,
-            "Without line search, alpha should be 1.0"
+            (result.avg_alpha - 0.1).abs() < 1e-6,
+            "Without line search, alpha should be fixed_step_size (0.1)"
         );
         println!(
             "No line search test: {} iterations, converged={}",

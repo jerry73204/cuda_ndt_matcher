@@ -154,6 +154,7 @@ __global__ void persistent_ndt_kernel(
     int32_t ls_num_candidates,                    // Number of candidates (default: 8)
     float ls_mu,                                  // Armijo constant (default: 1e-4)
     float ls_nu,                                  // Curvature constant (default: 0.9)
+    float fixed_step_size,                        // Step size when line search disabled (default: 0.1)
     // Initial pose input
     const float* __restrict__ initial_pose,       // [6]
     // Scratch memory for reduction
@@ -494,9 +495,28 @@ __global__ void persistent_ndt_kernel(
                     reduce_buffer[i] = 0.0f;
                 }
             } else {
-                // No line search - update pose directly with alpha=1.0
+                // No line search - Autoware behavior: step_length = clamp(delta_norm, step_min, step_max)
+                // step_min = trans_epsilon / 2 = 0.005 (typical)
+                // step_max = step_size = 0.1
+                // This means: use Newton step norm as step length, clamped between min and max
+                constexpr float STEP_MIN = 0.005f;  // trans_epsilon / 2
+
+                float delta_norm_sq = 0.0f;
                 for (int i = 0; i < 6; i++) {
-                    g_pose[i] += g_delta[i];
+                    delta_norm_sq += g_delta[i] * g_delta[i];
+                }
+                float delta_norm = sqrtf(delta_norm_sq);
+
+                // Clamp step length between step_min and step_max (fixed_step_size)
+                float step_length = delta_norm;
+                if (step_length > fixed_step_size) step_length = fixed_step_size;
+                if (step_length < STEP_MIN) step_length = STEP_MIN;
+
+                // Scale delta to achieve desired step length
+                float scale = (delta_norm > 1e-10f) ? (step_length / delta_norm) : 0.0f;
+
+                for (int i = 0; i < 6; i++) {
+                    g_pose[i] += scale * g_delta[i];
                 }
             }
         }
@@ -767,8 +787,8 @@ __global__ void persistent_ndt_kernel(
             g_prev_pos[2] = g_pose[2];
 
             // Accumulate alpha for avg_alpha calculation
-            // If line search is enabled, use best_alpha; otherwise alpha = 1.0
-            float alpha_this_iter = ls_enabled ? *g_best_alpha : 1.0f;
+            // If line search is enabled, use best_alpha; otherwise use fixed_step_size
+            float alpha_this_iter = ls_enabled ? *g_best_alpha : fixed_step_size;
             *g_alpha_sum += alpha_this_iter;
 
             // Check convergence: ||delta||^2 < epsilon^2
@@ -813,7 +833,7 @@ __global__ void persistent_ndt_kernel(
                 }
 
                 // [41]: alpha (step size)
-                iter_debug[41] = ls_enabled ? *g_best_alpha : 1.0f;
+                iter_debug[41] = ls_enabled ? *g_best_alpha : fixed_step_size;
 
                 // [42]: correspondences
                 iter_debug[42] = *g_total_corr;
@@ -927,6 +947,7 @@ CudaError persistent_ndt_is_supported(int* supported) {
 /// @param ls_num_candidates Number of line search candidates (default: 8)
 /// @param ls_mu             Armijo constant (default: 1e-4)
 /// @param ls_nu             Curvature constant (default: 0.9)
+/// @param fixed_step_size   Step size when line search disabled (default: 0.1, matches Autoware)
 /// @param initial_pose      Device pointer to initial pose [6]
 /// @param reduce_buffer     Device pointer to reduction scratch [96]
 /// @param out_pose          Device pointer to output pose [6]
@@ -960,6 +981,7 @@ CudaError persistent_ndt_launch(
     int32_t ls_num_candidates,
     float ls_mu,
     float ls_nu,
+    float fixed_step_size,
     const float* initial_pose,
     float* reduce_buffer,
     float* out_pose,
@@ -1031,6 +1053,7 @@ CudaError persistent_ndt_launch(
         (void*)&ls_num_candidates,
         (void*)&ls_mu,
         (void*)&ls_nu,
+        (void*)&fixed_step_size,
         (void*)&initial_pose,
         (void*)&reduce_buffer,
         (void*)&out_pose,

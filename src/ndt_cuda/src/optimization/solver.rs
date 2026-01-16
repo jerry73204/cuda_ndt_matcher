@@ -332,6 +332,7 @@ impl NdtOptimizer {
         let config = PipelineV2Config {
             use_line_search: self.config.ndt.use_line_search,
             step_max: self.config.ndt.step_size as f32,
+            fixed_step_size: self.config.ndt.step_size as f32, // Used when line search disabled
             regularization_enabled: self.config.regularization.enabled,
             regularization_scale_factor: self.config.regularization.scale_factor as f32,
             ..PipelineV2Config::default()
@@ -440,6 +441,7 @@ impl NdtOptimizer {
         let config = PipelineV2Config {
             use_line_search: self.config.ndt.use_line_search,
             step_max: self.config.ndt.step_size as f32,
+            fixed_step_size: self.config.ndt.step_size as f32, // Used when line search disabled
             regularization_enabled: self.config.regularization.enabled,
             regularization_scale_factor: self.config.regularization.scale_factor as f32,
             ..PipelineV2Config::default()
@@ -838,7 +840,12 @@ impl NdtOptimizer {
                 );
                 (result.0, result.1)
             } else {
-                (delta_norm.min(self.config.ndt.step_size), true)
+                // Autoware behavior: step_length = clamp(delta_norm, step_min, step_max)
+                // step_min = trans_epsilon / 2 = 0.005 (typically)
+                // step_max = step_size = 0.1
+                let step_min = self.config.ndt.trans_epsilon / 2.0;
+                let step_max = self.config.ndt.step_size;
+                (delta_norm.clamp(step_min, step_max), true)
             };
 
             iter_debug.step_length = step_length;

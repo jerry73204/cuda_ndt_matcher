@@ -74,6 +74,7 @@ extern "C" {
         ls_num_candidates: i32,
         ls_mu: f32,
         ls_nu: f32,
+        fixed_step_size: f32, // Step size when line search disabled (default: 0.1)
         // Buffers
         initial_pose: *const f32,
         reduce_buffer: *mut f32,
@@ -191,6 +192,7 @@ impl PersistentNdt {
     /// * `ls_num_candidates` - Number of line search candidates (default: 8)
     /// * `ls_mu` - Armijo constant for line search (default: 1e-4)
     /// * `ls_nu` - Curvature constant for line search (default: 0.9)
+    /// * `fixed_step_size` - Step size when line search disabled (default: 0.1)
     /// * `initial_pose` - Device pointer to initial pose [6]
     /// * `reduce_buffer` - Device pointer to reduction scratch and state [96 floats]
     /// * `out_pose` - Device pointer to output pose [6]
@@ -234,6 +236,7 @@ impl PersistentNdt {
         ls_num_candidates: i32,
         ls_mu: f32,
         ls_nu: f32,
+        fixed_step_size: f32,
         initial_pose: *const f32,
         reduce_buffer: *mut f32,
         out_pose: *mut f32,
@@ -268,6 +271,7 @@ impl PersistentNdt {
             ls_num_candidates,
             ls_mu,
             ls_nu,
+            fixed_step_size,
             initial_pose,
             reduce_buffer,
             out_pose,
@@ -343,6 +347,7 @@ pub unsafe fn persistent_ndt_launch_raw(
     ls_num_candidates: i32,
     ls_mu: f32,
     ls_nu: f32,
+    fixed_step_size: f32,
     d_initial_pose: u64,
     d_reduce_buffer: u64,
     d_out_pose: u64,
@@ -377,6 +382,7 @@ pub unsafe fn persistent_ndt_launch_raw(
         ls_num_candidates,
         ls_mu,
         ls_nu,
+        fixed_step_size,
         d_initial_pose as *const f32,
         d_reduce_buffer as *mut f32,
         d_out_pose as *mut f32,
