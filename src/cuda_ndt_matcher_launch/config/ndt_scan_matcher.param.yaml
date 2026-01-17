@@ -15,7 +15,7 @@
       resolution: 2.0
       max_iterations: 30
       num_threads: 4
-      use_line_search: false  # Batched parallel line search (can reduce iterations by 25%)
+      use_line_search: true  # Batched parallel line search (can reduce iterations by 25%)
 
       # GNSS regularization penalizes deviation from GNSS pose in longitudinal direction.
       # This helps prevent drift in open areas where scan matching may be unreliable.
