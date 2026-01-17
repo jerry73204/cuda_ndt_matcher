@@ -92,3 +92,12 @@
       update_distance: 20.0
       map_radius: 150.0
       lidar_radius: 100.0
+
+    # Batch processing for GPU-parallel alignment
+    # When enabled, scans are queued and processed in batches to increase GPU utilization
+    batch:
+      enabled: false  # Enable batch processing mode
+      max_queue_depth: 8  # Maximum scans in queue before dropping oldest
+      max_scan_age_ms: 100  # Drop scans older than this (ms)
+      batch_trigger: 4  # Process when N scans are ready
+      timeout_ms: 20  # Process partial batch after timeout

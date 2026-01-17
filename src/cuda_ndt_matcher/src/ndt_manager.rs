@@ -400,6 +400,30 @@ impl NdtManager {
         self.matcher
             .compute_per_point_scores_for_visualization(source_points, &isometry)
     }
+
+    /// Align multiple scans in parallel using GPU batch processing.
+    ///
+    /// Each scan is a tuple of (source_points, initial_pose). All scans share
+    /// the same target voxel grid. This enables processing multiple lidar scans
+    /// concurrently to increase GPU utilization and throughput.
+    ///
+    /// # Arguments
+    /// * `scans` - Slice of (source_points, initial_pose) tuples
+    ///
+    /// # Returns
+    /// * Vector of alignment results, one per scan
+    pub fn align_batch_scans(
+        &self,
+        scans: &[(&[[f32; 3]], Isometry3<f64>)],
+    ) -> Result<Vec<ndt_cuda::AlignResult>> {
+        log_debug!(
+            LOGGER_NAME,
+            "Batch aligning {} scans in parallel",
+            scans.len()
+        );
+
+        self.matcher.align_parallel_scans(scans)
+    }
 }
 
 fn matrix6_to_array(m: &Matrix6<f64>) -> [[f64; 6]; 6] {

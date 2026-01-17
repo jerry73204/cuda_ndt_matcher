@@ -347,9 +347,9 @@ impl DualNdtManager {
 mod tests {
     use super::*;
     use crate::params::{
-        CovarianceEstimationParams, CovarianceEstimationType, CovarianceParams, DynamicMapParams,
-        FrameParams, InitialPoseParams, NdtAlgorithmParams, NdtParams, RegularizationParams,
-        ScoreParams, SensorPointsParams, ValidationParams,
+        BatchParams, CovarianceEstimationParams, CovarianceEstimationType, CovarianceParams,
+        DynamicMapParams, FrameParams, InitialPoseParams, NdtAlgorithmParams, NdtParams,
+        RegularizationParams, ScoreParams, SensorPointsParams, ValidationParams,
     };
 
     fn make_test_params() -> NdtParams {
@@ -405,6 +405,13 @@ mod tests {
                 update_distance: 20.0,
                 map_radius: 150.0,
                 lidar_radius: 100.0,
+            },
+            batch: BatchParams {
+                enabled: false,
+                max_queue_depth: 8,
+                max_scan_age_ms: 100,
+                batch_trigger: 4,
+                timeout_ms: 20,
             },
         }
     }

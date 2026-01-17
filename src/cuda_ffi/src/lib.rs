@@ -21,6 +21,7 @@
 //! let segments = detector.detect_segments(&sorted_keys)?;
 //! ```
 
+pub mod batch_persistent_ndt;
 pub mod batched_solve;
 pub mod persistent_ndt;
 pub mod radix_sort;
@@ -49,6 +50,14 @@ pub use segmented_reduce::{
 pub use voxel_hash::{
     hash_table_build, hash_table_capacity, hash_table_count_entries, hash_table_init,
     hash_table_query, hash_table_size, max_neighbors as voxel_hash_max_neighbors, VoxelHash,
+};
+
+// Batch persistent NDT kernel (parallel multi-scan alignment)
+pub use batch_persistent_ndt::{
+    batch_ndt_blocks_per_slot, batch_ndt_reduce_buffer_size, batch_ndt_total_blocks,
+    batch_persistent_ndt_init_barriers_raw, batch_persistent_ndt_launch_raw,
+    batch_persistent_ndt_sync_raw, batch_reduce_buffer_size, batch_shared_mem_size,
+    BatchPersistentNdt,
 };
 
 /// Device-to-device memory copy using CUDA.

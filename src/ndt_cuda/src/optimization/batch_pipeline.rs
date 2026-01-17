@@ -684,7 +684,9 @@ mod tests {
         let result = &results[0];
         crate::test_println!(
             "Single alignment: {} iterations, converged={}, score={:.4}",
-            result.iterations, result.converged, result.score
+            result.iterations,
+            result.converged,
+            result.score
         );
         assert!(result.iterations > 0);
     }
@@ -759,10 +761,14 @@ mod tests {
         let results = pipeline.align_batch(&requests, 30, 0.01).unwrap();
         assert_eq!(results.len(), 4);
 
+        #[allow(unused_variables)]
         for (i, result) in results.iter().enumerate() {
             crate::test_println!(
                 "Alignment {}: {} iterations, converged={}, score={:.4}",
-                i, result.iterations, result.converged, result.score
+                i,
+                result.iterations,
+                result.converged,
+                result.score
             );
             assert!(result.iterations > 0);
         }

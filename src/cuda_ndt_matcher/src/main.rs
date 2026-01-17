@@ -9,6 +9,7 @@ mod params;
 mod particle;
 mod pointcloud;
 mod pose_buffer;
+mod scan_queue;
 mod tf_handler;
 mod tpe;
 
@@ -29,6 +30,7 @@ use rclrs::{
     QoSHistoryPolicy, QoSProfile, RclrsErrorFilter, Service, SpinOptions, Subscription,
     SubscriptionOptions,
 };
+use scan_queue::{QueuedScan, ScanQueue, ScanQueueConfig, ScanResult};
 use sensor_msgs::msg::PointCloud2;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -51,6 +53,25 @@ type PoseWithCovSrvRequest = tier4_localization_msgs::srv::PoseWithCovarianceSta
 type PoseWithCovSrvResponse = tier4_localization_msgs::srv::PoseWithCovarianceStamped_Response;
 
 const NODE_NAME: &str = "ndt_scan_matcher";
+
+/// Convert nalgebra Isometry3 to geometry_msgs Pose
+fn isometry_to_pose(iso: &Isometry3<f64>) -> Pose {
+    let t = iso.translation;
+    let q = iso.rotation.quaternion();
+    Pose {
+        position: Point {
+            x: t.x,
+            y: t.y,
+            z: t.z,
+        },
+        orientation: geometry_msgs::msg::Quaternion {
+            x: q.i,
+            y: q.j,
+            z: q.k,
+            w: q.w,
+        },
+    }
+}
 
 /// Holds debug and visualization publishers
 #[derive(Clone)]
@@ -133,6 +154,10 @@ struct NdtScanMatcherNode {
 
     // TF2 handler for sensor frame transforms
     tf_handler: Arc<tf_handler::TfHandler>,
+
+    // Scan queue for batch processing (optional, enabled via params.batch.enabled)
+    // Wrapped in Arc so it can be shared with the subscription callback
+    scan_queue: Option<Arc<ScanQueue>>,
 }
 
 impl NdtScanMatcherNode {
@@ -244,6 +269,100 @@ impl NdtScanMatcherNode {
         // Create diagnostics interface
         let diagnostics = Arc::new(Mutex::new(DiagnosticsInterface::new(node)?));
 
+        // Initialize scan queue for batch processing (if enabled)
+        // Must be created before the subscription so we can pass it to the callback
+        let scan_queue: Option<Arc<ScanQueue>> = if params.batch.enabled {
+            log_info!(
+                NODE_NAME,
+                "Batch processing enabled: trigger={}, timeout={}ms, max_depth={}",
+                params.batch.batch_trigger,
+                params.batch.timeout_ms,
+                params.batch.max_queue_depth
+            );
+
+            let config = ScanQueueConfig::from_params(&params.batch);
+
+            // Create alignment function that uses the NDT manager
+            let align_ndt_manager = Arc::clone(&ndt_manager);
+            let align_fn: scan_queue::AlignFn = Arc::new(move |requests| {
+                // Get lock on active NDT manager
+                let manager = align_ndt_manager.lock();
+                // Use batch alignment through the ndt_cuda API
+                let results = manager.align_batch_scans(requests)?;
+                Ok(results)
+            });
+
+            // Create result callback that publishes poses
+            let result_pose_pub = pose_pub.clone();
+            let result_pose_cov_pub = pose_cov_pub.clone();
+            let result_debug_pubs = debug_pubs.clone();
+            let result_params = Arc::clone(&params);
+            let result_callback: scan_queue::ResultCallback =
+                Arc::new(move |results: Vec<ScanResult>| {
+                    for result in results {
+                        // Only publish if converged
+                        if !result.converged {
+                            log_debug!(
+                                NODE_NAME,
+                                "Batch result skipped (not converged): ts_ns={}, score={:.3}",
+                                result.timestamp_ns,
+                                result.score
+                            );
+                            continue;
+                        }
+
+                        // Convert Isometry3 to Pose
+                        let pose = isometry_to_pose(&result.pose);
+
+                        // Publish PoseStamped
+                        let pose_msg = PoseStamped {
+                            header: result.header.clone(),
+                            pose: pose.clone(),
+                        };
+                        if let Err(e) = result_pose_pub.publish(&pose_msg) {
+                            log_error!(NODE_NAME, "Failed to publish batch pose: {e}");
+                        }
+
+                        // Publish PoseWithCovarianceStamped with fixed covariance
+                        let pose_cov_msg = PoseWithCovarianceStamped {
+                            header: result.header.clone(),
+                            pose: PoseWithCovariance {
+                                pose: pose.clone(),
+                                covariance: result_params.covariance.output_pose_covariance,
+                            },
+                        };
+                        if let Err(e) = result_pose_cov_pub.publish(&pose_cov_msg) {
+                            log_error!(
+                                NODE_NAME,
+                                "Failed to publish batch pose with covariance: {e}"
+                            );
+                        }
+
+                        // Publish TF transform
+                        Self::publish_tf(
+                            &result_debug_pubs.tf_pub,
+                            &result.timestamp,
+                            &pose,
+                            &result_params.frame.map_frame,
+                            &result_params.frame.ndt_base_frame,
+                        );
+
+                        log_debug!(
+                        NODE_NAME,
+                        "Batch result published: ts_ns={}, iter={}, score={:.3}, latency={:.1}ms",
+                        result.timestamp_ns,
+                        result.iterations,
+                        result.score,
+                        result.latency_ms
+                    );
+                    }
+                });
+
+            Some(Arc::new(ScanQueue::new(config, align_fn, result_callback)))
+        } else {
+            None
+        };
+
         // Points subscription
         // Uses QoS KeepLast(1) to ensure we only process the latest message,
         // matching Autoware's approach (no explicit timestamp deduplication needed)
@@ -264,6 +383,7 @@ impl NdtScanMatcherNode {
             let skip_counter = Arc::clone(&skip_counter);
             let callback_count = Arc::clone(&callback_count);
             let align_count = Arc::clone(&align_count);
+            let scan_queue = scan_queue.clone();
 
             let mut opts = SubscriptionOptions::new("points_raw");
             opts.qos = sensor_qos;
@@ -287,6 +407,7 @@ impl NdtScanMatcherNode {
                     &diagnostics,
                     &params,
                     &tf_handler,
+                    &scan_queue,
                 );
             })?
         };
@@ -483,6 +604,7 @@ impl NdtScanMatcherNode {
             enabled,
             params,
             tf_handler,
+            scan_queue,
         })
     }
 
@@ -505,6 +627,7 @@ impl NdtScanMatcherNode {
         diagnostics: &Arc<Mutex<DiagnosticsInterface>>,
         params: &NdtParams,
         tf_handler: &Arc<tf_handler::TfHandler>,
+        scan_queue: &Option<Arc<ScanQueue>>,
     ) {
         // Track callback invocation
         let _cb_num = callback_count.fetch_add(1, Ordering::SeqCst) + 1;
@@ -717,6 +840,42 @@ impl NdtScanMatcherNode {
             return;
         }
 
+        // ---- Batch Mode: Enqueue scan and return ----
+        // If batch processing is enabled, enqueue the scan for parallel GPU processing
+        // and return immediately. Results will be published asynchronously by the
+        // scan queue's result callback.
+        if let Some(queue) = scan_queue {
+            // Convert initial pose to Isometry3
+            let p = &initial_pose.pose.pose.position;
+            let q = &initial_pose.pose.pose.orientation;
+            let translation = Translation3::new(p.x, p.y, p.z);
+            let quaternion = UnitQuaternion::from_quaternion(NaQuaternion::new(q.w, q.x, q.y, q.z));
+            let initial_isometry = Isometry3::from_parts(translation, quaternion);
+
+            let queued_scan = QueuedScan {
+                points: sensor_points.clone(),
+                initial_pose: initial_isometry,
+                timestamp: msg.header.stamp.clone(),
+                timestamp_ns,
+                header: msg.header.clone(),
+                arrival_time: Instant::now(),
+            };
+
+            let enqueued = queue.enqueue(queued_scan);
+            if enqueued {
+                log_debug!(
+                    NODE_NAME,
+                    "Scan enqueued for batch processing: ts_ns={}, n_pts={}",
+                    timestamp_ns,
+                    sensor_points.len()
+                );
+            }
+
+            // Return early - result will be published by the scan queue callback
+            return;
+        }
+
+        // ---- Synchronous Mode: Run NDT alignment directly ----
         // Run NDT alignment (with optional debug output)
         let debug_enabled = std::env::var("NDT_DEBUG").is_ok();
         // timestamp_ns is computed at the beginning of this function for deduplication

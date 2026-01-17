@@ -8,6 +8,7 @@
 //!
 //! Based on Magnusson 2009, Chapter 6.
 
+pub mod batch_pipeline;
 pub mod debug;
 pub mod full_gpu_pipeline_v2;
 pub mod gpu_initial_pose;
@@ -42,3 +43,8 @@ pub use oscillation::{
 pub use regularization::{RegularizationConfig, RegularizationTerm};
 pub use solver::{NdtOptimizer, OptimizationConfig};
 pub use types::{ConvergenceStatus, NdtConfig, NdtResult};
+
+// Batch processing pipeline for parallel multi-scan alignment
+pub use batch_pipeline::{
+    AlignmentRequest, BatchAlignmentResult, BatchGpuPipeline, BatchPipelineConfig,
+};

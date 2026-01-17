@@ -1091,6 +1091,133 @@ impl NdtScanMatcher {
     fn build_optimizer_config(&self) -> OptimizationConfig {
         Self::build_optimizer_config_from(&self.config)
     }
+
+    /// Align multiple independent scans in parallel using GPU batch processing.
+    ///
+    /// This is optimized for throughput when you have multiple scans to process
+    /// simultaneously. Each scan can have different source points and initial poses.
+    ///
+    /// Uses `BatchGpuPipeline` which partitions GPU blocks across M independent
+    /// alignments, allowing them to run truly in parallel with atomic barriers
+    /// instead of cooperative grid synchronization.
+    ///
+    /// # Arguments
+    /// * `scans` - Slice of (source_points, initial_pose) tuples
+    ///
+    /// # Returns
+    /// Vector of alignment results, one per scan.
+    ///
+    /// # Performance
+    /// - Processes up to 8 scans in parallel (limited by GPU memory and SM count)
+    /// - Each slot runs independent Newton optimization
+    /// - Significantly higher throughput than sequential processing
+    ///
+    /// # Example
+    /// ```ignore
+    /// let scans = vec![
+    ///     (scan1_points.as_slice(), pose1),
+    ///     (scan2_points.as_slice(), pose2),
+    ///     (scan3_points.as_slice(), pose3),
+    /// ];
+    /// let results = matcher.align_parallel_scans(&scans)?;
+    /// ```
+    pub fn align_parallel_scans(
+        &self,
+        scans: &[(&[[f32; 3]], Isometry3<f64>)],
+    ) -> Result<Vec<AlignResult>> {
+        use crate::optimization::{AlignmentRequest, BatchGpuPipeline, BatchPipelineConfig};
+
+        if scans.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let grid = self
+            .target_grid
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No target set. Call set_target() first."))?;
+
+        // Find max points across all scans for capacity
+        let max_points = scans.iter().map(|(pts, _)| pts.len()).max().unwrap_or(0);
+        if max_points == 0 {
+            bail!("All source point clouds are empty");
+        }
+
+        let num_slots = scans.len().min(8); // Limit to 8 parallel slots
+        let max_voxels = grid.len();
+
+        // Configure batch pipeline from matcher settings
+        let batch_config = BatchPipelineConfig {
+            use_line_search: self.config.use_line_search,
+            fixed_step_size: self.config.step_size as f32,
+            regularization_enabled: self.config.regularization_enabled,
+            regularization_scale_factor: self.config.regularization_scale_factor as f32,
+            ..BatchPipelineConfig::default()
+        };
+
+        // Create batch pipeline
+        let mut pipeline =
+            BatchGpuPipeline::with_config(num_slots, max_points, max_voxels, batch_config)?;
+
+        // Upload voxel data (shared across all alignments)
+        let voxel_data = self
+            .gpu_voxel_data
+            .clone()
+            .unwrap_or_else(|| GpuVoxelData::from_voxel_grid(grid));
+
+        pipeline.upload_voxel_data(
+            &voxel_data,
+            self.gauss_params.d1 as f32,
+            self.gauss_params.d2 as f32,
+            self.config.resolution,
+        )?;
+
+        // Build alignment requests
+        let requests: Vec<AlignmentRequest<'_>> = scans
+            .iter()
+            .map(|(points, pose)| {
+                use crate::optimization::types::isometry_to_pose_vector;
+                let pose_vec = isometry_to_pose_vector(pose);
+                AlignmentRequest {
+                    points,
+                    initial_pose: pose_vec,
+                    reg_ref_x: None,
+                    reg_ref_y: None,
+                }
+            })
+            .collect();
+
+        // Run batch alignment
+        let batch_results = pipeline.align_batch(
+            &requests,
+            self.config.max_iterations as u32,
+            self.config.trans_epsilon,
+        )?;
+
+        // Convert to AlignResult
+        let results = batch_results
+            .into_iter()
+            .map(|r| {
+                use crate::optimization::types::pose_vector_to_isometry;
+                AlignResult {
+                    pose: pose_vector_to_isometry(&r.pose),
+                    converged: r.converged,
+                    score: r.score,
+                    transform_probability: if r.num_correspondences > 0 {
+                        r.score / r.num_correspondences as f64
+                    } else {
+                        0.0
+                    },
+                    nvtl: 0.0, // Not computed in batch mode
+                    iterations: r.iterations as usize,
+                    hessian: Matrix6::from_fn(|i, j| r.hessian[i][j]),
+                    num_correspondences: r.num_correspondences,
+                    oscillation_count: r.oscillation_count,
+                }
+            })
+            .collect();
+
+        Ok(results)
+    }
 }
 
 #[cfg(test)]

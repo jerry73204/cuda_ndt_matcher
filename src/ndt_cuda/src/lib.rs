@@ -60,8 +60,9 @@ pub use derivatives::{
     PointDerivatives,
 };
 pub use optimization::{
-    AlignmentDebug, ConvergenceStatus, IterationDebug, LineSearchConfig, LineSearchResult,
-    NdtConfig, NdtOptimizer, NdtResult, OptimizationConfig,
+    AlignmentDebug, AlignmentRequest, BatchAlignmentResult, BatchGpuPipeline, BatchPipelineConfig,
+    ConvergenceStatus, IterationDebug, LineSearchConfig, LineSearchResult, NdtConfig, NdtOptimizer,
+    NdtResult, OptimizationConfig,
 };
 pub use scoring::{
     compute_nvtl, compute_per_point_scores, compute_transform_probability, NvtlConfig, NvtlResult,

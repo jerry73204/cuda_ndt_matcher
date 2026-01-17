@@ -153,6 +153,21 @@ pub struct RegularizationParams {
     pub scale_factor: f64,
 }
 
+/// Batch processing configuration for GPU parallel alignment
+#[derive(Clone)]
+pub struct BatchParams {
+    /// Enable batch processing (default: false)
+    pub enabled: bool,
+    /// Maximum scans in queue before dropping oldest (default: 8)
+    pub max_queue_depth: i32,
+    /// Maximum scan age in milliseconds before dropping (default: 100)
+    pub max_scan_age_ms: i32,
+    /// Number of scans to trigger batch processing (default: 4)
+    pub batch_trigger: i32,
+    /// Timeout in milliseconds to process partial batch (default: 20)
+    pub timeout_ms: i32,
+}
+
 /// All NDT parameters
 #[derive(Clone)]
 pub struct NdtParams {
@@ -165,6 +180,7 @@ pub struct NdtParams {
     pub covariance: CovarianceParams,
     pub dynamic_map: DynamicMapParams,
     pub regularization: RegularizationParams,
+    pub batch: BatchParams,
 }
 
 impl NdtParams {
@@ -379,6 +395,33 @@ impl NdtParams {
                     .default(0.01)
                     .mandatory()?
                     .get(),
+            },
+            batch: BatchParams {
+                enabled: node
+                    .declare_parameter("batch.enabled")
+                    .default(false)
+                    .mandatory()?
+                    .get(),
+                max_queue_depth: node
+                    .declare_parameter("batch.max_queue_depth")
+                    .default(8)
+                    .mandatory()?
+                    .get() as i32,
+                max_scan_age_ms: node
+                    .declare_parameter("batch.max_scan_age_ms")
+                    .default(100)
+                    .mandatory()?
+                    .get() as i32,
+                batch_trigger: node
+                    .declare_parameter("batch.batch_trigger")
+                    .default(4)
+                    .mandatory()?
+                    .get() as i32,
+                timeout_ms: node
+                    .declare_parameter("batch.timeout_ms")
+                    .default(20)
+                    .mandatory()?
+                    .get() as i32,
             },
         })
     }
