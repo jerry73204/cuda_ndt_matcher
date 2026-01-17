@@ -11,6 +11,7 @@
 
 #include "persistent_ndt_device.cuh"
 #include "cholesky_6x6.cuh"
+#include "jacobi_svd_6x6.cuh"
 
 namespace cg = cooperative_groups;
 
@@ -235,6 +236,8 @@ __global__ void persistent_ndt_kernel(
     float* g_best_alpha = &reduce_buffer[84];
     float* g_ls_early_term = &reduce_buffer[85];
     float* g_alpha_sum = &reduce_buffer[86];
+    // Actual step length for convergence check (matches Autoware behavior)
+    float* g_actual_step_len = &reduce_buffer[87];
     // Phase 21: Per-candidate parallel reduction slots
     float* g_cand_scores = &reduce_buffer[96];        // [8] per-candidate scores
     float* g_cand_corr = &reduce_buffer[104];         // [8] per-candidate correspondences
@@ -475,31 +478,27 @@ __global__ void persistent_ndt_kernel(
                        H[0], H[7], H[14], H[21], H[28], H[35]);
             }
 
-            // Cholesky solve with regularization: H * delta = -g
-            // Uses Levenberg-Marquardt style regularization for indefinite Hessians
+            // Jacobi SVD solve: H * delta = -g
+            // Uses eigendecomposition which handles indefinite Hessians natively
+            // (unlike Cholesky which requires positive definiteness)
+            //
+            // The solver computes: delta = V * D^{-1} * V^T * (-g) (solves H*x = -g)
+            // NDT score is POSITIVE; we MAXIMIZE it (better alignment = higher score).
+            // At maximum: gradient g points uphill, Hessian H is negative semi-definite.
+            // With negative definite H: delta = H^{-1}*(-g) points uphill = correct direction.
             double delta[6];
             bool solve_success;
-            cholesky_solve_regularized_6x6_f64(H, g, delta, &solve_success);
+            jacobi_svd_solve_6x6_f64(H, g, delta, &solve_success);
 
             if (solve_success) {
                 for (int i = 0; i < 6; i++) {
                     g_delta[i] = (float)delta[i];
                 }
             } else {
-                // Fallback: diagonal quasi-Newton (approximates SVD for indefinite matrices)
-                // delta[i] = -g[i] / |H[i,i]|  (use absolute value to handle mixed signs)
-                // This gives a reasonable direction even when the Hessian has mixed signs
+                // Fallback (should rarely happen - only if ALL eigenvalues are tiny)
+                // Use steepest descent with small step
                 for (int i = 0; i < 6; i++) {
-                    double h_diag = H[i * 6 + i];
-                    double abs_h = fabs(h_diag);
-                    // Regularize small diagonals to avoid division by near-zero
-                    if (abs_h < 1e-6) abs_h = 1e-6;
-                    // For negative diagonal (normal for maximization), use -g/h
-                    // For positive diagonal (saddle point), also use -g/|h| to descend
-                    delta[i] = -g[i] / abs_h;
-                }
-                for (int i = 0; i < 6; i++) {
-                    g_delta[i] = (float)delta[i];
+                    g_delta[i] = (float)(-g[i] * 1e-4);
                 }
             }
 
@@ -533,10 +532,26 @@ __global__ void persistent_ndt_kernel(
                 }
             } else {
                 // No line search - Autoware behavior: step_length = clamp(delta_norm, step_min, step_max)
-                // step_min = trans_epsilon / 2 = 0.005 (typical)
+                // step_min = 0 (allow arbitrarily small steps for convergence)
                 // step_max = step_size = 0.1
-                // This means: use Newton step norm as step length, clamped between min and max
-                constexpr float STEP_MIN = 0.005f;  // trans_epsilon / 2
+                // This means: use Newton step norm as step length, clamped to max
+                constexpr float STEP_MIN = 0.0f;  // Allow tiny steps for convergence
+
+                // Direction check (matching Autoware's computeStepLengthMT):
+                // For MAXIMIZATION, delta should point in same direction as gradient.
+                // Compute d_phi_0 = -(gradient · delta). If d_phi_0 >= 0, reverse direction.
+                float dphi_0 = 0.0f;
+                for (int i = 0; i < 6; i++) {
+                    dphi_0 += reduce_buffer[1 + i] * g_delta[i];  // gradient · delta
+                }
+                // Autoware uses d_phi_0 = -(gradient · delta), checks if >= 0
+                // That's equivalent to checking: gradient · delta <= 0
+                if (dphi_0 <= 0.0f) {
+                    // Wrong direction for maximization - reverse
+                    for (int i = 0; i < 6; i++) {
+                        g_delta[i] = -g_delta[i];
+                    }
+                }
 
                 float delta_norm_sq = 0.0f;
                 for (int i = 0; i < 6; i++) {
@@ -554,13 +569,16 @@ __global__ void persistent_ndt_kernel(
 
                 // DEBUG: Print step info
                 if (iter == 0 || iter == 10 || iter == 20 || iter >= 28) {
-                    printf("[NDT-DEBUG] iter=%d: delta_norm=%.4f, step_len=%.4f, scale=%.4f, delta=(%.4f,%.4f,%.4f,%.6f,%.6f,%.6f)\n",
-                           iter, delta_norm, step_length, scale, g_delta[0], g_delta[1], g_delta[2], g_delta[3], g_delta[4], g_delta[5]);
+                    printf("[NDT-DEBUG] iter=%d: delta_norm=%.4f, step_len=%.4f, scale=%.4f, dphi0=%.4f, delta=(%.4f,%.4f,%.4f,%.6f,%.6f,%.6f)\n",
+                           iter, delta_norm, step_length, scale, dphi_0, g_delta[0], g_delta[1], g_delta[2], g_delta[3], g_delta[4], g_delta[5]);
                 }
 
                 for (int i = 0; i < 6; i++) {
                     g_pose[i] += scale * g_delta[i];
                 }
+
+                // Store actual step length for convergence check (matches Autoware)
+                *g_actual_step_len = step_length;
             }
         }
         grid.sync();
@@ -801,6 +819,13 @@ __global__ void persistent_ndt_kernel(
                 for (int i = 0; i < 6; i++) {
                     g_pose[i] = g_original_pose[i] + alpha * g_delta[i];
                 }
+
+                // Compute actual step length for convergence check (matches Autoware)
+                float delta_norm_sq = 0.0f;
+                for (int i = 0; i < 6; i++) {
+                    delta_norm_sq += g_delta[i] * g_delta[i];
+                }
+                *g_actual_step_len = alpha * sqrtf(delta_norm_sq);
             }
             grid.sync();
         }
@@ -870,12 +895,11 @@ __global__ void persistent_ndt_kernel(
             float alpha_this_iter = ls_enabled ? *g_best_alpha : fixed_step_size;
             *g_alpha_sum += alpha_this_iter;
 
-            // Check convergence: ||delta||^2 < epsilon^2
-            float delta_norm_sq = 0.0f;
-            for (int i = 0; i < 6; i++) {
-                delta_norm_sq += g_delta[i] * g_delta[i];
-            }
-            *g_converged = (delta_norm_sq < epsilon_sq) ? 1.0f : 0.0f;
+            // Check convergence: actual_step_len < epsilon (matches Autoware behavior)
+            // Autoware checks the ACTUAL step length taken (after clamping/line search),
+            // not the raw Newton step norm.
+            float step_len = *g_actual_step_len;
+            *g_converged = (step_len < sqrtf(epsilon_sq)) ? 1.0f : 0.0f;
 
             // Save Hessian to output BEFORE clearing (for covariance estimation)
             // Expand upper triangle [21] to full symmetric matrix [36]
