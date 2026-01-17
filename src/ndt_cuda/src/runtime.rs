@@ -980,7 +980,7 @@ mod tests {
     macro_rules! require_cuda {
         () => {
             if !is_cuda_available() {
-                ecrate::test_println!("Skipping test: CUDA not available");
+                crate::test_println!("Skipping test: CUDA not available");
                 return;
             }
         };

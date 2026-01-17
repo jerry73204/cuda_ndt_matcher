@@ -429,8 +429,8 @@ mod tests {
         let size = reduce_buffer_size();
         assert_eq!(
             size,
-            96 * 4,
-            "Reduce buffer should be 96 floats (384 bytes)"
+            160 * 4,
+            "Reduce buffer should be 160 floats (640 bytes) for parallel line search"
         );
     }
 
