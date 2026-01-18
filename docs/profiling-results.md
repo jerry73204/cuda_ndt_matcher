@@ -4,13 +4,35 @@ This document captures profiling results comparing the CUDA NDT implementation a
 
 ## Test Environment
 
-- **Date**: 2026-01-18 (latest profiling run with persistent kernel)
+- **Date**: 2026-01-19 (latest profiling run)
 - **Hardware**: NVIDIA GPU (CUDA enabled)
 - **Dataset**: Autoware sample rosbag (~23 seconds of driving data)
-- **Map**: sample-map-rosbag (point cloud map)
+- **Map**: sample-map (point cloud map)
 - **Initial Pose**: user_defined_initial_pose enabled for both runs
 
-## Executive Summary (2026-01-18 - Latest with ScanQueue)
+## Executive Summary (2026-01-19 - Latest)
+
+| Metric             | Autoware (OpenMP) | CUDA NDT     | Ratio            |
+|--------------------|-------------------|--------------|------------------|
+| **Alignments**     | **1062**          | **264**      | Autoware 4x more |
+| Mean iterations    | 3.0               | 3.2          | 1.07x (similar)  |
+| Max iterations     | 7                 | 9            | CUDA higher max  |
+| Mean NVTL          | 3.05              | 2.29         | 75% of Autoware  |
+| Mean score         | 31,741            | 26,711       | 84% of Autoware  |
+| Convergence rate   | 100%              | 100%         | Parity           |
+| Oscillations       | N/A               | 11% (29)     | -                |
+
+**Key achievements:**
+- ✅ **100% convergence** on both implementations
+- ✅ **Similar iteration counts** - CUDA: 3.2 vs Autoware: 3.0
+- ✅ **Oscillation rate reduced** - 11% (down from 28.5%)
+
+**Remaining gaps:**
+- **NVTL**: 2.29 vs 3.05 (75% of Autoware)
+- **Alignment count**: 264 vs 1062 (Autoware processes more scans per session)
+- Score function may have differences in Gaussian parameters
+
+## Historical: Executive Summary (2026-01-18 - ScanQueue)
 
 | Metric             | Autoware (OpenMP) | CUDA NDT     | Ratio            |
 |--------------------|-------------------|--------------|------------------|
@@ -302,54 +324,48 @@ batch:
    - ✅ Throughput parity achieved with ScanQueue
    - Real-time constraints (max age, queue depth) prevent scan buildup
 
-## Data Files (2026-01-18)
+## Data Files (2026-01-19)
 
 | File                              | Description                  |
 |-----------------------------------|------------------------------|
-| `rosbag/builtin_20260118_054651/` | Autoware NDT recorded output |
-| `rosbag/cuda_20260118_054506/`    | CUDA NDT recorded output     |
-| `/tmp/ndt_autoware_debug.jsonl`   | Autoware iteration debug     |
-| `/tmp/ndt_cuda_debug.jsonl`       | CUDA iteration debug         |
+| `logs/ndt_autoware_debug.jsonl`   | Autoware iteration debug     |
+| `logs/ndt_cuda_debug.jsonl`       | CUDA iteration debug         |
 
 ## Reproducing Results
 
 ```bash
-# Clear old debug files
-rm -f /tmp/ndt_autoware_debug.jsonl /tmp/ndt_cuda_debug.jsonl
+# Run CUDA NDT with debug output
+just run-cuda-debug
 
-# Run Autoware builtin NDT
-just run-builtin
+# Build comparison Autoware (required for debug output)
+just build-comparison
 
-# Run CUDA NDT
-just run-cuda
+# Run Autoware builtin NDT with debug output
+just run-builtin-debug
 
 # Analyze results
-python3 tmp/analyze_profiling.py
-python3 tmp/extract_exe_time.py
+just analyze-debug-cuda
+just analyze-debug-autoware
 ```
 
-## Conclusion (2026-01-18)
+## Conclusion (2026-01-19)
 
-With persistent kernel, direction check fixes, and ScanQueue integration, the CUDA NDT implementation now achieves **throughput parity** with Autoware's OpenMP implementation.
+The CUDA NDT implementation achieves **functional parity** with Autoware's OpenMP implementation.
 
 **Key achievements**:
-- ✅ **Throughput parity**: **272 vs 278 alignments** (97.8%!)
 - ✅ **Convergence rate**: **100%** (matches Autoware)
-- ✅ **Fewer iterations**: **3.07** vs Autoware's 3.92 (22% fewer!)
-- ✅ **Voxels per point**: **3.04** (matches Autoware's 3.03)
+- ✅ **Iteration count**: **3.2** (similar to Autoware's 3.0)
+- ✅ **Oscillation rate**: **11%** (reduced from 28.5%)
 - ✅ **Persistent kernel**: Single kernel launch for entire optimization
 - ✅ **GPU Newton solve**: In-kernel 6x6 Jacobi SVD
 - ✅ **Direction check**: Corrects SVD sign ambiguity
 - ✅ **ScanQueue**: Real-time batch processing with age-based dropping
-- ✅ **Batch processing**: Multi-scan parallel alignment via `BatchGpuPipeline`
 
 **Remaining gaps**:
-1. **NVTL**: 1.97 vs 2.97 (66% of Autoware)
-2. **Score per point**: 4.34 vs 5.37 (81% of Autoware)
+1. **NVTL**: 2.29 vs 3.05 (75% of Autoware)
+2. **Alignment count**: 264 vs 1062 (need to investigate scan processing rate)
 
 **Next steps**:
-- ✅ ~~Enable batch processing in ROS node to improve throughput~~ **DONE** (ScanQueue implemented)
-- ✅ ~~Test batch mode with rosbag replay~~ **DONE** (97.8% throughput parity achieved)
-- Investigate scoring/NVTL computation differences
-- Profile per-kernel timing to identify bottlenecks
-- Match Autoware's Gaussian scoring parameters exactly
+- Investigate NVTL/scoring differences (Gaussian parameters d1, d2)
+- Profile scan processing pipeline to understand alignment count difference
+- Match Autoware's scoring computation exactly
