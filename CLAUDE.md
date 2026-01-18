@@ -57,6 +57,9 @@ src/
 | `NDT_USE_GPU=0` | Force CPU mode (default: 1 for GPU) |
 | `NDT_DEBUG=1` | Enable debug JSONL output |
 | `NDT_DEBUG_VPP=1` | Log voxel-per-point distribution |
+| `NDT_DEBUG_COV=1` | Compare GPU vs CPU covariance (output via tracing::debug) |
+| `NDT_DUMP_VOXELS=1` | Dump voxel data to JSON for comparison |
+| `NDT_DUMP_VOXELS_FILE` | Output path (default: `/tmp/ndt_cuda_voxels.json`) |
 
 **Pipeline config**: `PipelineV2Config::enable_debug = true` collects per-iteration debug data (score, gradient, Hessian, step size) from the persistent kernel with zero overhead when disabled.
 
@@ -128,3 +131,95 @@ pkill -9 -g $PGID
 ```
 
 **Never** use `pkill -9 -f play_launch` alone as it leaves orphaned child processes (component containers, ros2 nodes) that hold topics and prevent clean restarts.
+
+**Common orphan processes to kill:**
+```bash
+pkill -9 -f "component_container"      # ROS 2 composable node containers
+pkill -9 -f "component_container_mt"   # Multi-threaded containers
+pkill -9 -f "robot_state_publisher"    # TF publisher
+pkill -9 -f "ros2-daemon"              # ROS 2 CLI daemon
+```
+
+## Comparison Testing
+
+The `tests/comparison/` directory contains a fork of `autoware_ndt_scan_matcher` with debug patches for comparison testing. Builtin NDT recipes delegate to `tests/comparison/justfile`.
+
+**Setup:**
+```bash
+# Initialize submodule (if not already done)
+git submodule update --init tests/comparison/autoware_universe
+
+# Build patched Autoware NDT
+just build-comparison
+```
+
+**Usage:**
+```bash
+# Run Autoware (unpatched, no debug)
+just run-builtin
+
+# Run Autoware with debug output (requires build-comparison first)
+just run-builtin-debug
+
+# Dump voxel data for comparison
+just dump-voxels-autoware
+just dump-voxels-cuda
+just compare-voxels
+```
+
+**Architecture:**
+- `tests/comparison/autoware_universe/` - git submodule with debug patches
+- `tests/comparison/justfile` - builds and runs patched Autoware
+- Main justfile delegates: `run-builtin`, `run-builtin-debug`, `dump-voxels-autoware`, `analyze-debug-autoware`
+- `run_ndt_simulation.sh` overlays `tests/comparison/install/` when available
+
+**Patches included:**
+- Per-iteration debug output (score, gradient, Hessian)
+- Voxel grid dump for covariance comparison
+- Convergence status logging
+
+## Validation Status
+
+### Covariance Formula Bug Fixed (2026-01-19)
+
+**Root cause found and fixed**: The CPU voxel grid construction in `types.rs` used an incorrect covariance formula.
+
+**Bug location**: `src/ndt_cuda/src/voxel_grid/types.rs:69-82`
+
+**Wrong formula** (caused ~73% score):
+```rust
+cov = (sum_sq/n - mean*mean^T) * (n-1)/n  // WRONG
+```
+
+**Correct formula** (matches Autoware):
+```rust
+cov = (sum_sq - n*mean*mean^T) / (n-1)    // Standard sample covariance
+```
+
+**Impact**: The ratio between wrong/correct formulas is `(n-1)²/n²`:
+| Points (n) | Formula ratio | Observed in dumps |
+|------------|---------------|-------------------|
+| 6          | 0.69          | 0.55 (matched)    |
+| 10         | 0.81          | 0.63 (matched)    |
+| 100        | 0.98          | 0.94 (matched)    |
+
+**Verification**:
+- GPU vs CPU cov_sums comparison: ratio = 1.000000 (exact match)
+- All 350 unit tests pass
+- All 7 Autoware comparison tests pass
+
+**Note**: The GPU pipeline in `statistics.rs` was already correct (accumulates centered deviations and divides by n-1). Only the CPU path in `types.rs::from_statistics` had the bug.
+
+**Investigation tools** (for future debugging):
+```bash
+# Generate voxel dumps
+NDT_DUMP_VOXELS=1 just run-cuda
+NDT_DUMP_VOXELS=1 just run-builtin
+
+# Compare voxels
+python3 tmp/compare_matching_voxels.py
+python3 tmp/analyze_by_point_count.py
+
+# Debug GPU vs CPU cov_sums
+NDT_DEBUG_COV=1 cargo test -p ndt_cuda -- voxel --nocapture
+```
