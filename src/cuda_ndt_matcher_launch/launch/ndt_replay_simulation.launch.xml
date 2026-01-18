@@ -69,12 +69,11 @@
       <arg name="rviz" value="$(var rviz)"/>
     </include>
 
-    <!-- Autoware localization stack with initial_pose support -->
-    <!-- When user_defined_initial_pose_enable is true, pass the initial pose; otherwise pass empty list -->
-    <let name="autoware_initial_pose" value="$(var user_defined_initial_pose)" if="$(var user_defined_initial_pose_enable)"/>
-    <let name="autoware_initial_pose" value="[]" unless="$(var user_defined_initial_pose_enable)"/>
-    <include file="$(find-pkg-share autoware_launch)/launch/components/tier4_localization_component.launch.xml">
-      <arg name="initial_pose" value="$(var autoware_initial_pose)"/>
+    <!-- Custom Autoware localization stack with controlled preprocessor config -->
+    <include file="$(find-pkg-share cuda_ndt_matcher_launch)/launch/autoware_localization.launch.xml">
+      <arg name="user_defined_initial_pose_enable" value="$(var user_defined_initial_pose_enable)"/>
+      <arg name="user_defined_initial_pose" value="$(var user_defined_initial_pose)"/>
+      <!-- gnss_enabled defaults to true, enabling automatic_pose_initializer -->
     </include>
   </group>
 
