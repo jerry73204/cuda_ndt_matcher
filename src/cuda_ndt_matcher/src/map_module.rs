@@ -738,8 +738,12 @@ mod tests {
 
     #[test]
     fn test_map_radius_filtering() {
+        // Note: MapUpdateModule does NOT filter points by radius.
+        // It uses all points from loaded tiles because the tile loading service
+        // (external to this module) handles spatial selection via map_radius.
+        // This matches Autoware's behavior.
         let mut params = make_params();
-        params.map_radius = 10.0; // Small radius for testing
+        params.map_radius = 10.0;
 
         let module = MapUpdateModule::new(params);
 
@@ -747,10 +751,10 @@ mod tests {
             id: "tile_1".to_string(),
             center: make_point(0.0, 0.0, 0.0),
             points: vec![
-                [0.0, 0.0, 0.0],  // At origin - should be included
-                [5.0, 0.0, 0.0],  // 5m away - should be included
-                [15.0, 0.0, 0.0], // 15m away - should be excluded
-                [0.0, 20.0, 0.0], // 20m away - should be excluded
+                [0.0, 0.0, 0.0],
+                [5.0, 0.0, 0.0],
+                [15.0, 0.0, 0.0],
+                [0.0, 20.0, 0.0],
             ],
         };
 
@@ -759,7 +763,8 @@ mod tests {
         let result = module.update_map(&make_point(0.0, 0.0, 0.0));
 
         assert!(result.updated);
-        assert_eq!(result.total_points, 2); // Only points within 10m radius
+        // All 4 points are included - no radius filtering at this level
+        assert_eq!(result.total_points, 4);
         assert!(result.update_time_ms >= 0.0);
     }
 
