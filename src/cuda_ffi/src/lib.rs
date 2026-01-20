@@ -59,8 +59,9 @@ pub use batch_persistent_ndt::{
     batch_ndt_blocks_per_slot, batch_ndt_reduce_buffer_size, batch_ndt_total_blocks,
     batch_persistent_ndt_init_barriers_async_raw, batch_persistent_ndt_init_barriers_raw,
     batch_persistent_ndt_launch_async_raw, batch_persistent_ndt_launch_raw,
-    batch_persistent_ndt_stream_sync_raw, batch_persistent_ndt_sync_raw, batch_reduce_buffer_size,
-    batch_shared_mem_size, BatchPersistentNdt,
+    batch_persistent_ndt_launch_warp_optimized_raw, batch_persistent_ndt_stream_sync_raw,
+    batch_persistent_ndt_sync_raw, batch_reduce_buffer_size, batch_shared_mem_size,
+    batch_warp_shared_mem_size, BatchPersistentNdt,
 };
 
 // Async stream utilities (pinned memory, streams, events)

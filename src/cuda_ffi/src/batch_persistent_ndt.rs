@@ -155,6 +155,62 @@ extern "C" {
 
     fn batch_persistent_ndt_stream_sync(stream: RawCudaStream) -> c_int;
 
+    fn batch_persistent_ndt_warp_shared_mem_size() -> u32;
+
+    fn batch_persistent_ndt_launch_warp_optimized(
+        // Shared data
+        voxel_means: *const f32,
+        voxel_inv_covs: *const f32,
+        hash_table: *const std::ffi::c_void,
+        hash_capacity: u32,
+        gauss_d1: f32,
+        gauss_d2: f32,
+        resolution: f32,
+
+        // Per-slot input
+        all_source_points: *const f32,
+        all_initial_poses: *const f32,
+        points_per_slot: *const c_int,
+
+        // Per-slot working memory
+        all_reduce_buffers: *mut f32,
+        barrier_counters: *mut c_int,
+        barrier_senses: *mut c_int,
+
+        // Per-slot outputs
+        all_out_poses: *mut f32,
+        all_out_iterations: *mut c_int,
+        all_out_converged: *mut u32,
+        all_out_scores: *mut f32,
+        all_out_hessians: *mut f32,
+        all_out_correspondences: *mut u32,
+        all_out_oscillations: *mut u32,
+        all_out_alpha_sums: *mut f32,
+
+        // Control
+        num_slots: c_int,
+        blocks_per_slot: c_int,
+        max_points_per_slot: c_int,
+        max_iterations: c_int,
+        epsilon: f32,
+
+        // Line search
+        ls_enabled: c_int,
+        ls_num_candidates: c_int,
+        ls_mu: f32,
+        ls_nu: f32,
+        fixed_step_size: f32,
+
+        // Regularization
+        reg_ref_x: *const f32,
+        reg_ref_y: *const f32,
+        reg_scale: f32,
+        reg_enabled: c_int,
+
+        // Stream
+        stream: RawCudaStream,
+    ) -> c_int;
+
     fn cudaMemset(devPtr: *mut std::ffi::c_void, value: c_int, count: usize) -> c_int;
     fn cudaMemsetAsync(
         devPtr: *mut std::ffi::c_void,
@@ -750,6 +806,114 @@ pub unsafe fn batch_persistent_ndt_init_barriers_async_raw(
 }
 
 // ============================================================================
+// Warp-Optimized Kernel API
+// ============================================================================
+
+/// Get shared memory size for warp-optimized kernel in bytes.
+///
+/// The warp-optimized kernel uses less shared memory because it uses
+/// warp-level reduction instead of full block-level reduction.
+pub fn batch_warp_shared_mem_size() -> usize {
+    unsafe { batch_persistent_ndt_warp_shared_mem_size() as usize }
+}
+
+/// Launch warp-optimized batch NDT kernel using raw device pointers.
+///
+/// This version uses warp-level reduction and warp-cooperative Newton solve
+/// for improved GPU utilization. It uses less shared memory than the original.
+///
+/// # Safety
+///
+/// All device pointers must be valid CUDA device pointers with appropriate sizes.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn batch_persistent_ndt_launch_warp_optimized_raw(
+    d_voxel_means: u64,
+    d_voxel_inv_covs: u64,
+    d_hash_table: u64,
+    hash_capacity: u32,
+    gauss_d1: f32,
+    gauss_d2: f32,
+    resolution: f32,
+    d_all_source_points: u64,
+    d_all_initial_poses: u64,
+    d_points_per_slot: u64,
+    d_all_reduce_buffers: u64,
+    d_barrier_counters: u64,
+    d_barrier_senses: u64,
+    d_all_out_poses: u64,
+    d_all_out_iterations: u64,
+    d_all_out_converged: u64,
+    d_all_out_scores: u64,
+    d_all_out_hessians: u64,
+    d_all_out_correspondences: u64,
+    d_all_out_oscillations: u64,
+    d_all_out_alpha_sums: u64,
+    num_slots: usize,
+    blocks_per_slot: usize,
+    max_points_per_slot: usize,
+    max_iterations: i32,
+    epsilon: f32,
+    ls_enabled: bool,
+    ls_num_candidates: i32,
+    ls_mu: f32,
+    ls_nu: f32,
+    fixed_step_size: f32,
+    d_reg_ref_x: u64,
+    d_reg_ref_y: u64,
+    reg_scale: f32,
+    reg_enabled: bool,
+    stream: RawCudaStream,
+) -> Result<(), CudaError> {
+    let result = batch_persistent_ndt_launch_warp_optimized(
+        d_voxel_means as *const f32,
+        d_voxel_inv_covs as *const f32,
+        d_hash_table as *const std::ffi::c_void,
+        hash_capacity,
+        gauss_d1,
+        gauss_d2,
+        resolution,
+        d_all_source_points as *const f32,
+        d_all_initial_poses as *const f32,
+        d_points_per_slot as *const c_int,
+        d_all_reduce_buffers as *mut f32,
+        d_barrier_counters as *mut c_int,
+        d_barrier_senses as *mut c_int,
+        d_all_out_poses as *mut f32,
+        d_all_out_iterations as *mut c_int,
+        d_all_out_converged as *mut u32,
+        d_all_out_scores as *mut f32,
+        d_all_out_hessians as *mut f32,
+        d_all_out_correspondences as *mut u32,
+        d_all_out_oscillations as *mut u32,
+        d_all_out_alpha_sums as *mut f32,
+        num_slots as c_int,
+        blocks_per_slot as c_int,
+        max_points_per_slot as c_int,
+        max_iterations,
+        epsilon,
+        if ls_enabled { 1 } else { 0 },
+        ls_num_candidates,
+        ls_mu,
+        ls_nu,
+        fixed_step_size,
+        if d_reg_ref_x == 0 {
+            std::ptr::null()
+        } else {
+            d_reg_ref_x as *const f32
+        },
+        if d_reg_ref_y == 0 {
+            std::ptr::null()
+        } else {
+            d_reg_ref_y as *const f32
+        },
+        reg_scale,
+        if reg_enabled { 1 } else { 0 },
+        stream,
+    );
+    check_cuda(result)
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -792,6 +956,17 @@ mod tests {
             size,
             256 * 29 * 4,
             "Shared memory should be 256 * 29 * 4 bytes"
+        );
+    }
+
+    #[test]
+    fn test_warp_shared_mem_size() {
+        let size = batch_warp_shared_mem_size();
+        // 8 warps * 29 values * 4 bytes = 928 bytes (much smaller!)
+        assert_eq!(
+            size,
+            8 * 29 * 4,
+            "Warp-optimized shared memory should be 8 * 29 * 4 = 928 bytes"
         );
     }
 }

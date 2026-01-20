@@ -70,6 +70,8 @@ fn main() {
     println!("cargo:rerun-if-changed=csrc/cholesky_6x6.cuh");
     println!("cargo:rerun-if-changed=csrc/jacobi_svd_6x6.cuh");
     println!("cargo:rerun-if-changed=csrc/batch_persistent_ndt_device.cuh");
+    println!("cargo:rerun-if-changed=csrc/warp_reduce.cuh");
+    println!("cargo:rerun-if-changed=csrc/warp_cholesky.cuh");
     println!("cargo:rerun-if-changed=build.rs");
 }
 
