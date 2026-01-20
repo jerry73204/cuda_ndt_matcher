@@ -3,10 +3,6 @@
 #+DATE: 2026-01-19
 #+SETUPFILE: github.theme
 
-#+begin_NOTE
-*Dataflow Diagrams*: See =docs/diagrams/ndt-dataflow.typ= for Typst-based visual diagrams of the NDT algorithm, CPU/GPU pipelines, and memory layout. Compile with: =typst compile docs/diagrams/ndt-dataflow.typ=
-#+end_NOTE
-
 * Introduction
 
 This tutorial explains how Autoware's NDT (Normal Distributions Transform) scan matcher works. NDT is a probabilistic point cloud registration algorithm used for localization in autonomous driving.
@@ -36,17 +32,36 @@ NDT models the map as a collection of Gaussian distributions, providing a smooth
 
 * Algorithm Overview
 
-#+begin_src mermaid
-flowchart TD
-    A[Input: Scan + Initial Guess] --> B[Transform Scan Points]
-    B --> C[Find Nearby Voxels]
-    C --> D[Compute Score, Gradient, Hessian]
-    D --> E[Newton Step: delta = -H^-1 * g]
-    E --> F[Line Search]
-    F --> G{Converged?}
-    G -->|No| B
-    G -->|Yes| H[Output: Final Pose]
+#+begin_src typst :file diagrams/png/ndt-algorithm.png :results file graphics :exports results
+#import "@preview/fletcher:0.5.8" as fletcher: diagram, node, edge
+
+#diagram(
+  node-stroke: 1pt,
+  node-corner-radius: 4pt,
+  edge-stroke: 1pt,
+  node-inset: 8pt,
+
+  node((0,0), [*Input*: Scan + Initial Guess], fill: rgb("#e3f2fd"), name: <input>),
+  edge("-|>"),
+  node((0,1), [Transform Scan Points], fill: rgb("#fff3e0"), name: <transform>),
+  edge("-|>"),
+  node((0,2), [Find Nearby Voxels], fill: rgb("#fff3e0")),
+  edge("-|>"),
+  node((0,3), [Compute Score, Gradient, Hessian], fill: rgb("#ffebee")),
+  edge("-|>"),
+  node((0,4), [Newton Step: δ = −H⁻¹g], fill: rgb("#fff3e0")),
+  edge("-|>"),
+  node((0,5), [Line Search], fill: rgb("#fff3e0")),
+  edge("-|>"),
+  node((0,6), [Converged?], fill: rgb("#e8f5e9"), shape: fletcher.shapes.diamond, name: <converge>),
+  edge(<converge>, (1,6), "-|>", [Yes]),
+  node((1,6), [*Output*: Final Pose], fill: rgb("#c8e6c9"), name: <output>),
+  edge(<converge>, <transform>, "-|>", [No], bend: -90deg),
+)
 #+end_src
+
+#+RESULTS:
+[[file:diagrams/png/ndt-algorithm.png]]
 
 The algorithm iterates until convergence:
 1. Transform source points using current pose estimate
@@ -400,11 +415,11 @@ for (int voxel_idx : nearby) {
 
 Directly compute neighboring voxel indices without KD-tree:
 
-| Method | Description | Voxels Checked |
-|--------+-------------+----------------|
-| DIRECT1 | Only containing voxel | 1 |
-| DIRECT7 | Face-adjacent neighbors | 7 |
-| DIRECT26 | All neighbors including diagonals | 27 |
+| Method   | Description                       | Voxels Checked |
+|----------+-----------------------------------+----------------|
+| DIRECT1  | Only containing voxel             |              1 |
+| DIRECT7  | Face-adjacent neighbors           |              7 |
+| DIRECT26 | All neighbors including diagonals |             27 |
 
 *Not recommended*: DIRECT methods can miss voxels near boundaries and provide less smooth gradients.
 
@@ -488,13 +503,13 @@ void mapUpdateThread() {
 
 ** Critical Path Analysis
 
-| Operation | Time (typical) | Complexity |
-|-----------+----------------+------------|
-| Point transformation | ~0.1 ms | O(N) |
-| Voxel search | ~0.5 ms | O(N log V) |
-| Derivative accumulation | ~2.0 ms | O(N * V_avg) |
-| Newton solve | ~0.05 ms | O(1) - 6x6 |
-| Line search (if enabled) | ~2.0 ms | O(iterations * above) |
+| Operation                | Time (typical) | Complexity            |
+|--------------------------+----------------+-----------------------|
+| Point transformation     | ~0.1 ms        | O(N)                  |
+| Voxel search             | ~0.5 ms        | O(N log V)            |
+| Derivative accumulation  | ~2.0 ms        | O(N * V_avg)          |
+| Newton solve             | ~0.05 ms       | O(1) - 6x6            |
+| Line search (if enabled) | ~2.0 ms        | O(iterations * above) |
 
 *Dominant cost*: Derivative computation, especially the nested loops for gradient/Hessian accumulation.
 
@@ -561,21 +576,53 @@ For cache efficiency:
 
 ** Processing Flow
 
-#+begin_src mermaid
-sequenceDiagram
-    participant EKF
-    participant NDT
-    participant MapServer
+#+begin_src typst :file diagrams/png/ros-processing-flow.png :results file graphics :exports results
+#import "@preview/fletcher:0.5.8" as fletcher: diagram, node, edge
 
-    EKF->>NDT: Initial pose guess
-    Note over NDT: Wait for scan
-    LiDAR->>NDT: Point cloud
-    NDT->>MapServer: Request map (if needed)
-    MapServer-->>NDT: Map tiles
-    Note over NDT: NDT alignment
-    NDT->>EKF: Aligned pose
-    NDT->>TF: Broadcast transform
+#let marker(n) = box(fill: white, stroke: 0.5pt, inset: 2pt, radius: 2pt)[#text(size: 7pt)[#n]]
+
+#grid(columns: (auto, 1em, auto), gutter: 0.5em,
+  // Diagram
+  diagram(
+    node-stroke: 1pt,
+    node-corner-radius: 4pt,
+    edge-stroke: 1pt,
+    node-inset: 8pt,
+    spacing: (16mm, 12mm),
+
+    // NDT in center, others around it
+    node((1,1), [*NDT*], fill: rgb("#e8f5e9"), name: <ndt>),
+    node((0,0), [*EKF*], fill: rgb("#e3f2fd"), name: <ekf>),
+    node((2,0), [*LiDAR*], fill: rgb("#fff3e0"), name: <lidar>),
+    node((0,2), [*Map*], fill: rgb("#f3e5f5"), name: <map>),
+    node((2,2), [*TF*], fill: rgb("#ffebee"), name: <tf>),
+
+    // Message flow with markers on edges
+    edge(<ekf>, <ndt>, "->", marker[1], label-sep: 0pt),
+    edge(<lidar>, <ndt>, "->", marker[2], label-sep: 0pt),
+    edge(<ndt>, <map>, "->", marker[3], label-sep: 0pt),
+    edge(<map>, <ndt>, "->", marker[4], label-sep: 0pt, bend: 30deg),
+    edge(<ndt>, <ekf>, "->", marker[5], label-sep: 0pt, bend: 30deg),
+    edge(<ndt>, <tf>, "->", marker[6], label-sep: 0pt),
+  ),
+  [],
+  // Legend
+  align(left + horizon)[
+    #set text(size: 9pt)
+    #table(stroke: none, columns: 2, inset: 3pt, align: left,
+      marker[1], [EKF → NDT: Initial pose],
+      marker[2], [LiDAR → NDT: Point cloud],
+      marker[3], [NDT → Map: Request tiles],
+      marker[4], [Map → NDT: Map data],
+      marker[5], [NDT → EKF: Aligned pose],
+      marker[6], [NDT → TF: Transform],
+    )
+  ]
+)
 #+end_src
+
+#+RESULTS:
+[[file:diagrams/png/ros-processing-flow.png]]
 
 * Accuracy Analysis: What Affects Alignment Quality?
 
@@ -583,27 +630,27 @@ Understanding which steps affect accuracy is critical for tuning and debugging N
 
 ** Accuracy Impact Summary
 
-| Step | Accuracy Impact | Why It Matters |
-|------+-----------------|----------------|
-| Voxel resolution | *Critical* | Determines spatial granularity of map representation |
-| Covariance regularization | *High* | Prevents degenerate voxels, affects gradient smoothness |
-| Search method (KDTREE vs DIRECT) | *High* | KDTREE provides smoother gradients, better convergence |
-| Number of voxels per point | *High* | More voxels = smoother gradient = better convergence |
-| Initial pose quality | *High* | Poor initialization can lead to local minima |
-| Convergence threshold | *Medium* | Too loose = inaccurate; too tight = slow/non-convergent |
-| Hessian regularization | *Medium* | Affects step direction in ill-conditioned regions |
-| Line search | *Low-Medium* | Disabled by default; helps in difficult cases |
-| Outlier ratio | *Low* | Controls Gaussian shape; 0.55 works well |
+| Step                             | Accuracy Impact | Why It Matters                                          |
+|----------------------------------+-----------------+---------------------------------------------------------|
+| Voxel resolution                 | *Critical*      | Determines spatial granularity of map representation    |
+| Covariance regularization        | *High*          | Prevents degenerate voxels, affects gradient smoothness |
+| Search method (KDTREE vs DIRECT) | *High*          | KDTREE provides smoother gradients, better convergence  |
+| Number of voxels per point       | *High*          | More voxels = smoother gradient = better convergence    |
+| Initial pose quality             | *High*          | Poor initialization can lead to local minima            |
+| Convergence threshold            | *Medium*        | Too loose = inaccurate; too tight = slow/non-convergent |
+| Hessian regularization           | *Medium*        | Affects step direction in ill-conditioned regions       |
+| Line search                      | *Low-Medium*    | Disabled by default; helps in difficult cases           |
+| Outlier ratio                    | *Low*           | Controls Gaussian shape; 0.55 works well                |
 
 ** Voxel Resolution (Critical)
 
 The voxel resolution (default: 2.0m) is the most impactful parameter:
 
-| Resolution | Pros | Cons | Use Case |
-|------------+------+------+----------|
-| 0.5-1.0m | High precision | Sensitive to noise, slow | Indoor, structured |
-| 1.0-2.0m | Good balance | Standard choice | Urban driving |
-| 2.0-4.0m | Fast, robust | Lower precision | Highway, open areas |
+| Resolution | Pros           | Cons                     | Use Case            |
+|------------+----------------+--------------------------+---------------------|
+| 0.5-1.0m   | High precision | Sensitive to noise, slow | Indoor, structured  |
+| 1.0-2.0m   | Good balance   | Standard choice          | Urban driving       |
+| 2.0-4.0m   | Fast, robust   | Lower precision          | Highway, open areas |
 
 #+begin_IMPORTANT
 *Rule of thumb*: Resolution should be 2-4x the expected position uncertainty. For autonomous driving with good IMU/odometry, 2.0m works well.
@@ -629,12 +676,12 @@ if (voxel.nr_points < min_points_per_voxel_) {
 
 The number of voxels found per point directly affects gradient quality:
 
-| Voxels/Point | Gradient Quality | Convergence |
-|--------------+------------------+-------------|
-| < 1.0 | Poor (many points unmatched) | Unreliable |
-| 1.0 - 2.0 | Acceptable | Usually works |
-| 2.0 - 4.0 | Good (smooth gradient) | Reliable |
-| > 4.0 | Excellent but slower | Best |
+| Voxels/Point | Gradient Quality             | Convergence   |
+|--------------+------------------------------+---------------|
+| < 1.0        | Poor (many points unmatched) | Unreliable    |
+| 1.0 - 2.0    | Acceptable                   | Usually works |
+| 2.0 - 4.0    | Good (smooth gradient)       | Reliable      |
+| > 4.0        | Excellent but slower         | Best          |
 
 #+begin_NOTE
 *Diagnostic*: Monitor the "voxels per point" metric. If consistently < 1.5, the map may have coverage gaps or resolution mismatch.
@@ -644,18 +691,11 @@ The number of voxels found per point directly affects gradient quality:
 
 NDT is a local optimizer - it finds the nearest local minimum:
 
-#+begin_src mermaid
-graph LR
-    A[Good Init] --> B[Global Minimum]
-    C[Poor Init] --> D[Local Minimum]
-    E[Very Poor Init] --> F[Divergence]
-#+end_src
-
-| Initial Error | Typical Outcome |
-|---------------+-----------------|
-| < 0.5m, < 5° | Converges to global minimum |
+| Initial Error   | Typical Outcome                             |
+|-----------------+---------------------------------------------|
+| < 0.5m, < 5°    | Converges to global minimum                 |
 | 0.5-2.0m, 5-15° | Usually converges, may need more iterations |
-| > 2.0m, > 15° | Risk of local minimum or divergence |
+| > 2.0m, > 15°   | Risk of local minimum or divergence         |
 
 ** Covariance Regularization
 
@@ -676,33 +716,29 @@ Without regularization:
 
 ** Convergence Threshold Tuning
 
-| Parameter | Default | Effect of Increase | Effect of Decrease |
-|-----------+---------+--------------------+--------------------|
-| =transformation_epsilon= | 0.01 | Faster but less accurate | More accurate but slower |
-| =max_iterations= | 30 | More time for convergence | May stop early |
-| =step_size= | 0.1 | Larger steps, faster | Smaller steps, more stable |
+| Parameter                | Default | Effect of Increase        | Effect of Decrease         |
+|--------------------------+---------+---------------------------+----------------------------|
+| =transformation_epsilon= |    0.01 | Faster but less accurate  | More accurate but slower   |
+| =max_iterations=         |      30 | More time for convergence | May stop early             |
+| =step_size=              |     0.1 | Larger steps, faster      | Smaller steps, more stable |
 
 * GPU/Parallel Optimization Opportunities
 
 This section analyzes which NDT components benefit from GPU acceleration and how the CUDA implementation achieves its speedups.
 
-#+begin_NOTE
-*Visual Reference*: See =docs/diagrams/ndt-dataflow.typ= Figure 2 (CPU vs GPU Pipeline) and Figure 4 (Derivative Computation) for visual comparisons.
-#+end_NOTE
-
 ** Optimization Opportunity Matrix
 
-| Step | Parallelizable? | GPU Benefit | Batching Benefit | CUDA Implementation |
-|------+-----------------+-------------+------------------+---------------------|
-| Voxel grid build | *Yes* (embarrassingly parallel) | *High* | Medium | CubeCL + CUB RadixSort |
-| Point transformation | *Yes* (per-point) | *High* | High | Fused GPU kernel |
-| Voxel search | *Yes* (per-point) | *High* | High | GPU spatial hash table |
-| Score computation | *Yes* (per-point) | *High* | High | Fused GPU kernel |
-| Gradient computation | *Yes* (per-point, reduce) | *High* | High | GPU kernel + CUB SegmentedReduce |
-| Hessian computation | *Yes* (per-point, reduce) | *High* | High | GPU kernel + CUB SegmentedReduce |
-| Angular derivatives | No (6 trig calls) | None | None | GPU-side (single-thread) |
-| Newton solve | No (6×6 system) | Low | Medium | In-kernel Jacobi SVD |
-| Convergence check | No | None | None | GPU-side |
+| Step                 | Parallelizable?                 | GPU Benefit | Batching Benefit | CUDA Implementation              |
+|----------------------+---------------------------------+-------------+------------------+----------------------------------|
+| Voxel grid build     | *Yes* (embarrassingly parallel) | *High*      | Medium           | CubeCL + CUB RadixSort           |
+| Point transformation | *Yes* (per-point)               | *High*      | High             | Fused GPU kernel                 |
+| Voxel search         | *Yes* (per-point)               | *High*      | High             | GPU spatial hash table           |
+| Score computation    | *Yes* (per-point)               | *High*      | High             | Fused GPU kernel                 |
+| Gradient computation | *Yes* (per-point, reduce)       | *High*      | High             | GPU kernel + CUB SegmentedReduce |
+| Hessian computation  | *Yes* (per-point, reduce)       | *High*      | High             | GPU kernel + CUB SegmentedReduce |
+| Angular derivatives  | No (6 trig calls)               | None        | None             | GPU-side (single-thread)         |
+| Newton solve         | No (6×6 system)                 | Low         | Medium           | In-kernel Jacobi SVD             |
+| Convergence check    | No                              | None        | None             | GPU-side                         |
 
 ** How CUDA Achieves 22% Speedup
 
@@ -711,26 +747,6 @@ The CUDA implementation achieves 6.10ms vs Autoware's 7.79ms through several key
 *** 1. Zero-Copy Iteration Pipeline
 
 The critical insight: minimize CPU↔GPU transfers by keeping all iteration data on GPU.
-
-#+begin_src
-CPU Pipeline (Autoware):           GPU Pipeline (CUDA):
-┌────────────────────────┐         ┌────────────────────────┐
-│ Per Iteration:         │         │ One-Time Upload:       │
-│  - Transform (CPU)     │         │  - Points: 64 bytes    │
-│  - KD-tree search      │         │  - Voxels: V × 48B     │
-│  - Accumulate grad/hess│         ├────────────────────────┤
-│  - Critical section    │         │ Per Iteration (GPU):   │
-│                        │         │  - Transform kernel    │
-│ OpenMP threads merge   │         │  - Search kernel       │
-│ via critical section   │         │  - Derivative kernel   │
-└────────────────────────┘         │  - CUB reduce          │
-                                   │  - Newton solve        │
-Transfer: 0 bytes                  │  (No CPU roundtrip!)   │
-Bottleneck: Critical section       └────────────────────────┘
-
-                                   Download only at end:
-                                   - Result: 172 bytes
-#+end_src
 
 | Metric | Autoware | CUDA | Difference |
 |--------+----------+------+------------|
@@ -743,20 +759,6 @@ Bottleneck: Critical section       └──────────────
 
 Autoware uses KD-tree with $O(\log V)$ per-point queries. CUDA uses a GPU-friendly spatial hash:
 
-#+begin_src
-KD-tree (Autoware):                Spatial Hash (CUDA):
-┌─────────────────────────┐        ┌─────────────────────────┐
-│ For each point:         │        │ For each point:         │
-│  1. Traverse tree       │        │  1. Hash(x,y,z) → idx   │
-│  2. Radius search       │        │  2. Check 27 neighbors  │
-│  3. Return nearby voxels│        │  3. Distance filter     │
-│                         │        │                         │
-│ Complexity: O(log V)    │        │ Complexity: O(1)        │
-│ Cache: Poor (pointer    │        │ Cache: Good (contiguous │
-│         chasing)        │        │         memory)         │
-└─────────────────────────┘        └─────────────────────────┘
-#+end_src
-
 | Operation | KD-tree (CPU) | Spatial Hash (GPU) | Notes |
 |-----------+---------------+--------------------+-------|
 | Build time | ~10ms | ~2ms | Hash is simpler |
@@ -767,17 +769,47 @@ KD-tree (Autoware):                Spatial Hash (CUDA):
 
 The derivative kernels output in column-major format for efficient reduction:
 
-#+begin_src
-Row-Major (Natural but slow):      Column-Major (Efficient reduction):
-┌────────────────────────┐         ┌────────────────────────┐
-│ Point 0: g0 g1 g2 g3 g4 g5│      │ All g0: P0.g0 P1.g0 ... Pn.g0│
-│ Point 1: g0 g1 g2 g3 g4 g5│      │ All g1: P0.g1 P1.g1 ... Pn.g1│
-│ Point 2: g0 g1 g2 g3 g4 g5│      │ ...                          │
-│ ...                       │      │ All g5: P0.g5 P1.g5 ... Pn.g5│
-└────────────────────────┘         └────────────────────────┘
+#+begin_src typst :file diagrams/png/column-major-layout.png :results file graphics :exports results
+// Color palette for gradient components
+#let colors = (
+  rgb("#e3f2fd"), rgb("#bbdefb"), rgb("#90caf9"),
+  rgb("#64b5f6"), rgb("#42a5f5"), rgb("#2196f3")
+)
+#let cell(c, t) = box(fill: c, inset: 4pt, width: 2.2em, height: 1.5em)[#align(center + horizon)[#text(size: 8pt)[#t]]]
 
-Reduce: Gather scatter (slow)      Reduce: Contiguous sum (fast)
+#grid(columns: 2, gutter: 2em,
+  // Row-Major layout
+  stack(dir: ttb, spacing: 0.5em,
+    [*Row-Major* (scattered reduction)],
+    table(
+      columns: 7, stroke: 0.5pt, inset: 0pt, align: center,
+      table.header([], [g0], [g1], [g2], [g3], [g4], [g5]),
+      [P0], cell(colors.at(0), [0]), cell(colors.at(1), [1]), cell(colors.at(2), [2]), cell(colors.at(3), [3]), cell(colors.at(4), [4]), cell(colors.at(5), [5]),
+      [P1], cell(colors.at(0), [6]), cell(colors.at(1), [7]), cell(colors.at(2), [8]), cell(colors.at(3), [9]), cell(colors.at(4), [10]), cell(colors.at(5), [11]),
+      [P2], cell(colors.at(0), [12]), cell(colors.at(1), [13]), cell(colors.at(2), [14]), cell(colors.at(3), [15]), cell(colors.at(4), [16]), cell(colors.at(5), [17]),
+    ),
+    text(size: 9pt)[Sum g0: indices 0, 6, 12... #text(fill: red)[(scattered)]],
+  ),
+  // Column-Major layout
+  stack(dir: ttb, spacing: 0.5em,
+    [*Column-Major* (contiguous reduction)],
+    table(
+      columns: 4, stroke: 0.5pt, inset: 0pt, align: center,
+      table.header([], [P0], [P1], [P2]),
+      [g0], cell(colors.at(0), [0]), cell(colors.at(0), [1]), cell(colors.at(0), [2]),
+      [g1], cell(colors.at(1), [3]), cell(colors.at(1), [4]), cell(colors.at(1), [5]),
+      [g2], cell(colors.at(2), [6]), cell(colors.at(2), [7]), cell(colors.at(2), [8]),
+      [g3], cell(colors.at(3), [9]), cell(colors.at(3), [10]), cell(colors.at(3), [11]),
+      [g4], cell(colors.at(4), [12]), cell(colors.at(4), [13]), cell(colors.at(4), [14]),
+      [g5], cell(colors.at(5), [15]), cell(colors.at(5), [16]), cell(colors.at(5), [17]),
+    ),
+    text(size: 9pt)[Sum g0: indices 0, 1, 2 #text(fill: green)[(contiguous)]],
+  ),
+)
 #+end_src
+
+#+RESULTS:
+[[file:diagrams/png/column-major-layout.png]]
 
 CUB DeviceSegmentedReduce then sums each column in a single pass:
 
@@ -798,18 +830,42 @@ cub::DeviceSegmentedReduce::Sum(
 
 Instead of transferring Hessian/gradient to CPU for solving, we solve directly on GPU:
 
-#+begin_src
-Autoware (CPU solve):              CUDA (GPU solve):
-┌─────────────────────────┐        ┌─────────────────────────┐
-│ 1. Download H (36 floats)│       │ 1. Jacobi SVD in kernel │
-│ 2. Download g (6 floats) │       │    (6×6 is tiny)        │
-│ 3. Eigen SVD on CPU     │        │ 2. Compute Δp on GPU    │
-│ 4. Upload Δp (6 floats) │        │ 3. Update pose on GPU   │
-│                         │        │ 4. No CPU roundtrip     │
-│ Latency: ~100μs         │        │                         │
-└─────────────────────────┘        │ Latency: ~10μs          │
-                                   └─────────────────────────┘
+#+begin_src typst :file diagrams/png/newton-solve.png :results file graphics :exports results
+#let box-style = (stroke: 1pt + rgb("#333"), radius: 4pt, inset: 0.6em)
+#let cpu-fill = rgb("#fff3e0")
+#let gpu-fill = rgb("#e8f5e9")
+
+#grid(columns: 2, gutter: 1.5em,
+  // Autoware CPU solve
+  box(..box-style, fill: cpu-fill)[
+    *Autoware (CPU solve)*
+    #v(0.3em)
+    #set text(size: 9pt)
+    1. Download H (36 floats)\
+    2. Download g (6 floats)\
+    3. Eigen SVD on CPU\
+    4. Upload Δp (6 floats)\
+    #v(0.3em)
+    Latency: *~100μs*
+  ],
+  // CUDA GPU solve
+  box(..box-style, fill: gpu-fill)[
+    *CUDA (GPU solve)*
+    #v(0.3em)
+    #set text(size: 9pt)
+    1. Jacobi SVD in kernel\
+    #h(0.8em)#text(size: 8pt)[(6×6 is tiny)]\
+    2. Compute Δp on GPU\
+    3. Update pose on GPU\
+    4. No CPU roundtrip\
+    #v(0.3em)
+    Latency: *~10μs*
+  ]
+)
 #+end_src
+
+#+RESULTS:
+[[file:diagrams/png/newton-solve.png]]
 
 The 6×6 Jacobi SVD is implemented in a single GPU thread (no parallelism needed for such a small matrix).
 
@@ -817,16 +873,41 @@ The 6×6 Jacobi SVD is implemented in a single GPU thread (no parallelism needed
 
 *Highly parallelizable* - Each point is processed independently.
 
-#+begin_src
-GPU Voxel Grid Pipeline:
-┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
-│ Points   │→ │ Morton   │→ │ Radix    │→ │ Segment  │→ │ Compute  │
-│ N × 3    │  │ Encode   │  │ Sort     │  │ Detect   │  │ Stats    │
-└──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘
-              CubeCL kernel  CUB library  CUB library   CubeCL kernel
+#+begin_src typst :file diagrams/png/voxel-grid-pipeline.png :results file graphics :exports results
+#import "@preview/fletcher:0.5.8" as fletcher: diagram, node, edge
 
-Output: V voxels, each with mean (3), inverse_cov (9), point_count (1)
+#diagram(
+  node-stroke: 1pt,
+  node-corner-radius: 4pt,
+  edge-stroke: 1pt,
+  node-inset: 6pt,
+  spacing: (12mm, 8mm),
+
+  // Pipeline stages (horizontal)
+  node((0,0), [*Points*\ N × 3], fill: rgb("#e3f2fd")),
+  edge("-|>"),
+  node((1,0), [*Morton*\ Encode], fill: rgb("#e3f2fd")),
+  edge("-|>"),
+  node((2,0), [*Radix*\ Sort], fill: rgb("#fff3e0")),
+  edge("-|>"),
+  node((3,0), [*Segment*\ Detect], fill: rgb("#fff3e0")),
+  edge("-|>"),
+  node((4,0), [*Compute*\ Stats], fill: rgb("#e3f2fd")),
+
+  // Labels below
+  node((1,1), text(size: 8pt)[CubeCL], stroke: none),
+  node((2,1), text(size: 8pt)[CUB], stroke: none),
+  node((3,1), text(size: 8pt)[CUB], stroke: none),
+  node((4,1), text(size: 8pt)[CubeCL], stroke: none),
+
+  // Output
+  edge((4,0), (4,2), "-|>"),
+  node((4,2), [*Output:* V voxels\ mean, inv_cov, count], fill: rgb("#e8f5e9")),
+)
 #+end_src
+
+#+RESULTS:
+[[file:diagrams/png/voxel-grid-pipeline.png]]
 
 | Operation | CPU Time | GPU Time | Speedup |
 |-----------+----------+----------+---------|
@@ -942,20 +1023,45 @@ The GPU Jacobi SVD is slightly slower in isolation, but eliminates transfer late
 
 The initial pose estimator evaluates many candidate poses in parallel:
 
-#+begin_src
-Sequential (Autoware):             Batched (CUDA):
-┌─────────────────────────┐        ┌─────────────────────────┐
-│ For each particle:      │        │ Upload all particles    │
-│  1. Set pose            │        │ (100-200 poses)         │
-│  2. Full NDT alignment  │        │                         │
-│  3. Record score        │        │ Single batched kernel:  │
-│                         │        │  - All transforms       │
-│ Time: N × 3-5ms         │        │  - All searches         │
-│      = 300-500ms        │        │  - All scores           │
-└─────────────────────────┘        │                         │
-                                   │ Time: ~20-50ms          │
-                                   └─────────────────────────┘
+#+begin_src typst :file diagrams/png/batched-initial-pose.png :results file graphics :exports results
+#let box-style = (stroke: 1pt + rgb("#333"), radius: 4pt, inset: 0.6em)
+#let slow-fill = rgb("#ffebee")
+#let fast-fill = rgb("#e8f5e9")
+
+#grid(columns: 2, gutter: 1.5em,
+  // Sequential Autoware
+  box(..box-style, fill: slow-fill)[
+    *Sequential (Autoware)*
+    #v(0.3em)
+    #set text(size: 9pt)
+    *For each particle:*\
+    #h(0.5em)1. Set pose\
+    #h(0.5em)2. Full NDT alignment\
+    #h(0.5em)3. Record score\
+    #v(0.3em)
+    Time: N × 3-5ms\
+    #h(2em)= *300-500ms*
+  ],
+  // Batched CUDA
+  box(..box-style, fill: fast-fill)[
+    *Batched (CUDA)*
+    #v(0.3em)
+    #set text(size: 9pt)
+    Upload all particles\
+    (100-200 poses)\
+    #v(0.3em)
+    *Single batched kernel:*\
+    #h(0.5em)• All transforms\
+    #h(0.5em)• All searches\
+    #h(0.5em)• All scores\
+    #v(0.3em)
+    Time: *~20-50ms*
+  ]
+)
 #+end_src
+
+#+RESULTS:
+[[file:diagrams/png/batched-initial-pose.png]]
 
 | N (particles) | Sequential | Batched GPU | Speedup |
 |---------------+------------+-------------+---------|
@@ -973,49 +1079,58 @@ Covariance estimation perturbs the initial pose and runs multiple alignments:
 
 ** GPU Pipeline Architecture Summary
 
-#+begin_src
-┌───────────────────────────────────────────────────────────────────┐
-│                    Per-Alignment Setup (Once)                      │
-├───────────────────────────────────────────────────────────────────┤
-│  CPU → GPU:                                                        │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐             │
-│  │ Source Points│  │ Voxel Means  │  │ Voxel InvCov │             │
-│  │ N × 3 × 4B   │  │ V × 3 × 4B   │  │ V × 9 × 4B   │             │
-│  │ (~3 KB)      │  │ (~36 KB)     │  │ (~108 KB)    │             │
-│  └──────────────┘  └──────────────┘  └──────────────┘             │
-│                                                                    │
-│  Build: Spatial hash table from voxel positions                    │
-└───────────────────────────────────────────────────────────────────┘
-                              ↓
-┌───────────────────────────────────────────────────────────────────┐
-│                   Per-Iteration (All GPU, No Transfer)             │
-├───────────────────────────────────────────────────────────────────┤
-│  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐       │
-│  │Transform │ → │ Search   │ → │Derivative│ → │   CUB    │       │
-│  │ Points   │   │ Voxels   │   │ Compute  │   │  Reduce  │       │
-│  └──────────┘   └──────────┘   └──────────┘   └──────────┘       │
-│       ↑                                              ↓            │
-│       │         ┌──────────┐   ┌──────────┐         │            │
-│       └─────────│  Update  │ ← │  Newton  │ ←───────┘            │
-│                 │   Pose   │   │   Solve  │                      │
-│                 └──────────┘   └──────────┘                      │
-│                       │                                           │
-│                       ↓ Converged?                                │
-│                       No → Loop back                              │
-│                       Yes ↓                                       │
-└───────────────────────────────────────────────────────────────────┘
-                              ↓
-┌───────────────────────────────────────────────────────────────────┐
-│                        Download Result                             │
-├───────────────────────────────────────────────────────────────────┤
-│  GPU → CPU:                                                        │
-│  ┌──────────────────────────────────────────────┐                 │
-│  │ Final Pose (6), Score (1), Iterations (1),   │                 │
-│  │ Hessian (36), Converged (1)                  │                 │
-│  │ Total: 172 bytes                             │                 │
-│  └──────────────────────────────────────────────┘                 │
-└───────────────────────────────────────────────────────────────────┘
+#+begin_src typst :file diagrams/png/full-gpu-pipeline.png :results file graphics :exports results
+#import "@preview/fletcher:0.5.8" as fletcher: diagram, node, edge
+
+#diagram(
+  node-stroke: 1pt,
+  node-corner-radius: 4pt,
+  edge-stroke: 1pt,
+  node-inset: 6pt,
+  spacing: (14mm, 12mm),
+
+  // === Section 1: Per-Alignment Setup ===
+  node(enclose: ((0,0), (2,0)), fill: rgb("#e3f2fd"), stroke: 1.5pt, inset: 12pt, name: <setup>),
+  node((1,-0.6), [*Per-Alignment Setup (CPU → GPU)*], stroke: none),
+  node((0,0), [*Source Points*\ ~3 KB], fill: white),
+  node((1,0), [*Voxel Means*\ ~36 KB], fill: white),
+  node((2,0), [*Voxel InvCov*\ ~108 KB], fill: white),
+
+  // Arrow to iteration section
+  edge((1,0.7), (1,1.3), "-|>"),
+
+  // === Section 2: Per-Iteration Loop ===
+  node(enclose: ((0,2), (3,3)), fill: rgb("#f3e5f5"), stroke: 1.5pt, inset: 12pt, name: <iter>),
+  node((1.5,1.4), [*Per-Iteration (All GPU)*], stroke: none),
+
+  // Forward pipeline
+  node((0,2), [Transform], fill: white, name: <xform>),
+  edge("-|>"),
+  node((1,2), [Search], fill: white),
+  edge("-|>"),
+  node((2,2), [Derivatives], fill: white),
+  edge("-|>"),
+  node((3,2), [Reduce], fill: white, name: <reduce>),
+
+  // Feedback path
+  edge(<reduce>, (3,3), "-|>"),
+  node((3,3), [Newton\ Solve], fill: white, name: <newton>),
+  edge("-|>"),
+  node((2,3), [Update\ Pose], fill: white),
+  edge("->"),
+  node((1,3), [Converged?], fill: white, shape: fletcher.shapes.diamond, name: <conv>),
+  edge(<conv>, <xform>, "->", [No], label-side: right, bend: -50deg),
+
+  // Exit path
+  edge(<conv>, (1,4), "-|>", [Yes], label-side: right),
+
+  // === Section 3: Download Result ===
+  node((1,4.5), [*Download Result*\ Pose + Score + Hessian\ (172 bytes)], fill: rgb("#e8f5e9"), name: <result>),
+)
 #+end_src
+
+#+RESULTS:
+[[file:diagrams/png/full-gpu-pipeline.png]]
 
 * Current Performance Statistics
 
@@ -1034,15 +1149,15 @@ Real-world profiling data from AutoSDV rosbag with Velodyne VLP-32C LiDAR.
 
 ** Execution Time Comparison
 
-| Metric | Autoware (OpenMP) | CUDA GPU | Ratio |
-|--------+-------------------+----------+-------|
-| *Mean* | *7.79 ms* | *6.10 ms* | *1.28× faster* |
-| Median | 7.64 ms | 6.03 ms | 1.27× faster |
-| Stdev | 4.03 ms | 1.37 ms | Lower variance |
-| Min | 1.89 ms | 3.31 ms | - |
-| Max | 30.62 ms | 15.85 ms | 1.93× faster |
-| P95 | 13.28 ms | 7.92 ms | 1.68× faster |
-| P99 | 21.77 ms | 11.88 ms | 1.83× faster |
+| Metric | Autoware (OpenMP) | CUDA GPU  | Ratio          |
+|--------+-------------------+-----------+----------------|
+| *Mean* | *7.79 ms*         | *6.10 ms* | *1.28× faster* |
+| Median | 7.64 ms           | 6.03 ms   | 1.27× faster   |
+| Stdev  | 4.03 ms           | 1.37 ms   | Lower variance |
+| Min    | 1.89 ms           | 3.31 ms   | -              |
+| Max    | 30.62 ms          | 15.85 ms  | 1.93× faster   |
+| P95    | 13.28 ms          | 7.92 ms   | 1.68× faster   |
+| P99    | 21.77 ms          | 11.88 ms  | 1.83× faster   |
 
 #+begin_SUCCESS
 *CUDA is now faster than Autoware!* The GPU implementation achieves 22% lower mean execution time with significantly more consistent performance (lower variance).
@@ -1050,13 +1165,13 @@ Real-world profiling data from AutoSDV rosbag with Velodyne VLP-32C LiDAR.
 
 ** Convergence Statistics
 
-| Metric | Autoware | CUDA |
-|--------+----------+------|
-| Convergence rate | 100% | 100% |
-| Mean iterations | 3.0 | 3.1 |
-| Median iterations | 3 | 3 |
-| Max iterations | 5 | 6 |
-| Hit max iterations | 0% | 0% |
+| Metric             | Autoware | CUDA |
+|--------------------+----------+------|
+| Convergence rate   |     100% | 100% |
+| Mean iterations    |      3.0 |  3.1 |
+| Median iterations  |        3 |    3 |
+| Max iterations     |        5 |    6 |
+| Hit max iterations |       0% |   0% |
 
 #+begin_NOTE
 Both implementations achieve 100% convergence with similar iteration counts, indicating the CUDA implementation now matches Autoware's optimization behavior.
@@ -1064,23 +1179,23 @@ Both implementations achieve 100% convergence with similar iteration counts, ind
 
 ** NVTL Score Comparison
 
-| Metric | Autoware | CUDA | Notes |
-|--------+----------+------+-------|
-| Mean NVTL | 3.05 | 2.30 | 75% of Autoware |
-| Stdev | 0.51 | 0.68 | Slightly higher variance |
-| Total entries | 1340 | 281 | Different alignment counts |
+| Metric        | Autoware | CUDA | Notes                      |
+|---------------+----------+------+----------------------------|
+| Mean NVTL     |     3.05 | 2.30 | 75% of Autoware            |
+| Stdev         |     0.51 | 0.68 | Slightly higher variance   |
+| Total entries |     1340 |  281 | Different alignment counts |
 
 The NVTL gap (75%) remains an area for investigation. Lower NVTL may indicate different voxel search strategies or scoring calculations.
 
 ** Timing Breakdown (Per Iteration)
 
-| Component | Autoware (CPU) | CUDA (GPU) | Notes |
-|-----------+----------------+------------+-------|
-| Point transformation | ~0.05ms | <0.01ms | GPU excels |
-| Voxel search | ~0.3ms | ~0.1ms | GPU spatial hash |
-| Derivative computation | ~1.5ms | ~0.3ms | GPU kernels + CUB reduce |
-| Newton solve | ~0.05ms | ~0.02ms | In-kernel Jacobi SVD |
-| *Per-iteration total* | ~2.0ms | ~0.5ms | 4× faster |
+| Component              | Autoware (CPU) | CUDA (GPU) | Notes                    |
+|------------------------+----------------+------------+--------------------------|
+| Point transformation   | ~0.05ms        | <0.01ms    | GPU excels               |
+| Voxel search           | ~0.3ms         | ~0.1ms     | GPU spatial hash         |
+| Derivative computation | ~1.5ms         | ~0.3ms     | GPU kernels + CUB reduce |
+| Newton solve           | ~0.05ms        | ~0.02ms    | In-kernel Jacobi SVD     |
+| *Per-iteration total*  | ~2.0ms         | ~0.5ms     | 4× faster                |
 
 #+begin_IMPORTANT
 *Key insight*: With matching convergence rates, the GPU's 4× per-iteration speedup translates to overall 22% faster total execution time. The overhead comes from one-time upload costs (~2ms) that amortize over the alignment.
@@ -1102,12 +1217,12 @@ CUDA shows a tighter distribution centered around 5-7ms, while Autoware has a lo
 
 Per-alignment transfer overhead (optimized pipeline):
 
-| Direction | Data | Size | When |
-|-----------+------+------+------|
-| CPU→GPU | Pose (initial) | 64 bytes | Once per alignment |
-| CPU→GPU | Source points | ~3 KB (750 × 4B) | Once per alignment |
-| GPU→CPU | Result | 172 bytes | Once per alignment |
-| *Total* | | ~3.2 KB | Per alignment |
+| Direction | Data           | Size             | When               |
+|-----------+----------------+------------------+--------------------|
+| CPU→GPU   | Pose (initial) | 64 bytes         | Once per alignment |
+| CPU→GPU   | Source points  | ~3 KB (750 × 4B) | Once per alignment |
+| GPU→CPU   | Result         | 172 bytes        | Once per alignment |
+| *Total*   |                | ~3.2 KB          | Per alignment      |
 
 The zero-copy pipeline eliminates per-iteration transfers:
 
@@ -1131,14 +1246,14 @@ The zero-copy pipeline eliminates per-iteration transfers:
 
 ** Performance Summary (2026-01-19)
 
-| Metric | Autoware (CPU) | CUDA (GPU) | Improvement |
-|--------+----------------+------------+-------------|
-| Mean execution time | 7.79 ms | 6.10 ms | *22% faster* |
-| P95 execution time | 13.28 ms | 7.92 ms | *40% faster* |
-| Per-iteration time | ~2.0 ms | ~0.5 ms | *4× faster* |
-| Mean iterations | 3.0 | 3.1 | Parity |
-| Convergence rate | 100% | 100% | Parity |
-| NVTL score | 3.05 | 2.30 | 75% (gap remains) |
+| Metric              | Autoware (CPU) | CUDA (GPU) | Improvement       |
+|---------------------+----------------+------------+-------------------|
+| Mean execution time | 7.79 ms        | 6.10 ms    | *22% faster*      |
+| P95 execution time  | 13.28 ms       | 7.92 ms    | *40% faster*      |
+| Per-iteration time  | ~2.0 ms        | ~0.5 ms    | *4× faster*       |
+| Mean iterations     | 3.0            | 3.1        | Parity            |
+| Convergence rate    | 100%           | 100%       | Parity            |
+| NVTL score          | 3.05           | 2.30       | 75% (gap remains) |
 
 ** Typical Performance
 
