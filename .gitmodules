@@ -4,3 +4,6 @@
 [submodule "tests/comparison/autoware_universe"]
 	path = tests/comparison/autoware_universe
 	url = https://github.com/jerry73204/autoware_universe.git
+[submodule "src/autoware_rosbag_replay"]
+	path = src/autoware_rosbag_replay
+	url = https://github.com/jerry73204/autoware_rosbag_replay.git
