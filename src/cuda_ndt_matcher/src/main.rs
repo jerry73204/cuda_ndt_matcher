@@ -1417,6 +1417,37 @@ impl NdtScanMatcherNode {
         // ---- Diagnostics ----
         // Collect and publish scan matching diagnostics
         let topic_time_stamp = msg.header.stamp.sec as f64 + msg.header.stamp.nanosec as f64 * 1e-9;
+
+        // Extract per-iteration arrays from AlignmentDebug if available
+        #[cfg(feature = "debug-output")]
+        let (tp_array, nvtl_array) = alignment_debug
+            .as_ref()
+            .map(|d| {
+                // Arrays are only populated when ndt_cuda is built with debug-iteration feature
+                #[cfg(feature = "debug-iteration")]
+                {
+                    let tp = if d.transform_probability_array.is_empty() {
+                        None
+                    } else {
+                        Some(d.transform_probability_array.clone())
+                    };
+                    let nvtl = if d.nearest_voxel_transformation_likelihood_array.is_empty() {
+                        None
+                    } else {
+                        Some(d.nearest_voxel_transformation_likelihood_array.clone())
+                    };
+                    (tp, nvtl)
+                }
+                #[cfg(not(feature = "debug-iteration"))]
+                {
+                    (None, None)
+                }
+            })
+            .unwrap_or((None, None));
+
+        #[cfg(not(feature = "debug-output"))]
+        let (tp_array, nvtl_array): (Option<Vec<f64>>, Option<Vec<f64>>) = (None, None);
+
         let scan_diag = ScanMatchingDiagnostics {
             topic_time_stamp,
             sensor_points_size: sensor_points.len(),
@@ -1435,6 +1466,8 @@ impl NdtScanMatcherNode {
             distance_initial_to_result: distance,
             execution_time_ms: exe_time_ms as f64,
             skipping_publish_num,
+            transform_probability_array: tp_array,
+            nearest_voxel_transformation_likelihood_array: nvtl_array,
         };
 
         {

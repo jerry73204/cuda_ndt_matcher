@@ -229,6 +229,10 @@ pub struct ScanMatchingDiagnostics {
     pub distance_initial_to_result: f64,
     pub execution_time_ms: f64,
     pub skipping_publish_num: i32,
+    /// Per-iteration transform probability scores (from AlignmentDebug)
+    pub transform_probability_array: Option<Vec<f64>>,
+    /// Per-iteration NVTL scores (from AlignmentDebug)
+    pub nearest_voxel_transformation_likelihood_array: Option<Vec<f64>>,
 }
 
 impl ScanMatchingDiagnostics {
@@ -299,6 +303,17 @@ impl ScanMatchingDiagnostics {
         );
         diag.add_key_value("execution_time", format!("{:.3}", self.execution_time_ms));
         diag.add_key_value("skipping_publish_num", self.skipping_publish_num);
+
+        // Add per-iteration arrays if available (from AlignmentDebug with debug-iteration feature)
+        if let Some(tp_array) = &self.transform_probability_array {
+            diag.add_key_value("transform_probability_array", format!("{:?}", tp_array));
+        }
+        if let Some(nvtl_array) = &self.nearest_voxel_transformation_likelihood_array {
+            diag.add_key_value(
+                "nearest_voxel_transformation_likelihood_array",
+                format!("{:?}", nvtl_array),
+            );
+        }
 
         // Set level based on status
         if !self.is_activated {
@@ -373,14 +388,53 @@ mod tests {
             distance_initial_to_result: 0.15,
             execution_time_ms: 45.2,
             skipping_publish_num: 0,
+            transform_probability_array: None,
+            nearest_voxel_transformation_likelihood_array: None,
         };
 
         let mut cat = DiagnosticCategory::new("scan_matching_status", "ndt");
         diag.apply_to(&mut cat);
 
         assert_eq!(cat.level, DiagnosticLevel::Ok);
-        // 15 original + 4 new (before/diff for transform_prob and nvtl)
+        // 15 original + 4 new (before/diff for transform_prob and nvtl) = 19
         assert_eq!(cat.key_values.len(), 19);
+    }
+
+    #[test]
+    fn test_scan_matching_diagnostics_with_arrays() {
+        let diag = ScanMatchingDiagnostics {
+            topic_time_stamp: 1234567890.123,
+            sensor_points_size: 10000,
+            sensor_points_delay_time_sec: 0.05,
+            is_succeed_transform_sensor_points: true,
+            sensor_points_max_distance: 120.0,
+            is_activated: true,
+            is_succeed_interpolate_initial_pose: true,
+            is_set_map_points: true,
+            iteration_num: 5,
+            oscillation_count: 0,
+            transform_probability: 3.5,
+            nearest_voxel_transformation_likelihood: 2.8,
+            transform_probability_before: 2.0,
+            nearest_voxel_transformation_likelihood_before: 1.5,
+            distance_initial_to_result: 0.15,
+            execution_time_ms: 45.2,
+            skipping_publish_num: 0,
+            transform_probability_array: Some(vec![2.0, 2.5, 3.0, 3.5]),
+            nearest_voxel_transformation_likelihood_array: Some(vec![1.5, 2.0, 2.5, 2.8]),
+        };
+
+        let mut cat = DiagnosticCategory::new("scan_matching_status", "ndt");
+        diag.apply_to(&mut cat);
+
+        assert_eq!(cat.level, DiagnosticLevel::Ok);
+        // 19 base + 2 arrays = 21
+        assert_eq!(cat.key_values.len(), 21);
+
+        // Verify array keys are present
+        let keys: Vec<_> = cat.key_values.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(keys.contains(&"transform_probability_array"));
+        assert!(keys.contains(&"nearest_voxel_transformation_likelihood_array"));
     }
 
     #[test]
