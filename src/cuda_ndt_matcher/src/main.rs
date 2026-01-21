@@ -1236,16 +1236,36 @@ impl NdtScanMatcherNode {
         }
 
         // Publish relative pose (result relative to initial)
+        // Compute actual relative transform: relative = result * initial^(-1)
+        // This gives the transform that takes you from initial pose to result pose
+        let initial_p = &initial_pose.pose.pose.position;
+        let initial_q = &initial_pose.pose.pose.orientation;
+        let initial_translation = Translation3::new(initial_p.x, initial_p.y, initial_p.z);
+        let initial_quaternion = UnitQuaternion::from_quaternion(NaQuaternion::new(
+            initial_q.w,
+            initial_q.x,
+            initial_q.y,
+            initial_q.z,
+        ));
+        let initial_isometry: Isometry3<f64> =
+            Isometry3::from_parts(initial_translation, initial_quaternion);
+
+        let result_p = &result.pose.position;
+        let result_q = &result.pose.orientation;
+        let result_translation_rel = Translation3::new(result_p.x, result_p.y, result_p.z);
+        let result_quaternion_rel = UnitQuaternion::from_quaternion(NaQuaternion::new(
+            result_q.w, result_q.x, result_q.y, result_q.z,
+        ));
+        let result_isometry_rel: Isometry3<f64> =
+            Isometry3::from_parts(result_translation_rel, result_quaternion_rel);
+
+        // Compute relative transform: result * initial^(-1)
+        let relative_isometry = result_isometry_rel * initial_isometry.inverse();
+        let relative_pose = isometry_to_pose(&relative_isometry);
+
         let relative_pose_msg = PoseStamped {
             header: header.clone(),
-            pose: Pose {
-                position: Point {
-                    x: dx,
-                    y: dy,
-                    z: dz,
-                },
-                orientation: result.pose.orientation.clone(),
-            },
+            pose: relative_pose,
         };
         let _ = debug_pubs
             .initial_to_result_relative_pose_pub
@@ -1274,20 +1294,29 @@ impl NdtScanMatcherNode {
 
         let _ = debug_pubs.ndt_marker_pub.publish(&marker_array);
 
-        // Publish aligned points (transformed sensor points)
+        // Publish aligned points (transformed sensor points with proper rotation)
+        // Build isometry from result pose for proper point transformation
+        let result_translation = Translation3::new(
+            result.pose.position.x,
+            result.pose.position.y,
+            result.pose.position.z,
+        );
+        let result_quaternion = UnitQuaternion::from_quaternion(NaQuaternion::new(
+            result.pose.orientation.w,
+            result.pose.orientation.x,
+            result.pose.orientation.y,
+            result.pose.orientation.z,
+        ));
+        let result_isometry: Isometry3<f64> =
+            Isometry3::from_parts(result_translation, result_quaternion);
+
         let aligned_points: Vec<[f32; 3]> = sensor_points
             .iter()
             .map(|p| {
-                // Transform point by result pose
-                let px = p[0] as f64;
-                let py = p[1] as f64;
-                let pz = p[2] as f64;
-                // Simple translation (full transform would need quaternion rotation)
-                [
-                    (px + result.pose.position.x) as f32,
-                    (py + result.pose.position.y) as f32,
-                    (pz + result.pose.position.z) as f32,
-                ]
+                // Transform point by result pose (rotation + translation)
+                let sensor_pt = Vector3::new(p[0] as f64, p[1] as f64, p[2] as f64);
+                let map_pt = result_isometry * nalgebra::Point3::from(sensor_pt);
+                [map_pt.x as f32, map_pt.y as f32, map_pt.z as f32]
             })
             .collect();
         let aligned_msg = pointcloud::to_pointcloud2(&aligned_points, &header);
