@@ -53,7 +53,9 @@ run:
         "$(realpath data/sample-rosbag-fixed)" \
         "rosbag"
 
-# Run Autoware with per-iteration debug output (requires build first)
+# Run Autoware with full debug output (requires build first)
+# - NDT_DEBUG: enables alignment and pose init debug in ndt_scan_matcher_core.cpp
+# - NDT_AUTOWARE_DEBUG: enables per-iteration debug in multigrid_ndt_omp_impl.hpp
 run-debug:
     #!/usr/bin/env bash
     set -eo pipefail
@@ -61,6 +63,8 @@ run-debug:
     mkdir -p logs
     NDT_DEBUG=1 \
     NDT_DEBUG_FILE=logs/ndt_autoware_debug.jsonl \
+    NDT_AUTOWARE_DEBUG=1 \
+    NDT_AUTOWARE_DEBUG_FILE=logs/ndt_autoware_iterations.jsonl \
         ./scripts/run_demo.sh \
             "$(realpath data/sample-map)" \
             "$(realpath data/sample-rosbag-fixed)" \
@@ -81,11 +85,17 @@ dump-voxels:
             "$(realpath data/sample-rosbag-fixed)" \
             "rosbag"
 
-# Analyze Autoware debug output
+# Analyze Autoware debug output (alignment and pose init)
 analyze-debug:
     #!/usr/bin/env bash
     cd {{project_root}}
     python3 tmp/analyze_debug.py logs/ndt_autoware_debug.jsonl
+
+# Analyze Autoware per-iteration debug output
+analyze-iterations:
+    #!/usr/bin/env bash
+    cd {{project_root}}
+    python3 tmp/analyze_debug.py logs/ndt_autoware_iterations.jsonl
 
 # === Submodule Management ===
 

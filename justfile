@@ -237,24 +237,112 @@ clean-comparison:
 # Log output directory
 logs_dir := "logs"
 
-# Run CUDA with per-iteration debug output
-run-cuda-debug:
+# --- Build Recipes (Selective Debug Features) ---
+
+# Build CUDA with all debug features enabled
+build-cuda-debug:
+    #!/usr/bin/env bash
+    source {{autoware_setup}}
+    colcon build \
+        --base-paths src \
+        --symlink-install \
+        --cmake-args -DCMAKE_BUILD_TYPE=Release \
+        --cargo-args --release --features debug
+
+# Build CUDA with per-iteration debug only (JSONL output)
+build-cuda-debug-iterations:
+    #!/usr/bin/env bash
+    source {{autoware_setup}}
+    colcon build \
+        --base-paths src \
+        --symlink-install \
+        --cmake-args -DCMAKE_BUILD_TYPE=Release \
+        --cargo-args --release --features debug-output
+
+# Build CUDA with voxel dump only
+build-cuda-debug-voxels:
+    #!/usr/bin/env bash
+    source {{autoware_setup}}
+    colcon build \
+        --base-paths src \
+        --symlink-install \
+        --cmake-args -DCMAKE_BUILD_TYPE=Release \
+        --cargo-args --release --features debug-voxels
+
+# Build CUDA with voxel-per-point tracking only (ndt_cuda feature)
+build-cuda-debug-vpp:
+    #!/usr/bin/env bash
+    source {{autoware_setup}}
+    colcon build \
+        --base-paths src \
+        --symlink-install \
+        --cmake-args -DCMAKE_BUILD_TYPE=Release \
+        --cargo-args --release -p ndt_cuda --features debug-vpp
+
+# Build CUDA with GPU vs CPU covariance comparison only (ndt_cuda feature)
+build-cuda-debug-cov:
+    #!/usr/bin/env bash
+    source {{autoware_setup}}
+    colcon build \
+        --base-paths src \
+        --symlink-install \
+        --cmake-args -DCMAKE_BUILD_TYPE=Release \
+        --cargo-args --release -p ndt_cuda --features debug-cov
+
+# Build CUDA with profiling only (timing, no debug data collection)
+build-cuda-profiling:
+    #!/usr/bin/env bash
+    source {{autoware_setup}}
+    colcon build \
+        --base-paths src \
+        --symlink-install \
+        --cmake-args -DCMAKE_BUILD_TYPE=Release \
+        --cargo-args --release --features profiling
+
+# --- Run Recipes (Selective Debug Features) ---
+
+# Run CUDA with all debug output (per-iteration data, profiling timing, voxel dump)
+run-cuda-debug: build-cuda-debug
     mkdir -p {{logs_dir}}
-    NDT_DEBUG=1 \
+    NDT_DEBUG_FILE={{logs_dir}}/ndt_cuda_debug.jsonl \
+    NDT_DUMP_VOXELS_FILE={{logs_dir}}/ndt_cuda_voxels.json \
+        ./scripts/run_demo.sh --cuda \
+            "$(realpath {{sample_map_dir}})" \
+            "$(realpath {{sample_rosbag}})" \
+            "{{rosbag_output_dir}}"
+
+# Run CUDA with per-iteration debug only (JSONL output)
+run-cuda-debug-iterations: build-cuda-debug-iterations
+    mkdir -p {{logs_dir}}
     NDT_DEBUG_FILE={{logs_dir}}/ndt_cuda_debug.jsonl \
         ./scripts/run_demo.sh --cuda \
             "$(realpath {{sample_map_dir}})" \
             "$(realpath {{sample_rosbag}})" \
             "{{rosbag_output_dir}}"
 
+# Run CUDA with voxel dump only
+run-cuda-debug-voxels: build-cuda-debug-voxels
+    mkdir -p {{logs_dir}}
+    NDT_DUMP_VOXELS_FILE={{logs_dir}}/ndt_cuda_voxels.json \
+        ./scripts/run_demo.sh --cuda \
+            "$(realpath {{sample_map_dir}})" \
+            "$(realpath {{sample_rosbag}})" \
+            "{{rosbag_output_dir}}"
+
+# Run CUDA with profiling only (for raw speed measurement)
+run-cuda-profiling: build-cuda-profiling
+    ./scripts/run_demo.sh --cuda \
+        "$(realpath {{sample_map_dir}})" \
+        "$(realpath {{sample_rosbag}})" \
+        "{{rosbag_output_dir}}"
+
 # Run Autoware with per-iteration debug output (requires build-comparison first)
 run-builtin-debug:
     cd tests/comparison && just run-debug
 
 # Dump voxel grid data for comparison (CUDA)
-dump-voxels-cuda:
+dump-voxels-cuda: build-cuda-debug-voxels
     mkdir -p {{logs_dir}}
-    NDT_DUMP_VOXELS=1 \
     NDT_DUMP_VOXELS_FILE={{logs_dir}}/ndt_cuda_voxels.json \
         ./scripts/run_demo.sh --cuda \
             "$(realpath {{sample_map_dir}})" \
@@ -280,6 +368,10 @@ analyze-debug-cuda:
 # Analyze Autoware debug output
 analyze-debug-autoware:
     cd tests/comparison && just analyze-debug
+
+# Analyze Autoware per-iteration debug output
+analyze-iterations-autoware:
+    cd tests/comparison && just analyze-iterations
 
 # Analyze debug output from a specific file
 analyze-debug file:
