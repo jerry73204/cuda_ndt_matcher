@@ -32,7 +32,9 @@ use rclrs::{
 };
 use scan_queue::{QueuedScan, ScanQueue, ScanQueueConfig, ScanResult};
 use sensor_msgs::msg::PointCloud2;
+#[cfg(feature = "debug-output")]
 use std::fs::OpenOptions;
+#[cfg(feature = "debug-output")]
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Arc;
@@ -428,8 +430,9 @@ impl NdtScanMatcherNode {
             };
 
             node.create_subscription(opts, move |msg: PoseWithCovarianceStamped| {
-                // Debug: log received EKF pose with timestamp
-                if std::env::var("NDT_DEBUG").is_ok() {
+                // Debug: log received EKF pose with timestamp (only with debug-output feature)
+                #[cfg(feature = "debug-output")]
+                {
                     let p = &msg.pose.pose.position;
                     let q = &msg.pose.pose.orientation;
                     let ts = &msg.header.stamp;
@@ -561,8 +564,9 @@ impl NdtScanMatcherNode {
             )?
         };
 
-        // Clear debug file at startup if NDT_DEBUG is enabled (prevents accumulation across runs)
-        if std::env::var("NDT_DEBUG").is_ok() {
+        // Clear debug file at startup (only with debug-output feature)
+        #[cfg(feature = "debug-output")]
+        {
             let debug_file = std::env::var("NDT_DEBUG_FILE")
                 .unwrap_or_else(|_| "/tmp/ndt_cuda_debug.jsonl".to_string());
             // Truncate the file by opening with write-only (not append)
@@ -725,8 +729,9 @@ impl NdtScanMatcherNode {
         let interpolate_result = pose_buffer.interpolate(sensor_time_ns);
         let initial_pose = match &interpolate_result {
             Some(result) => {
-                // Debug: log interpolated pose
-                if std::env::var("NDT_DEBUG").is_ok() {
+                // Debug: log interpolated pose (only with debug-output feature)
+                #[cfg(feature = "debug-output")]
+                {
                     let p = &result.interpolated_pose.pose.pose.position;
                     let q = &result.interpolated_pose.pose.pose.orientation;
                     let ts = &result.interpolated_pose.header.stamp;
@@ -876,12 +881,10 @@ impl NdtScanMatcherNode {
         }
 
         // ---- Synchronous Mode: Run NDT alignment directly ----
-        // Run NDT alignment (with optional debug output)
-        let debug_enabled = std::env::var("NDT_DEBUG").is_ok();
-        // timestamp_ns is computed at the beginning of this function for deduplication
 
-        // Debug: log pose being passed to NDT alignment
-        if debug_enabled {
+        // Debug: log pose being passed to NDT alignment (only with debug-output feature)
+        #[cfg(feature = "debug-output")]
+        {
             let p = &initial_pose.pose.pose.position;
             let q = &initial_pose.pose.pose.orientation;
             let quat = UnitQuaternion::from_quaternion(NaQuaternion::new(q.w, q.x, q.y, q.z));
@@ -914,49 +917,51 @@ impl NdtScanMatcherNode {
         // Start execution timer here to measure only NDT alignment (matches Autoware's scope)
         let align_start_time = Instant::now();
 
-        let result = if debug_enabled {
-            // Use debug variant and write to file
-            match manager.align_with_debug(
-                &sensor_points,
-                map,
-                &initial_pose.pose.pose,
-                timestamp_ns,
-            ) {
-                Ok((r, debug)) => {
-                    // Write debug JSON to file
-                    if let Ok(json) = debug.to_json() {
-                        let debug_file = std::env::var("NDT_DEBUG_FILE")
-                            .unwrap_or_else(|_| "/tmp/ndt_cuda_debug.jsonl".to_string());
-                        if let Ok(mut file) = OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(&debug_file)
-                        {
-                            let _ = writeln!(file, "{json}");
-                        }
+        // With debug-output feature: collect and write debug data
+        #[cfg(feature = "debug-output")]
+        let result = match manager.align_with_debug(
+            &sensor_points,
+            map,
+            &initial_pose.pose.pose,
+            timestamp_ns,
+        ) {
+            Ok((r, debug)) => {
+                // Write debug JSON to file
+                if let Ok(json) = debug.to_json() {
+                    let debug_file = std::env::var("NDT_DEBUG_FILE")
+                        .unwrap_or_else(|_| "/tmp/ndt_cuda_debug.jsonl".to_string());
+                    if let Ok(mut file) = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&debug_file)
+                    {
+                        let _ = writeln!(file, "{json}");
                     }
-                    r
                 }
-                Err(e) => {
-                    log_error!(NODE_NAME, "NDT alignment failed: {e}");
-                    return;
-                }
+                r
             }
-        } else {
-            match manager.align(&sensor_points, map, &initial_pose.pose.pose) {
-                Ok(r) => r,
-                Err(e) => {
-                    log_error!(NODE_NAME, "NDT alignment failed: {e}");
-                    return;
-                }
+            Err(e) => {
+                log_error!(NODE_NAME, "NDT alignment failed: {e}");
+                return;
+            }
+        };
+
+        // Without debug-output feature: just run alignment
+        #[cfg(not(feature = "debug-output"))]
+        let result = match manager.align(&sensor_points, map, &initial_pose.pose.pose) {
+            Ok(r) => r,
+            Err(e) => {
+                log_error!(NODE_NAME, "NDT alignment failed: {e}");
+                return;
             }
         };
 
         // Calculate execution time immediately after alignment (matches Autoware's scope)
         let exe_time_ms = align_start_time.elapsed().as_secs_f32() * 1000.0;
 
-        // Debug: log NDT result
-        if debug_enabled {
+        // Debug: log NDT result (only with debug-output feature)
+        #[cfg(feature = "debug-output")]
+        {
             let p = &result.pose.position;
             let q = &result.pose.orientation;
             let quat = UnitQuaternion::from_quaternion(NaQuaternion::new(q.w, q.x, q.y, q.z));

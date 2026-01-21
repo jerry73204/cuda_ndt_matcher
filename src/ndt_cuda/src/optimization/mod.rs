@@ -23,7 +23,9 @@ pub mod regularization;
 pub mod solver;
 pub mod types;
 
-pub use debug::{AlignmentDebug, AlignmentTimingDebug, IterationDebug, IterationTimingDebug};
+#[cfg(feature = "debug-iteration")]
+pub use debug::IterationDebug;
+pub use debug::{AlignmentDebug, AlignmentTimingDebug, IterationTimingDebug};
 pub use full_gpu_pipeline_v2::{FullGpuOptimizationResultV2, FullGpuPipelineV2, PipelineV2Config};
 pub use gpu_initial_pose::{
     BatchedNdtResult, GpuInitialPoseConfig, GpuInitialPosePipeline, PipelineMemoryRequirements,

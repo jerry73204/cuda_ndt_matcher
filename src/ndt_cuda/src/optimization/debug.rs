@@ -2,9 +2,15 @@
 //!
 //! This module provides structures to capture the internal state of each
 //! optimization iteration for comparison with Autoware's implementation.
+//!
+//! Most types in this module require the `debug-iteration` feature.
+//! When disabled, stub types are provided for API compatibility.
 
-use nalgebra::{Matrix6, Vector6};
 use serde::Serialize;
+
+// ============================================================================
+// Timing structs (require profiling feature for actual data)
+// ============================================================================
 
 /// Timing breakdown for a single iteration (only populated when profiling feature is enabled).
 #[derive(Debug, Clone, Default, Serialize)]
@@ -23,59 +29,67 @@ pub struct IterationTimingDebug {
     pub line_search_ms: f64,
 }
 
+/// Timing breakdown for the entire alignment (only populated when profiling feature is enabled).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AlignmentTimingDebug {
+    /// Total alignment time in milliseconds.
+    pub total_ms: f64,
+    /// Time to set up source points.
+    pub setup_ms: f64,
+    /// Total time in derivative computation.
+    pub derivatives_total_ms: f64,
+    /// Total time in solver.
+    pub solver_total_ms: f64,
+    /// Total time in line search.
+    pub line_search_total_ms: f64,
+    /// Time to compute final scores (NVTL, transform probability).
+    pub scoring_ms: f64,
+}
+
+// ============================================================================
+// Per-iteration debug (require debug-iteration feature)
+// ============================================================================
+
 /// Debug information captured at each optimization iteration.
+#[cfg(feature = "debug-iteration")]
 #[derive(Debug, Clone, Serialize)]
 pub struct IterationDebug {
     /// Iteration number (0-indexed).
     pub iteration: usize,
-
     /// Pose at the start of this iteration [tx, ty, tz, roll, pitch, yaw].
     pub pose: Vec<f64>,
-
     /// NDT score at current pose.
     pub score: f64,
-
     /// Gradient vector (6 elements).
     pub gradient: Vec<f64>,
-
     /// Hessian matrix (6x6, stored as flat array row-major).
     pub hessian: Vec<f64>,
-
     /// Newton step before normalization.
     pub newton_step: Vec<f64>,
-
     /// Newton step norm.
     pub newton_step_norm: f64,
-
     /// Normalized step direction.
     pub step_direction: Vec<f64>,
-
     /// Whether step direction was reversed (not an ascent direction).
     pub direction_reversed: bool,
-
     /// Directional derivative (gradient · step_direction).
     pub directional_derivative: f64,
-
     /// Step length from line search (or clamped step).
     pub step_length: f64,
-
     /// Whether line search was used.
     pub used_line_search: bool,
-
     /// Whether line search converged (if used).
     pub line_search_converged: bool,
-
     /// Number of correspondences (points with valid voxel matches).
     pub num_correspondences: usize,
-
     /// Pose after applying the step.
     pub pose_after: Vec<f64>,
-
     /// Timing breakdown (populated when profiling feature is enabled).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timing: Option<IterationTimingDebug>,
 }
 
+#[cfg(feature = "debug-iteration")]
 impl IterationDebug {
     /// Create a new iteration debug with default values.
     pub fn new(iteration: usize) -> Self {
@@ -115,25 +129,25 @@ impl IterationDebug {
     }
 
     /// Set gradient from nalgebra Vector6.
-    pub fn set_gradient(&mut self, g: &Vector6<f64>) {
+    pub fn set_gradient(&mut self, g: &nalgebra::Vector6<f64>) {
         self.gradient = (0..6).map(|i| g[i]).collect();
     }
 
     /// Set Hessian from nalgebra Matrix6.
-    pub fn set_hessian(&mut self, h: &Matrix6<f64>) {
+    pub fn set_hessian(&mut self, h: &nalgebra::Matrix6<f64>) {
         self.hessian = (0..6)
             .flat_map(|i| (0..6).map(move |j| h[(i, j)]))
             .collect();
     }
 
     /// Set Newton step from nalgebra Vector6.
-    pub fn set_newton_step(&mut self, step: &Vector6<f64>) {
+    pub fn set_newton_step(&mut self, step: &nalgebra::Vector6<f64>) {
         self.newton_step = (0..6).map(|i| step[i]).collect();
         self.newton_step_norm = step.norm();
     }
 
     /// Set step direction from nalgebra Vector6.
-    pub fn set_step_direction(&mut self, dir: &Vector6<f64>) {
+    pub fn set_step_direction(&mut self, dir: &nalgebra::Vector6<f64>) {
         self.step_direction = (0..6).map(|i| dir[i]).collect();
     }
 
@@ -152,22 +166,9 @@ impl IterationDebug {
     }
 }
 
-/// Timing breakdown for the entire alignment (only populated when profiling feature is enabled).
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct AlignmentTimingDebug {
-    /// Total alignment time in milliseconds.
-    pub total_ms: f64,
-    /// Time to set up source points.
-    pub setup_ms: f64,
-    /// Total time in derivative computation.
-    pub derivatives_total_ms: f64,
-    /// Total time in solver.
-    pub solver_total_ms: f64,
-    /// Total time in line search.
-    pub line_search_total_ms: f64,
-    /// Time to compute final scores (NVTL, transform probability).
-    pub scoring_ms: f64,
-}
+// ============================================================================
+// Alignment debug (always available, but iterations require debug-iteration)
+// ============================================================================
 
 /// Complete debug history for one NDT alignment call.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -188,7 +189,8 @@ pub struct AlignmentDebug {
     /// Number of source points.
     pub num_source_points: usize,
 
-    /// Iteration history.
+    /// Iteration history (only populated when debug-iteration feature is enabled).
+    #[cfg(feature = "debug-iteration")]
     pub iterations: Vec<IterationDebug>,
 
     /// Final convergence status.
@@ -204,7 +206,6 @@ pub struct AlignmentDebug {
     pub final_nvtl: f64,
 
     /// Maximum consecutive oscillation count detected.
-    /// Oscillation indicates the optimizer is bouncing between poses.
     pub oscillation_count: usize,
 
     /// Number of point-voxel correspondences found.
@@ -267,6 +268,7 @@ impl AlignmentDebug {
     ///
     /// This analyzes the pose history to detect direction reversals
     /// that indicate the optimizer is oscillating.
+    #[cfg(feature = "debug-iteration")]
     pub fn compute_oscillation(&mut self) {
         if self.iterations.len() < 3 {
             self.oscillation_count = 0;
@@ -297,6 +299,12 @@ impl AlignmentDebug {
         self.oscillation_count = result.max_oscillation_count;
     }
 
+    /// No-op when debug-iteration is disabled.
+    #[cfg(not(feature = "debug-iteration"))]
+    pub fn compute_oscillation(&mut self) {
+        // Oscillation count must be computed elsewhere when iterations aren't tracked
+    }
+
     /// Format as compact multi-line log.
     pub fn to_log(&self) -> String {
         let mut lines = Vec::new();
@@ -319,6 +327,7 @@ impl AlignmentDebug {
             self.initial_pose[4],
             self.initial_pose[5],
         ));
+        #[cfg(feature = "debug-iteration")]
         for iter in &self.iterations {
             lines.push(format!("  {}", iter.to_log_line()));
         }
@@ -340,27 +349,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_iteration_debug_new() {
-        let debug = IterationDebug::new(0);
-        assert_eq!(debug.iteration, 0);
-        assert_eq!(debug.score, 0.0);
-    }
-
-    #[test]
-    fn test_iteration_debug_set_gradient() {
-        let mut debug = IterationDebug::new(0);
-        let g = Vector6::new(1.0, 2.0, 3.0, 4.0, 5.0, 6.0);
-        debug.set_gradient(&g);
-        assert_eq!(debug.gradient, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-    }
-
-    #[test]
     fn test_alignment_debug_to_json() {
         let debug = AlignmentDebug::new(123456789);
         let json = debug.to_json().unwrap();
         assert!(json.contains("123456789"));
     }
 
+    #[cfg(feature = "debug-iteration")]
+    #[test]
+    fn test_iteration_debug_new() {
+        let debug = IterationDebug::new(0);
+        assert_eq!(debug.iteration, 0);
+        assert_eq!(debug.score, 0.0);
+    }
+
+    #[cfg(feature = "debug-iteration")]
+    #[test]
+    fn test_iteration_debug_set_gradient() {
+        let mut debug = IterationDebug::new(0);
+        let g = nalgebra::Vector6::new(1.0, 2.0, 3.0, 4.0, 5.0, 6.0);
+        debug.set_gradient(&g);
+        assert_eq!(debug.gradient, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[cfg(feature = "debug-iteration")]
     #[test]
     fn test_iteration_to_log_line() {
         let mut debug = IterationDebug::new(5);

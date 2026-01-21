@@ -8,9 +8,13 @@ use crate::params::NdtParams;
 use anyhow::{bail, Result};
 use geometry_msgs::msg::{Point, Pose, Quaternion};
 use nalgebra::{Isometry3, Matrix6, Quaternion as NaQuaternion, Translation3, UnitQuaternion};
+#[cfg(feature = "debug-output")]
 pub use ndt_cuda::AlignmentDebug;
-use ndt_cuda::{NdtScanMatcher, VoxelGrid};
+use ndt_cuda::NdtScanMatcher;
+#[cfg(feature = "debug-voxels")]
+use ndt_cuda::VoxelGrid;
 use rclrs::{log_debug, log_info, log_warn};
+#[cfg(feature = "debug-voxels")]
 use std::io::Write;
 
 const LOGGER_NAME: &str = "ndt_scan_matcher.ndt_manager";
@@ -22,9 +26,9 @@ fn quaternion_to_yaw(q: &Quaternion) -> f64 {
 }
 
 /// Dump voxel data to JSON file for comparison with Autoware.
-///
-/// Set NDT_DUMP_VOXELS=1 to enable.
-/// Output file: NDT_DUMP_VOXELS_FILE or /tmp/ndt_cuda_voxels.json
+/// Only available with `debug-voxels` feature.
+/// Output file: NDT_DUMP_VOXELS_FILE env var or /tmp/ndt_cuda_voxels.json
+#[cfg(feature = "debug-voxels")]
 fn dump_voxel_data(grid: &VoxelGrid) -> Result<()> {
     let output_path = std::env::var("NDT_DUMP_VOXELS_FILE")
         .unwrap_or_else(|_| "/tmp/ndt_cuda_voxels.json".to_string());
@@ -193,11 +197,10 @@ impl NdtManager {
                 );
             }
 
-            // Dump voxel data if NDT_DUMP_VOXELS is set
-            if std::env::var("NDT_DUMP_VOXELS").is_ok() {
-                if let Err(e) = dump_voxel_data(grid) {
-                    log_warn!(LOGGER_NAME, "Failed to dump voxel data: {e}");
-                }
+            // Dump voxel data (only with debug-voxels feature)
+            #[cfg(feature = "debug-voxels")]
+            if let Err(e) = dump_voxel_data(grid) {
+                log_warn!(LOGGER_NAME, "Failed to dump voxel data: {e}");
             }
         } else {
             log_warn!(LOGGER_NAME, "Target grid is None after set_target!");
@@ -274,6 +277,9 @@ impl NdtManager {
     /// Align source points to target with initial guess and debug output.
     ///
     /// This is the same as `align()` but also returns detailed iteration debug info.
+    ///
+    /// Only available with the `debug-output` feature.
+    #[cfg(feature = "debug-output")]
     pub fn align_with_debug(
         &mut self,
         source_points: &[[f32; 3]],

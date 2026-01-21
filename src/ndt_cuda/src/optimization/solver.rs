@@ -710,6 +710,9 @@ impl NdtOptimizer {
     ///
     /// This is the same as `align()` but also returns detailed debug information
     /// about each iteration for comparison with Autoware's implementation.
+    ///
+    /// Only available with the `debug-iteration` feature.
+    #[cfg(feature = "debug-iteration")]
     pub fn align_with_debug(
         &self,
         source_points: &[[f32; 3]],
@@ -922,6 +925,7 @@ impl NdtOptimizer {
     }
 
     /// Line search that also returns convergence status.
+    #[cfg(feature = "debug-iteration")]
     fn line_search_with_result(
         &self,
         source_points: &[[f32; 3]],

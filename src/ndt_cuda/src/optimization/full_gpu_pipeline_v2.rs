@@ -82,7 +82,8 @@ pub struct FullGpuOptimizationResultV2 {
     pub avg_alpha: f64,
     /// Maximum consecutive oscillation count
     pub oscillation_count: usize,
-    /// Per-iteration debug data (populated when `enable_debug` is true in config)
+    /// Per-iteration debug data (only available when `debug-iteration` feature is enabled)
+    #[cfg(feature = "debug-iteration")]
     pub iterations_debug: Option<Vec<super::debug::IterationDebug>>,
 }
 
@@ -109,8 +110,6 @@ pub struct PipelineV2Config {
     pub regularization_enabled: bool,
     /// Scale factor for regularization term
     pub regularization_scale_factor: f32,
-    /// Whether to collect per-iteration debug data
-    pub enable_debug: bool,
 }
 
 impl Default for PipelineV2Config {
@@ -126,7 +125,6 @@ impl Default for PipelineV2Config {
             fixed_step_size: 0.1, // Matches Autoware default when line search disabled
             regularization_enabled: false,
             regularization_scale_factor: 0.01,
-            enable_debug: false,
         }
     }
 }
@@ -189,9 +187,11 @@ pub struct FullGpuPipelineV2 {
     persistent_out_oscillation: Handle, // [1] u32 - Phase 18.4
     persistent_out_alpha_sum: Handle, // [1] f32 - Phase 19.3
 
-    // Phase 19.4: Debug buffer (only allocated when enable_debug is true)
+    // Phase 19.4: Debug buffer (only allocated when debug-iteration feature is enabled)
+    #[cfg(feature = "debug-iteration")]
     persistent_debug_buffer: Option<Handle>, // [max_iterations * 50] f32
-    max_iterations_for_debug: u32,           // Cached for buffer sizing
+    #[cfg(feature = "debug-iteration")]
+    max_iterations_for_debug: u32, // Cached for buffer sizing
 
     // Regularization state for persistent kernel - Phase 18.2
     regularization_ref_x: f32,
@@ -274,7 +274,9 @@ impl FullGpuPipelineV2 {
             persistent_out_correspondences,
             persistent_out_oscillation,
             persistent_out_alpha_sum,
+            #[cfg(feature = "debug-iteration")]
             persistent_debug_buffer: None, // Allocated on-demand in optimize()
+            #[cfg(feature = "debug-iteration")]
             max_iterations_for_debug: 0,
             regularization_ref_x: 0.0,
             regularization_ref_y: 0.0,
@@ -400,6 +402,7 @@ impl FullGpuPipelineV2 {
     /// | 42 | 1 | correspondences |
     /// | 43 | 1 | direction_reversed |
     /// | 44-49 | 6 | pose_after |
+    #[cfg(feature = "debug-iteration")]
     fn parse_debug_buffer(
         &self,
         num_iterations: usize,
@@ -470,6 +473,7 @@ impl FullGpuPipelineV2 {
     ///                             H[4,4] H[4,5]    →                     [18] [19]
     ///                                    H[5,5]    →                          [20]
     /// ```
+    #[cfg(feature = "debug-iteration")]
     fn expand_upper_triangle(ut: &[f32]) -> Vec<f64> {
         let mut full = vec![0.0f64; 36];
 
@@ -523,6 +527,7 @@ impl FullGpuPipelineV2 {
                 used_line_search: false,
                 avg_alpha: 1.0,
                 oscillation_count: 0,
+                #[cfg(feature = "debug-iteration")]
                 iterations_debug: None,
             });
         }
@@ -553,8 +558,9 @@ impl FullGpuPipelineV2 {
         self.persistent_out_oscillation = self.client.create(u32::as_bytes(&zero_u32));
         self.persistent_out_alpha_sum = self.client.create(f32::as_bytes(&[0.0f32]));
 
-        // Phase 19.4: Allocate debug buffer if enabled
-        let (debug_enabled, debug_ptr) = if self.config.enable_debug {
+        // Phase 19.4: Allocate debug buffer (only when debug-iteration feature is enabled)
+        #[cfg(feature = "debug-iteration")]
+        let (debug_enabled, debug_ptr) = {
             let buffer_size = max_iterations as usize
                 * cuda_ffi::persistent_ndt::PersistentNdt::DEBUG_FLOATS_PER_ITER
                 * std::mem::size_of::<f32>();
@@ -564,9 +570,9 @@ impl FullGpuPipelineV2 {
                 true,
                 self.raw_ptr(self.persistent_debug_buffer.as_ref().unwrap()),
             )
-        } else {
-            (false, 0)
         };
+        #[cfg(not(feature = "debug-iteration"))]
+        let (debug_enabled, debug_ptr) = (false, 0u64);
 
         // Ensure all CubeCL operations are complete before cooperative kernel launch.
         // This ensures:
@@ -660,8 +666,9 @@ impl FullGpuPipelineV2 {
             1.0
         };
 
-        // Phase 19.4: Parse debug buffer if enabled
-        let iterations_debug = if self.config.enable_debug && iterations > 0 {
+        // Phase 19.4: Parse debug buffer (only when debug-iteration feature is enabled)
+        #[cfg(feature = "debug-iteration")]
+        let iterations_debug = if iterations > 0 {
             Some(self.parse_debug_buffer(iterations as usize)?)
         } else {
             None
@@ -677,6 +684,7 @@ impl FullGpuPipelineV2 {
             used_line_search: self.config.use_line_search,
             avg_alpha,
             oscillation_count,
+            #[cfg(feature = "debug-iteration")]
             iterations_debug,
         })
     }
@@ -1107,12 +1115,12 @@ mod tests {
         assert!(result.iterations > 0, "Should run at least one iteration");
     }
 
+    #[cfg(feature = "debug-iteration")]
     #[test]
     fn test_pipeline_v2_debug_collection() {
-        // Test that debug data is collected when enabled
+        // Test that debug data is collected when debug-iteration feature is enabled
         let config = PipelineV2Config {
             use_line_search: false, // Simpler path for testing
-            enable_debug: true,
             ..Default::default()
         };
         let mut pipeline = FullGpuPipelineV2::with_config(1000, 5000, config).unwrap();
@@ -1150,7 +1158,7 @@ mod tests {
         // Verify debug data is populated
         assert!(
             result.iterations_debug.is_some(),
-            "Debug data should be collected when enable_debug is true"
+            "Debug data should be collected when debug-iteration feature is enabled"
         );
 
         let debug_vec = result.iterations_debug.as_ref().unwrap();
@@ -1187,66 +1195,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn test_pipeline_v2_debug_disabled() {
-        // Test that debug data is NOT collected when disabled (default)
-        let config = PipelineV2Config {
-            use_line_search: false,
-            enable_debug: false, // Explicitly disabled
-            ..Default::default()
-        };
-        let mut pipeline = FullGpuPipelineV2::with_config(1000, 5000, config).unwrap();
-
-        // Create source points at different positions
-        let source_points = vec![
-            [1.0f32, 0.0, 0.0],
-            [-1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, -1.0, 0.0],
-            [0.0, 0.0, 1.0],
-            [0.0, 0.0, -1.0],
-            [2.0, 1.0, 0.0],
-            [-2.0, -1.0, 0.0],
-        ];
-
-        // Create multiple voxels at different positions for well-conditioned Hessian
-        // Voxels must be in different grid cells (spacing >= resolution)
-        let voxel_data = GpuVoxelData {
-            means: vec![
-                0.0, 0.0, 0.0, // Voxel 0 at origin -> grid cell (0,0,0)
-                3.0, 0.0, 0.0, // Voxel 1 at (3,0,0) -> grid cell (1,0,0)
-                0.0, 3.0, 0.0, // Voxel 2 at (0,3,0) -> grid cell (0,1,0)
-            ],
-            inv_covariances: vec![
-                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, // Voxel 0
-                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, // Voxel 1
-                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, // Voxel 2
-            ],
-            principal_axes: vec![
-                0.0, 0.0, 1.0, // Voxel 0
-                0.0, 0.0, 1.0, // Voxel 1
-                0.0, 0.0, 1.0, // Voxel 2
-            ],
-            valid: vec![1, 1, 1],
-            num_voxels: 3,
-        };
-
-        // Use resolution=2.0 so each voxel is in its own grid cell
-        pipeline
-            .upload_alignment_data(&source_points, &voxel_data, 0.55, 0.4, 2.0)
-            .unwrap();
-
-        let result = pipeline
-            .optimize(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 5, 0.01)
-            .unwrap();
-
-        // Verify debug data is NOT populated when disabled
-        assert!(
-            result.iterations_debug.is_none(),
-            "Debug data should be None when enable_debug is false"
-        );
     }
 
     #[test]

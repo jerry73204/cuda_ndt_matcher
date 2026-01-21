@@ -52,7 +52,18 @@ approx = { workspace = true }
 [features]
 default = ["cuda"]
 cuda = []
+
+# === Debug Features ===
 # Enable detailed timing instrumentation for profiling
 profiling = []
+# Enable per-iteration optimization data collection (pose, score, gradient, Hessian)
+debug-iteration = []
+# Enable GPU vs CPU covariance comparison during voxel grid construction
+debug-cov = []
+# Enable voxel-per-point distribution tracking
+debug-vpp = []
+# Convenience alias for all debug features
+debug = ["debug-iteration", "debug-cov", "debug-vpp", "profiling"]
+
 # Enable verbose debug output in tests (println! statements)
 test-verbose = []

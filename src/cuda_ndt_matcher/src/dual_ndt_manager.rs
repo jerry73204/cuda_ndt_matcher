@@ -17,6 +17,7 @@ use crate::ndt_manager::{AlignResult, NdtManager};
 use crate::params::NdtParams;
 use anyhow::Result;
 use geometry_msgs::msg::Pose;
+#[cfg(feature = "debug-output")]
 use ndt_cuda::AlignmentDebug;
 use parking_lot::{Mutex, RwLock};
 use rclrs::{log_debug, log_info};
@@ -269,6 +270,9 @@ impl DualNdtManager {
     }
 
     /// Perform NDT alignment with debug output using the active manager.
+    ///
+    /// Only available with the `debug-output` feature.
+    #[cfg(feature = "debug-output")]
     pub fn align_with_debug(
         &self,
         source_points: &[[f32; 3]],

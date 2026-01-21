@@ -20,14 +20,19 @@ use crate::tpe::{
 use geometry_msgs::msg::{Point, Pose, PoseWithCovariance, PoseWithCovarianceStamped, Quaternion};
 use nalgebra::{Quaternion as NaQuaternion, UnitQuaternion};
 use rclrs::log_debug;
+#[cfg(feature = "debug-output")]
 use serde::Serialize;
+#[cfg(feature = "debug-output")]
 use std::fs::OpenOptions;
+#[cfg(feature = "debug-output")]
 use std::io::Write;
+#[cfg(feature = "debug-output")]
 use std::time::Instant;
 
 const LOGGER_NAME: &str = "ndt_scan_matcher.initial_pose";
 
-/// Debug output for pose initialization (written to JSONL when NDT_DEBUG=1)
+/// Debug output for pose initialization (only with debug-output feature)
+#[cfg(feature = "debug-output")]
 #[derive(Debug, Clone, Serialize)]
 pub struct InitPoseDebug {
     /// Entry type discriminator for JSONL parsing
@@ -55,6 +60,7 @@ pub struct InitPoseDebug {
     pub reliable: bool,
 }
 
+#[cfg(feature = "debug-output")]
 impl InitPoseDebug {
     /// Convert to JSON string
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
@@ -62,11 +68,9 @@ impl InitPoseDebug {
     }
 }
 
-/// Write init debug entry to the debug file
+/// Write init debug entry to the debug file (only with debug-output feature)
+#[cfg(feature = "debug-output")]
 fn write_init_debug(debug: &InitPoseDebug) {
-    if std::env::var("NDT_DEBUG").is_err() {
-        return;
-    }
     if let Ok(json) = debug.to_json() {
         let debug_file = std::env::var("NDT_DEBUG_FILE")
             .unwrap_or_else(|_| "/tmp/ndt_cuda_debug.jsonl".to_string());
@@ -176,11 +180,14 @@ pub fn estimate_initial_pose(
     // Evaluate particles
     let mut particles = Vec::with_capacity(params.particles_num as usize);
 
-    // Debug tracking
-    let debug_enabled = std::env::var("NDT_DEBUG").is_ok();
+    // Debug tracking (only with debug-output feature)
+    #[cfg(feature = "debug-output")]
     let total_start = Instant::now();
+    #[cfg(feature = "debug-output")]
     let mut per_particle_times: Vec<f64> = Vec::new();
+    #[cfg(feature = "debug-output")]
     let mut best_score_trajectory: Vec<f64> = Vec::new();
+    #[cfg(feature = "debug-output")]
     let mut running_best_score = f64::NEG_INFINITY;
 
     // ========================================================================
@@ -189,6 +196,7 @@ pub fn estimate_initial_pose(
     // During startup, TPE samples randomly, so we can batch-evaluate all
     // startup particles at once using GPU acceleration.
     let startup_count = (params.n_startup_trials as usize).min(params.particles_num as usize);
+    #[cfg(feature = "debug-output")]
     let startup_start = Instant::now();
 
     if startup_count > 0 {
@@ -214,9 +222,12 @@ pub fn estimate_initial_pose(
         };
 
         // Process batch results
-        // Note: batch alignment time is amortized across all particles
-        let batch_time_ms = startup_start.elapsed().as_secs_f64() * 1000.0;
-        let per_particle_batch_time = batch_time_ms / batch_results.len().max(1) as f64;
+        // Note: batch alignment time is amortized across all particles (for debug tracking)
+        #[cfg(feature = "debug-output")]
+        let per_particle_batch_time = {
+            let batch_time_ms = startup_start.elapsed().as_secs_f64() * 1000.0;
+            batch_time_ms / batch_results.len().max(1) as f64
+        };
 
         for (i, align_result) in batch_results.into_iter().enumerate() {
             let candidate_pose = &startup_poses[i];
@@ -258,8 +269,9 @@ pub fn estimate_initial_pose(
                 score: transform_probability,
             });
 
-            // Debug tracking
-            if debug_enabled {
+            // Debug tracking (only with debug-output feature)
+            #[cfg(feature = "debug-output")]
+            {
                 per_particle_times.push(per_particle_batch_time);
                 if selection_score > running_best_score {
                     running_best_score = selection_score;
@@ -268,12 +280,14 @@ pub fn estimate_initial_pose(
             }
         }
     }
+    #[cfg(feature = "debug-output")]
     let startup_time_ms = startup_start.elapsed().as_secs_f64() * 1000.0;
 
     // ========================================================================
     // Guided Phase: Sequential evaluation for remaining particles
     // ========================================================================
     let remaining = params.particles_num as usize - particles.len();
+    #[cfg(feature = "debug-output")]
     let guided_start = Instant::now();
     if remaining > 0 {
         log_debug!(
@@ -283,6 +297,7 @@ pub fn estimate_initial_pose(
     }
 
     for _ in 0..remaining {
+        #[cfg(feature = "debug-output")]
         let particle_start = Instant::now();
 
         // Get next candidate pose from TPE
@@ -360,8 +375,9 @@ pub fn estimate_initial_pose(
             score: transform_probability,
         });
 
-        // Debug tracking
-        if debug_enabled {
+        // Debug tracking (only with debug-output feature)
+        #[cfg(feature = "debug-output")]
+        {
             let particle_time_ms = particle_start.elapsed().as_secs_f64() * 1000.0;
             per_particle_times.push(particle_time_ms);
             if selection_score > running_best_score {
@@ -370,6 +386,7 @@ pub fn estimate_initial_pose(
             best_score_trajectory.push(running_best_score);
         }
     }
+    #[cfg(feature = "debug-output")]
     let guided_time_ms = guided_start.elapsed().as_secs_f64() * 1000.0;
 
     // Select best particle (highest score)
@@ -393,8 +410,9 @@ pub fn estimate_initial_pose(
     let nvtl_threshold = 2.3;
     let reliable = best_particle.score >= nvtl_threshold;
 
-    // Write debug output
-    if debug_enabled {
+    // Write debug output (only with debug-output feature)
+    #[cfg(feature = "debug-output")]
+    {
         let total_time_ms = total_start.elapsed().as_secs_f64() * 1000.0;
         let debug = InitPoseDebug {
             entry_type: "init",

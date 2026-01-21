@@ -4,7 +4,7 @@
 //! Magnusson 2009, Chapter 6.
 
 use nalgebra::{Matrix3, Matrix4, Matrix6, Vector3, Vector4, Vector6};
-#[cfg(debug_assertions)]
+#[cfg(feature = "debug-vpp")]
 use tracing::debug;
 
 use super::angular::AngularDerivatives;
@@ -427,21 +427,14 @@ pub fn compute_derivatives_cpu_with_metric(
     // Precompute angular derivatives for this pose
     let angular = AngularDerivatives::new(pose[3], pose[4], pose[5], compute_hessian);
 
-    // Debug: track voxel-per-point distribution (only in debug builds)
-    #[cfg(debug_assertions)]
+    // Debug: track voxel-per-point distribution (only with debug-vpp feature)
+    #[cfg(feature = "debug-vpp")]
     let (
-        debug_vpp,
         mut points_with_0_voxels,
         mut points_with_1_voxel,
         mut points_with_2_voxels,
         mut points_with_3plus_voxels,
-    ) = (
-        std::env::var("NDT_DEBUG_VPP").is_ok(),
-        0usize,
-        0usize,
-        0usize,
-        0usize,
-    );
+    ) = (0usize, 0usize, 0usize, 0usize);
 
     for source_point in source_points {
         // Convert to f64
@@ -466,15 +459,13 @@ pub fn compute_derivatives_cpu_with_metric(
         let search_radius = target_grid.resolution();
         let nearby_voxels = target_grid.radius_search(&transformed_f32, search_radius);
 
-        // Debug: track voxel-per-point distribution (only in debug builds)
-        #[cfg(debug_assertions)]
-        if debug_vpp {
-            match nearby_voxels.len() {
-                0 => points_with_0_voxels += 1,
-                1 => points_with_1_voxel += 1,
-                2 => points_with_2_voxels += 1,
-                _ => points_with_3plus_voxels += 1,
-            }
+        // Debug: track voxel-per-point distribution (only with debug-vpp feature)
+        #[cfg(feature = "debug-vpp")]
+        match nearby_voxels.len() {
+            0 => points_with_0_voxels += 1,
+            1 => points_with_1_voxel += 1,
+            2 => points_with_2_voxels += 1,
+            _ => points_with_3plus_voxels += 1,
         }
 
         if nearby_voxels.is_empty() {
@@ -526,9 +517,9 @@ pub fn compute_derivatives_cpu_with_metric(
         }
     }
 
-    // Debug: output voxel-per-point distribution (only in debug builds)
-    #[cfg(debug_assertions)]
-    if debug_vpp {
+    // Debug: output voxel-per-point distribution (only with debug-vpp feature)
+    #[cfg(feature = "debug-vpp")]
+    {
         let total = source_points.len();
         let vpp = result.num_correspondences as f64 / total as f64;
         debug!(

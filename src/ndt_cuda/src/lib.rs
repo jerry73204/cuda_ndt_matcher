@@ -59,10 +59,12 @@ pub use derivatives::{
     AggregatedDerivatives, AngularDerivatives, DerivativeResult, DistanceMetric, GaussianParams,
     PointDerivatives,
 };
+#[cfg(feature = "debug-iteration")]
+pub use optimization::IterationDebug;
 pub use optimization::{
     AlignmentDebug, AlignmentRequest, BatchAlignmentResult, BatchGpuPipeline, BatchPipelineConfig,
-    ConvergenceStatus, IterationDebug, LineSearchConfig, LineSearchResult, NdtConfig, NdtOptimizer,
-    NdtResult, OptimizationConfig,
+    ConvergenceStatus, LineSearchConfig, LineSearchResult, NdtConfig, NdtOptimizer, NdtResult,
+    OptimizationConfig,
 };
 pub use scoring::{
     compute_nvtl, compute_per_point_scores, compute_transform_probability, NvtlConfig, NvtlResult,

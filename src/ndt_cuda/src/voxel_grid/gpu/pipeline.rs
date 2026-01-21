@@ -38,12 +38,15 @@ use cubecl::client::ComputeClient;
 use cubecl::cuda::{CudaDevice, CudaRuntime};
 use cubecl::prelude::*;
 use cubecl::server::Handle;
+#[cfg(feature = "debug-cov")]
 use tracing::debug;
 
 use super::morton::{compute_morton_codes_kernel, pack_morton_codes_kernel};
+#[cfg(feature = "debug-cov")]
+use super::statistics::compute_covariance_sums_cpu;
 use super::statistics::{
-    accumulate_segment_covariances_kernel, accumulate_segment_sums_kernel,
-    compute_covariance_sums_cpu, compute_means_kernel, finalize_voxels_cpu,
+    accumulate_segment_covariances_kernel, accumulate_segment_sums_kernel, compute_means_kernel,
+    finalize_voxels_cpu,
 };
 
 /// Type alias for CUDA compute client.
@@ -461,8 +464,9 @@ impl GpuPipelineBuffers {
         let counts_bytes = self.client.read_one(self.counts.clone());
         let counts = u32::from_bytes(&counts_bytes).to_vec();
 
-        // DEBUG: Compare GPU vs CPU covariance computation
-        if std::env::var("NDT_DEBUG_COV").is_ok() {
+        // DEBUG: Compare GPU vs CPU covariance computation (only with debug-cov feature)
+        #[cfg(feature = "debug-cov")]
+        {
             // Download sorted_indices
             let sorted_indices_bytes = self.client.read_one(self.sorted_indices.clone());
             let sorted_indices: Vec<u32> = sorted_indices_bytes
@@ -531,7 +535,7 @@ impl GpuPipelineBuffers {
                 ratio,
                 max_diff,
                 max_diff_seg,
-                "NDT_DEBUG_COV: GPU vs CPU covariance comparison"
+                "debug-cov: GPU vs CPU covariance comparison"
             );
         }
 

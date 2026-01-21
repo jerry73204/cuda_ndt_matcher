@@ -516,6 +516,8 @@ impl NdtScanMatcher {
     /// When GPU mode is enabled, this uses the GPU path for alignment but returns
     /// simplified debug info (no per-iteration data, only final state).
     ///
+    /// Only available with the `debug-iteration` feature.
+    ///
     /// # Arguments
     /// * `source_points` - Source point cloud (sensor scan)
     /// * `initial_guess` - Initial pose estimate
@@ -523,6 +525,7 @@ impl NdtScanMatcher {
     ///
     /// # Returns
     /// Tuple of (alignment result, debug info).
+    #[cfg(feature = "debug-iteration")]
     pub fn align_with_debug(
         &self,
         source_points: &[[f32; 3]],
@@ -572,6 +575,7 @@ impl NdtScanMatcher {
     ///
     /// Uses the GPU path for alignment and returns simplified debug info
     /// (final state only, no per-iteration data since GPU runs entire loop).
+    #[cfg(feature = "debug-iteration")]
     fn align_gpu_with_debug(
         &self,
         source_points: &[[f32; 3]],
