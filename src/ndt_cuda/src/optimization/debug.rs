@@ -58,8 +58,10 @@ pub struct IterationDebug {
     pub iteration: usize,
     /// Pose at the start of this iteration [tx, ty, tz, roll, pitch, yaw].
     pub pose: Vec<f64>,
-    /// NDT score at current pose.
+    /// NDT score at current pose (transform probability).
     pub score: f64,
+    /// Nearest voxel transformation likelihood at current pose.
+    pub nvtl: f64,
     /// Gradient vector (6 elements).
     pub gradient: Vec<f64>,
     /// Hessian matrix (6x6, stored as flat array row-major).
@@ -97,6 +99,7 @@ impl IterationDebug {
             iteration,
             pose: vec![0.0; 6],
             score: 0.0,
+            nvtl: 0.0,
             gradient: vec![0.0; 6],
             hessian: vec![0.0; 36],
             newton_step: vec![0.0; 6],
@@ -193,6 +196,19 @@ pub struct AlignmentDebug {
     #[cfg(feature = "debug-iteration")]
     pub iterations: Vec<IterationDebug>,
 
+    /// Per-iteration transform probability scores (only populated when debug-iteration feature is enabled).
+    #[cfg(feature = "debug-iteration")]
+    pub transform_probability_array: Vec<f64>,
+
+    /// Per-iteration NVTL scores (only populated when debug-iteration feature is enabled).
+    #[cfg(feature = "debug-iteration")]
+    pub nearest_voxel_transformation_likelihood_array: Vec<f64>,
+
+    /// Per-iteration pose transformations (only populated when debug-iteration feature is enabled).
+    /// Each entry is a 4x4 transformation matrix stored as flat array (row-major).
+    #[cfg(feature = "debug-iteration")]
+    pub transformation_array: Vec<Vec<f64>>,
+
     /// Final convergence status.
     pub convergence_status: String,
 
@@ -252,6 +268,81 @@ impl AlignmentDebug {
     /// Set final pose from array.
     pub fn set_final_pose(&mut self, pose: &[f64; 6]) {
         self.final_pose = pose.to_vec();
+    }
+
+    /// Build score and pose arrays from iteration history (requires debug-iteration feature).
+    #[cfg(feature = "debug-iteration")]
+    pub fn build_arrays_from_iterations(&mut self) {
+        // Clear existing arrays
+        self.transform_probability_array.clear();
+        self.nearest_voxel_transformation_likelihood_array.clear();
+        self.transformation_array.clear();
+
+        // Populate from iteration history
+        for iter in &self.iterations {
+            // Store TP score
+            self.transform_probability_array.push(iter.score);
+
+            // Store NVTL score
+            self.nearest_voxel_transformation_likelihood_array
+                .push(iter.nvtl);
+
+            // Convert pose to 4x4 transformation matrix
+            let matrix = Self::pose_to_matrix(&iter.pose_after);
+            self.transformation_array.push(matrix);
+        }
+    }
+
+    /// Add initial pose as first transformation matrix (requires debug-iteration feature).
+    #[cfg(feature = "debug-iteration")]
+    pub fn add_initial_transformation(&mut self) {
+        let matrix = Self::pose_to_matrix(&self.initial_pose);
+        self.transformation_array.insert(0, matrix);
+    }
+
+    /// Convert [tx, ty, tz, roll, pitch, yaw] to 4x4 transformation matrix (row-major flat array).
+    #[cfg(feature = "debug-iteration")]
+    fn pose_to_matrix(pose: &[f64]) -> Vec<f64> {
+        if pose.len() < 6 {
+            // Return identity matrix if pose is incomplete
+            return vec![
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ];
+        }
+
+        let (tx, ty, tz) = (pose[0], pose[1], pose[2]);
+        let (roll, pitch, yaw) = (pose[3], pose[4], pose[5]);
+
+        // Compute rotation matrix from Euler angles (ZYX convention)
+        let (sr, cr) = (roll.sin(), roll.cos());
+        let (sp, cp) = (pitch.sin(), pitch.cos());
+        let (sy, cy) = (yaw.sin(), yaw.cos());
+
+        // Rotation matrix (3x3)
+        let r00 = cy * cp;
+        let r01 = cy * sp * sr - sy * cr;
+        let r02 = cy * sp * cr + sy * sr;
+        let r10 = sy * cp;
+        let r11 = sy * sp * sr + cy * cr;
+        let r12 = sy * sp * cr - cy * sr;
+        let r20 = -sp;
+        let r21 = cp * sr;
+        let r22 = cp * cr;
+
+        // Build 4x4 matrix (row-major)
+        vec![
+            r00, r01, r02, tx, r10, r11, r12, ty, r20, r21, r22, tz, 0.0, 0.0, 0.0, 1.0,
+        ]
+    }
+
+    /// Add NVTL score for a specific iteration (requires debug-iteration feature).
+    #[cfg(feature = "debug-iteration")]
+    pub fn add_nvtl_score(&mut self, iteration: usize, nvtl: f64) {
+        // Ensure array is large enough
+        while self.nearest_voxel_transformation_likelihood_array.len() <= iteration {
+            self.nearest_voxel_transformation_likelihood_array.push(0.0);
+        }
+        self.nearest_voxel_transformation_likelihood_array[iteration] = nvtl;
     }
 
     /// Convert to JSON string.

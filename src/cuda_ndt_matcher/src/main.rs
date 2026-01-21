@@ -12,6 +12,7 @@ mod pose_buffer;
 mod scan_queue;
 mod tf_handler;
 mod tpe;
+mod visualization;
 
 use anyhow::Result;
 use arc_swap::ArcSwap;
@@ -22,6 +23,8 @@ use geometry_msgs::msg::{
 };
 use map_module::{DynamicMapLoader, MapUpdateModule};
 use nalgebra::{Isometry3, Quaternion as NaQuaternion, Translation3, UnitQuaternion, Vector3};
+#[cfg(feature = "debug-markers")]
+use ndt_cuda::AlignmentDebug;
 use params::NdtParams;
 use parking_lot::Mutex;
 use pose_buffer::SmartPoseBuffer;
@@ -919,7 +922,7 @@ impl NdtScanMatcherNode {
 
         // With debug-output feature: collect and write debug data
         #[cfg(feature = "debug-output")]
-        let result = match manager.align_with_debug(
+        let (result, alignment_debug) = match manager.align_with_debug(
             &sensor_points,
             map,
             &initial_pose.pose.pose,
@@ -938,7 +941,7 @@ impl NdtScanMatcherNode {
                         let _ = writeln!(file, "{json}");
                     }
                 }
-                r
+                (r, Some(debug))
             }
             Err(e) => {
                 log_error!(NODE_NAME, "NDT alignment failed: {e}");
@@ -947,14 +950,26 @@ impl NdtScanMatcherNode {
         };
 
         // Without debug-output feature: just run alignment
-        #[cfg(not(feature = "debug-output"))]
-        let result = match manager.align(&sensor_points, map, &initial_pose.pose.pose) {
-            Ok(r) => r,
-            Err(e) => {
-                log_error!(NODE_NAME, "NDT alignment failed: {e}");
-                return;
-            }
-        };
+        #[cfg(all(not(feature = "debug-output"), feature = "debug-markers"))]
+        let (result, alignment_debug): (_, Option<AlignmentDebug>) =
+            match manager.align(&sensor_points, map, &initial_pose.pose.pose) {
+                Ok(r) => (r, None),
+                Err(e) => {
+                    log_error!(NODE_NAME, "NDT alignment failed: {e}");
+                    return;
+                }
+            };
+
+        // Without either debug feature: just run alignment
+        #[cfg(all(not(feature = "debug-output"), not(feature = "debug-markers")))]
+        let (result, _alignment_debug): (_, Option<()>) =
+            match manager.align(&sensor_points, map, &initial_pose.pose.pose) {
+                Ok(r) => (r, None),
+                Err(e) => {
+                    log_error!(NODE_NAME, "NDT alignment failed: {e}");
+                    return;
+                }
+            };
 
         // Calculate execution time immediately after alignment (matches Autoware's scope)
         let exe_time_ms = align_start_time.elapsed().as_secs_f32() * 1000.0;
@@ -1236,13 +1251,27 @@ impl NdtScanMatcherNode {
             .initial_to_result_relative_pose_pub
             .publish(&relative_pose_msg);
 
-        // Publish NDT marker (arrow showing result pose)
-        // Note: Autoware's builtin publishes transformation_array (all iteration poses as markers).
-        // fast-gicp doesn't expose iteration history, so we only publish the final pose.
-        let ndt_marker = Self::create_pose_marker(&header, &result.pose, 0);
-        let marker_array = MarkerArray {
-            markers: vec![ndt_marker],
+        // Publish NDT marker (pose history visualization)
+        // When debug-markers is enabled, publish pose history from debug data.
+        // Otherwise, just publish the final pose.
+        #[cfg(feature = "debug-markers")]
+        let marker_array = if let Some(ref debug) = alignment_debug {
+            Self::create_pose_history_markers(&header, debug)
+        } else {
+            let ndt_marker = Self::create_pose_marker(&header, &result.pose, 0);
+            MarkerArray {
+                markers: vec![ndt_marker],
+            }
         };
+
+        #[cfg(not(feature = "debug-markers"))]
+        let marker_array = {
+            let ndt_marker = Self::create_pose_marker(&header, &result.pose, 0);
+            MarkerArray {
+                markers: vec![ndt_marker],
+            }
+        };
+
         let _ = debug_pubs.ndt_marker_pub.publish(&marker_array);
 
         // Publish aligned points (transformed sensor points)
@@ -1264,9 +1293,10 @@ impl NdtScanMatcherNode {
         let aligned_msg = pointcloud::to_pointcloud2(&aligned_points, &header);
         let _ = debug_pubs.points_aligned_pub.publish(&aligned_msg);
 
-        // ---- Per-Point Score Visualization ----
+        // ---- Per-Point Score Visualization (requires debug-markers feature) ----
         // Compute per-point NDT scores and publish as RGB-colored point cloud.
         // This matches Autoware's voxel_score_points output for debugging.
+        #[cfg(feature = "debug-markers")]
         if let Ok((score_points, scores)) =
             manager.compute_per_point_scores_for_visualization(&sensor_points, &result.pose)
         {
@@ -1442,6 +1472,98 @@ impl NdtScanMatcherNode {
             mesh_file: visualization_msgs::msg::MeshFile::default(),
             mesh_use_embedded_materials: false,
         }
+    }
+
+    /// Create pose history markers from AlignmentDebug data.
+    ///
+    /// Publishes arrows showing the pose at each iteration of NDT optimization.
+    /// Matches Autoware's transformation_array visualization.
+    #[cfg(feature = "debug-markers")]
+    fn create_pose_history_markers(header: &Header, debug: &AlignmentDebug) -> MarkerArray {
+        let mut markers = Vec::new();
+
+        // Convert each 4x4 transformation matrix to a Pose and create a marker
+        for (i, matrix_flat) in debug.transformation_array.iter().enumerate() {
+            if matrix_flat.len() < 16 {
+                continue; // Skip malformed matrices
+            }
+
+            // Extract translation from matrix (last column: indices 3, 7, 11)
+            let position = Point {
+                x: matrix_flat[3],
+                y: matrix_flat[7],
+                z: matrix_flat[11],
+            };
+
+            // Extract rotation matrix (3x3 upper-left block)
+            let r00 = matrix_flat[0];
+            let r01 = matrix_flat[1];
+            let r02 = matrix_flat[2];
+            let r10 = matrix_flat[4];
+            let r11 = matrix_flat[5];
+            let r12 = matrix_flat[6];
+            let r20 = matrix_flat[8];
+            let r21 = matrix_flat[9];
+            let r22 = matrix_flat[10];
+
+            // Convert rotation matrix to quaternion
+            let rot_matrix = nalgebra::Matrix3::new(r00, r01, r02, r10, r11, r12, r20, r21, r22);
+            let rotation = nalgebra::Rotation3::from_matrix_unchecked(rot_matrix);
+            let quat = UnitQuaternion::from_rotation_matrix(&rotation);
+
+            let orientation = geometry_msgs::msg::Quaternion {
+                x: quat.i,
+                y: quat.j,
+                z: quat.k,
+                w: quat.w,
+            };
+
+            let pose = Pose {
+                position,
+                orientation,
+            };
+
+            // Create marker with gradient color (blue -> cyan -> green)
+            // to show progression through iterations
+            let progress = i as f32 / debug.transformation_array.len().max(1) as f32;
+            let (r, g, b) = if progress < 0.5 {
+                // Blue to cyan
+                let t = progress * 2.0;
+                (0.0, t, 1.0)
+            } else {
+                // Cyan to green
+                let t = (progress - 0.5) * 2.0;
+                (0.0, 1.0, 1.0 - t)
+            };
+
+            markers.push(Marker {
+                header: header.clone(),
+                ns: "result_pose_matrix_array".to_string(),
+                id: i as i32,
+                type_: 0,  // ARROW
+                action: 0, // ADD
+                pose,
+                scale: geometry_msgs::msg::Vector3 {
+                    x: 0.3,
+                    y: 0.1,
+                    z: 0.1,
+                },
+                color: std_msgs::msg::ColorRGBA { r, g, b, a: 0.8 },
+                lifetime: builtin_interfaces::msg::Duration { sec: 0, nanosec: 0 },
+                frame_locked: false,
+                points: vec![],
+                colors: vec![],
+                texture_resource: String::new(),
+                texture: sensor_msgs::msg::CompressedImage::default(),
+                uv_coordinates: vec![],
+                text: String::new(),
+                mesh_resource: String::new(),
+                mesh_file: visualization_msgs::msg::MeshFile::default(),
+                mesh_use_embedded_materials: false,
+            });
+        }
+
+        MarkerArray { markers }
     }
 
     /// Create visualization markers for Monte Carlo particles.

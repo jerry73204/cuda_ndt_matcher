@@ -757,6 +757,8 @@ impl NdtOptimizer {
             );
 
             iter_debug.score = derivatives.score;
+            iter_debug.nvtl =
+                self.compute_nvtl(source_points, target_grid, &pose_vector_to_isometry(&pose));
             iter_debug.set_gradient(&derivatives.gradient);
             iter_debug.set_hessian(&derivatives.hessian);
             iter_debug.num_correspondences = derivatives.num_correspondences;
@@ -771,6 +773,8 @@ impl NdtOptimizer {
                     debug.set_final_pose(&pose);
                     debug.final_score = derivatives.score;
                     debug.exe_time_ms = Some(start_time.elapsed().as_secs_f64() * 1000.0);
+                    debug.build_arrays_from_iterations();
+                    debug.add_initial_transformation();
                     return (NdtResult::no_correspondences(initial_guess), debug);
                 }
                 break;
@@ -807,6 +811,8 @@ impl NdtOptimizer {
                     let nvtl = self.compute_nvtl(source_points, target_grid, &final_pose);
                     debug.final_nvtl = nvtl;
                     debug.exe_time_ms = Some(start_time.elapsed().as_secs_f64() * 1000.0);
+                    debug.build_arrays_from_iterations();
+                    debug.add_initial_transformation();
                     return (
                         NdtResult {
                             pose: final_pose,
@@ -842,6 +848,8 @@ impl NdtOptimizer {
                 let nvtl = self.compute_nvtl(source_points, target_grid, &final_pose);
                 debug.final_nvtl = nvtl;
                 debug.exe_time_ms = Some(start_time.elapsed().as_secs_f64() * 1000.0);
+                debug.build_arrays_from_iterations();
+                debug.add_initial_transformation();
                 return (
                     NdtResult {
                         pose: final_pose,
@@ -907,6 +915,8 @@ impl NdtOptimizer {
         let nvtl = self.compute_nvtl(source_points, target_grid, &final_pose);
         debug.final_nvtl = nvtl;
         debug.exe_time_ms = Some(start_time.elapsed().as_secs_f64() * 1000.0);
+        debug.build_arrays_from_iterations();
+        debug.add_initial_transformation();
 
         (
             NdtResult {
