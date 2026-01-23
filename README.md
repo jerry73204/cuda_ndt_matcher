@@ -13,17 +13,30 @@ Drop-in replacement for Autoware's NDT with identical ROS 2 interface.
 
 ## Prerequisites
 
-- ROS 2 Humble
+- ROS 2 Humble (`/opt/ros/humble`)
+- Autoware 1.5.0 (`/opt/autoware/1.5.0`)
 - NVIDIA GPU with CUDA support
-- Rust toolchain (rustup)
-- Autoware workspace at `external/autoware_repo/`
+- Rust toolchain (`rustup`)
+- [direnv](https://direnv.net/) (recommended)
+
+## Setup
+
+```bash
+# Allow direnv to load environment
+direnv allow
+
+# Check prerequisites and install build dependencies
+just setup
+```
+
+This will verify:
+- Rust toolchain is installed
+- ROS Humble is available at `/opt/ros/humble`
+- Autoware 1.5.0 is installed at `/opt/autoware/1.5.0`
 
 ## Build
 
 ```bash
-# Source ROS environment
-source external/autoware_repo/install/setup.bash
-
 # Build all packages
 just build
 ```

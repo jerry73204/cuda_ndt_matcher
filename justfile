@@ -5,7 +5,6 @@ cargo_config := "build/ros2_cargo_config.toml"
 manifest := "Cargo.toml"
 
 # Paths for testing
-autoware_setup := "external/autoware_repo/install/setup.bash"
 local_setup := "install/setup.bash"
 sample_map_dir := "data/sample-map"
 sample_rosbag := "data/sample-rosbag-fixed"
@@ -16,10 +15,43 @@ ground_truth_dir := "tests/fixtures/ground_truth"
 default:
     @just --list
 
+# Check prerequisites and install build dependencies
+setup:
+    #!/usr/bin/env bash
+    set -e
+    echo "Checking prerequisites..."
+
+    # Check Rust toolchain
+    if ! command -v rustc &> /dev/null; then
+        echo "ERROR: Rust toolchain not found. Install via: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+        exit 1
+    fi
+    echo "  Rust: $(rustc --version)"
+
+    # Check ROS Humble
+    if [[ ! -f /opt/ros/humble/setup.bash ]]; then
+        echo "ERROR: ROS Humble not found at /opt/ros/humble"
+        exit 1
+    fi
+    echo "  ROS Humble: /opt/ros/humble"
+
+    # Check Autoware 1.5.0
+    if [[ ! -f /opt/autoware/1.5.0/setup.bash ]]; then
+        echo "ERROR: Autoware 1.5.0 not found at /opt/autoware/1.5.0"
+        echo "       Install Autoware 1.5.0 and source its setup.bash"
+        exit 1
+    fi
+    echo "  Autoware 1.5.0: /opt/autoware/1.5.0"
+
+    # Install Python dependencies
+    echo "Installing build dependencies..."
+    pip install -U colcon-cargo-ros2
+
+    echo "Setup complete!"
+
 # Build all packages with colcon (only check src/ directory)
 build:
     #!/usr/bin/env bash
-    source {{autoware_setup}}
     colcon build \
         --base-paths src \
         --symlink-install \
@@ -163,7 +195,6 @@ download-data:
 play-rosbag:
     #!/usr/bin/env bash
     set -eo pipefail
-    source {{autoware_setup}}
     ros2 bag play -l $(realpath {{sample_rosbag}})
 
 # Start Autoware builtin NDT demo (delegates to tests/comparison)
@@ -180,7 +211,6 @@ run-cuda:
 # Enable NDT matching via service call
 enable-ndt:
     #!/usr/bin/env bash
-    source {{autoware_setup}}
     ros2 service call \
         /localization/pose_estimator/trigger_node_srv \
         std_srvs/srv/SetBool \
@@ -189,7 +219,6 @@ enable-ndt:
 # Monitor NDT pose output
 monitor-ndt:
     #!/usr/bin/env bash
-    source {{autoware_setup}}
     ros2 topic echo /localization/pose_estimator/pose_with_covariance
 
 # === Profiling ===
@@ -242,7 +271,6 @@ logs_dir := "logs"
 # Build CUDA with all debug features enabled
 build-cuda-debug:
     #!/usr/bin/env bash
-    source {{autoware_setup}}
     colcon build \
         --base-paths src \
         --symlink-install \
@@ -252,7 +280,6 @@ build-cuda-debug:
 # Build CUDA with per-iteration debug only (JSONL output)
 build-cuda-debug-iterations:
     #!/usr/bin/env bash
-    source {{autoware_setup}}
     colcon build \
         --base-paths src \
         --symlink-install \
@@ -262,7 +289,6 @@ build-cuda-debug-iterations:
 # Build CUDA with voxel dump only
 build-cuda-debug-voxels:
     #!/usr/bin/env bash
-    source {{autoware_setup}}
     colcon build \
         --base-paths src \
         --symlink-install \
@@ -272,7 +298,6 @@ build-cuda-debug-voxels:
 # Build CUDA with voxel-per-point tracking only (ndt_cuda feature)
 build-cuda-debug-vpp:
     #!/usr/bin/env bash
-    source {{autoware_setup}}
     colcon build \
         --base-paths src \
         --symlink-install \
@@ -282,7 +307,6 @@ build-cuda-debug-vpp:
 # Build CUDA with GPU vs CPU covariance comparison only (ndt_cuda feature)
 build-cuda-debug-cov:
     #!/usr/bin/env bash
-    source {{autoware_setup}}
     colcon build \
         --base-paths src \
         --symlink-install \
@@ -292,7 +316,6 @@ build-cuda-debug-cov:
 # Build CUDA with profiling only (timing, no debug data collection)
 build-cuda-profiling:
     #!/usr/bin/env bash
-    source {{autoware_setup}}
     colcon build \
         --base-paths src \
         --symlink-install \
