@@ -10,7 +10,7 @@ project_root := "../../"
 autoware_setup := project_root + "external/autoware_repo/install/setup.bash"
 
 # Package source directory (submodule)
-ndt_package := "autoware_universe/localization/autoware_ndt_scan_matcher"
+ndt_package := "autoware_core/localization/autoware_ndt_scan_matcher"
 
 # Build directories (local to this comparison folder)
 build_dir := "build"
@@ -102,9 +102,9 @@ analyze-iterations:
 # Show git status of the submodule
 status:
     @echo "Submodule status:"
-    @cd autoware_universe && git log -1 --oneline
-    @cd autoware_universe && git status -s
+    @cd autoware_core && git log -1 --oneline
+    @cd autoware_core && git status -s
 
 # Update submodule to latest
 update:
-    git submodule update --remote autoware_universe
+    git submodule update --remote autoware_core

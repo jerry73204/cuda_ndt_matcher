@@ -1,9 +1,9 @@
 [submodule "external/fast_gicp_rust"]
 	path = external/fast_gicp_rust
 	url = https://github.com/jerry73204/fast_gicp_rust.git
-[submodule "tests/comparison/autoware_universe"]
-	path = tests/comparison/autoware_universe
-	url = https://github.com/jerry73204/autoware_universe.git
+[submodule "tests/comparison/autoware_core"]
+	path = tests/comparison/autoware_core
+	url = https://github.com/jerry73204/autoware_core.git
 [submodule "src/autoware_rosbag_replay"]
 	path = src/autoware_rosbag_replay
 	url = https://github.com/jerry73204/autoware_rosbag_replay.git
