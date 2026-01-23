@@ -20,33 +20,80 @@ setup:
     #!/usr/bin/env bash
     set -e
     echo "Checking prerequisites..."
+    MISSING=""
 
     # Check Rust toolchain
     if ! command -v rustc &> /dev/null; then
-        echo "ERROR: Rust toolchain not found. Install via: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
-        exit 1
+        echo "  ERROR: Rust toolchain not found"
+        echo "         Install via: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+        MISSING="$MISSING rust"
+    else
+        echo "  Rust: $(rustc --version)"
     fi
-    echo "  Rust: $(rustc --version)"
+
+    # Check Rust nightly (for rustfmt)
+    if ! rustup run nightly rustc --version &> /dev/null; then
+        echo "  WARN: Rust nightly not found (needed for 'just lint')"
+        echo "        Install via: rustup toolchain install nightly"
+    else
+        echo "  Rust nightly: $(rustup run nightly rustc --version 2>/dev/null | head -1)"
+    fi
+
+    # Check CUDA toolkit
+    if ! command -v nvcc &> /dev/null; then
+        echo "  ERROR: CUDA toolkit not found (nvcc)"
+        echo "         Install NVIDIA CUDA Toolkit"
+        MISSING="$MISSING cuda"
+    else
+        echo "  CUDA: $(nvcc --version | grep release | sed 's/.*release //' | sed 's/,.*//')"
+    fi
 
     # Check ROS Humble
     if [[ ! -f /opt/ros/humble/setup.bash ]]; then
-        echo "ERROR: ROS Humble not found at /opt/ros/humble"
-        exit 1
+        echo "  ERROR: ROS Humble not found at /opt/ros/humble"
+        MISSING="$MISSING ros-humble"
+    else
+        echo "  ROS Humble: /opt/ros/humble"
     fi
-    echo "  ROS Humble: /opt/ros/humble"
 
     # Check Autoware 1.5.0
     if [[ ! -f /opt/autoware/1.5.0/setup.bash ]]; then
-        echo "ERROR: Autoware 1.5.0 not found at /opt/autoware/1.5.0"
-        echo "       Install Autoware 1.5.0 and source its setup.bash"
+        echo "  ERROR: Autoware 1.5.0 not found at /opt/autoware/1.5.0"
+        MISSING="$MISSING autoware"
+    else
+        echo "  Autoware 1.5.0: /opt/autoware/1.5.0"
+    fi
+
+    # Check GNU Parallel (used by run_demo.sh)
+    if ! command -v parallel &> /dev/null; then
+        echo "  ERROR: GNU Parallel not found"
+        echo "         Install via: sudo apt install parallel"
+        MISSING="$MISSING parallel"
+    else
+        echo "  GNU Parallel: $(parallel --version | head -1)"
+    fi
+
+    # Check direnv (optional but recommended)
+    if ! command -v direnv &> /dev/null; then
+        echo "  WARN: direnv not found (optional, recommended for environment setup)"
+        echo "        Install via: sudo apt install direnv"
+    else
+        echo "  direnv: $(direnv --version)"
+    fi
+
+    # Exit if required dependencies are missing
+    if [[ -n "$MISSING" ]]; then
+        echo ""
+        echo "ERROR: Missing required dependencies:$MISSING"
         exit 1
     fi
-    echo "  Autoware 1.5.0: /opt/autoware/1.5.0"
 
     # Install Python dependencies
-    echo "Installing build dependencies..."
+    echo ""
+    echo "Installing Python build dependencies..."
     pip install -U colcon-cargo-ros2
 
+    echo ""
     echo "Setup complete!"
 
 # Build all packages with colcon (only check src/ directory)
