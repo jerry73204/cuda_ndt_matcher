@@ -74,7 +74,7 @@
 
       <!-- Automatic pose initializer (only when GNSS enabled) -->
       <group if="$(var gnss_enabled)">
-        <include file="$(find-pkg-share automatic_pose_initializer)/launch/automatic_pose_initializer.launch.xml"/>
+        <include file="$(find-pkg-share autoware_automatic_pose_initializer)/launch/automatic_pose_initializer.launch.xml"/>
       </group>
     </group>
 
@@ -85,6 +85,7 @@
         <arg name="ekf_localizer_param_path" value="$(var localization_config_path)/ekf_localizer.param.yaml"/>
         <arg name="stop_filter_param_path" value="$(var localization_config_path)/stop_filter.param.yaml"/>
         <arg name="twist2accel_param_path" value="$(var localization_config_path)/twist2accel.param.yaml"/>
+        <arg name="pose_instability_detector_param_path" value="$(var localization_config_path)/pose_instability_detector.param.yaml"/>
       </include>
     </group>
 
