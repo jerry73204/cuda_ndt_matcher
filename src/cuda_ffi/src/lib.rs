@@ -24,6 +24,7 @@
 pub mod async_stream;
 pub mod batch_persistent_ndt;
 pub mod batched_solve;
+pub mod graph_ndt;
 pub mod persistent_ndt;
 pub mod radix_sort;
 pub mod segment_detect;
@@ -73,6 +74,21 @@ pub use async_stream::{
 pub use texture::{
     batch_persistent_ndt_launch_textured_raw, texture_handle_size, CudaTextureObject, TextureError,
     TexturedBatchNdtParams, VoxelInvCovsTexture, VoxelMeansTexture,
+};
+
+// Graph-based NDT kernels (Phase 24 - alternative to cooperative kernel)
+pub use graph_ndt::{
+    compute_shared_mem_size as graph_ndt_compute_shared_mem_size,
+    get_buffer_sizes as graph_ndt_get_buffer_sizes, graph_ndt_align_raw, graph_ndt_check_converged,
+    graph_ndt_get_iterations, graph_ndt_launch_compute_raw, graph_ndt_launch_init_raw,
+    graph_ndt_launch_linesearch_raw, graph_ndt_launch_solve_raw, graph_ndt_launch_update_raw,
+    graph_ndt_run_iteration_raw,
+    linesearch_shared_mem_size as graph_ndt_linesearch_shared_mem_size,
+    num_blocks as graph_ndt_num_blocks, GraphNdtConfig, GraphNdtOutput,
+    BLOCK_SIZE as GRAPH_NDT_BLOCK_SIZE, DEBUG_FLOATS_PER_ITER as GRAPH_NDT_DEBUG_FLOATS_PER_ITER,
+    LS_BUFFER_SIZE as GRAPH_NDT_LS_BUFFER_SIZE, OUTPUT_BUFFER_SIZE as GRAPH_NDT_OUTPUT_BUFFER_SIZE,
+    REDUCE_BUFFER_SIZE as GRAPH_NDT_REDUCE_BUFFER_SIZE,
+    STATE_BUFFER_SIZE as GRAPH_NDT_STATE_BUFFER_SIZE,
 };
 
 /// Device-to-device memory copy using CUDA.

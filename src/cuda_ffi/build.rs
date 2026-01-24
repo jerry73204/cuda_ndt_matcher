@@ -35,6 +35,7 @@ fn main() {
         "csrc/batch_persistent_ndt.cu",
         "csrc/async_stream.cu",
         "csrc/texture_voxels.cu",
+        "csrc/ndt_graph_kernels.cu",
     ];
 
     for source in &cuda_sources {
@@ -60,6 +61,7 @@ fn main() {
     println!("cargo:rustc-link-lib=static=batch_persistent_ndt");
     println!("cargo:rustc-link-lib=static=async_stream");
     println!("cargo:rustc-link-lib=static=texture_voxels");
+    println!("cargo:rustc-link-lib=static=ndt_graph_kernels");
 
     // Rerun if CUDA sources change
     for source in &cuda_sources {
@@ -72,6 +74,7 @@ fn main() {
     println!("cargo:rerun-if-changed=csrc/batch_persistent_ndt_device.cuh");
     println!("cargo:rerun-if-changed=csrc/warp_reduce.cuh");
     println!("cargo:rerun-if-changed=csrc/warp_cholesky.cuh");
+    println!("cargo:rerun-if-changed=csrc/ndt_graph_common.cuh");
     println!("cargo:rerun-if-changed=build.rs");
 }
 
