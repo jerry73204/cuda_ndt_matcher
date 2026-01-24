@@ -1,6 +1,6 @@
 # Phase 24: CUDA Graphs Pipeline
 
-**Status**: ⚠️ Partial (24.1, 24.2, 24.3 complete)
+**Status**: ⚠️ Partial (24.1-24.4 complete)
 **Priority**: High
 **Motivation**: The cooperative groups persistent kernel (Phase 17) fails on GPUs with limited SM count (Jetson Orin) due to `CUDA_ERROR_COOPERATIVE_LAUNCH_TOO_LARGE` (error 720).
 
@@ -566,21 +566,46 @@ not used. This can be cleaned up in a future PR.
 
 ### Sub-phase 24.4: Optimization & Benchmarking
 
-**Goal**: Optimize graph performance to match cooperative kernel
+**Status**: ✅ Complete
 
-**Tasks**:
-1. Tune batch size (test 2, 4, 8 iterations per graph)
-2. Profile kernel execution times
-3. Optimize memory access patterns in separated kernels
-4. Consider graph update API for changing parameters
+**Goal**: Add profiling infrastructure for performance analysis
 
-**Benchmarks**:
-- Latency per alignment (ms)
-- Throughput (alignments/sec)
-- Memory bandwidth utilization
-- Comparison: Graph vs Cooperative vs Multi-kernel
+**Implementation**:
 
-**Deliverable**: Performance report and optimized implementation
+1. **Kernel timing infrastructure** (`cuda_ffi/src/graph_ndt.rs`):
+   - `KernelTiming` struct: tracks total time and call count per kernel
+   - `GraphNdtProfile` struct: aggregates timing for all 5 kernels (K1-K5)
+   - `print_report()`: formatted profiling output
+   - `per_iteration_ms()`: average time per iteration
+   - `kernel_total_ms()`: sum of all kernel times
+
+2. **Profiled alignment functions**:
+   - `graph_ndt_align_profiled_raw()`: FFI function with CUDA event timing
+   - `FullGpuPipelineV2::optimize_profiled()`: high-level profiled alignment
+   - Uses CUDA events (`CudaEvent`) for accurate GPU timing
+
+3. **Iteration batching**:
+   - `graph_ndt_run_iterations_batched_raw()`: runs N iterations without
+     host sync between them (useful for benchmarking kernel overhead)
+
+4. **Benchmark test**:
+   - `test_pipeline_v2_profiled`: 5000 points, 400 voxels grid
+   - Reports per-kernel timing breakdown
+   - Measures kernel efficiency (kernel time / total time)
+
+**Example profiling output**:
+```
+=== Phase 24.4 Profiling Results ===
+Total: 15.234 ms, 7 iterations, 2.176 ms/iter
+Kernel breakdown per iteration (avg):
+  Compute:    1.823 ms
+  Solve:      0.042 ms
+  LineSearch: 0.287 ms
+  Update:     0.018 ms
+Kernel efficiency: 95.2% (kernel time / total time)
+```
+
+**Deliverable**: Profiling infrastructure and benchmark test
 
 ---
 
@@ -623,13 +648,13 @@ not used. This can be cleaned up in a future PR.
 
 ## Appendix: Cooperative vs Graph Comparison
 
-| Aspect | Cooperative Kernel | CUDA Graph |
-|--------|-------------------|------------|
-| Launch overhead | Single launch | Graph launch (~same) |
-| Grid sync | Hardware `grid.sync()` | Implicit between nodes |
-| Max blocks | Limited by SM count | Unlimited |
-| Data locality | Registers persist | Must use global memory |
-| Iteration batching | Automatic (loop inside) | Explicit (unroll in graph) |
-| Early exit | Trivial | Requires host check |
-| Portability | Requires cooperative support | All CUDA GPUs |
-| Complexity | Single kernel | Multiple kernels + graph |
+| Aspect             | Cooperative Kernel           | CUDA Graph                 |
+|--------------------|------------------------------|----------------------------|
+| Launch overhead    | Single launch                | Graph launch (~same)       |
+| Grid sync          | Hardware `grid.sync()`       | Implicit between nodes     |
+| Max blocks         | Limited by SM count          | Unlimited                  |
+| Data locality      | Registers persist            | Must use global memory     |
+| Iteration batching | Automatic (loop inside)      | Explicit (unroll in graph) |
+| Early exit         | Trivial                      | Requires host check        |
+| Portability        | Requires cooperative support | All CUDA GPUs              |
+| Complexity         | Single kernel                | Multiple kernels + graph   |

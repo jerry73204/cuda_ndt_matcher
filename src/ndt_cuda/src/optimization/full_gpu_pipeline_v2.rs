@@ -667,6 +667,248 @@ impl FullGpuPipelineV2 {
             iterations_debug,
         })
     }
+
+    /// Run optimization with kernel-level profiling.
+    ///
+    /// Returns both the optimization result and detailed timing breakdown.
+    /// This uses CUDA events to measure each kernel's execution time.
+    pub fn optimize_profiled(
+        &mut self,
+        initial_pose: &[f64; 6],
+        max_iterations: u32,
+        transformation_epsilon: f64,
+    ) -> Result<(FullGpuOptimizationResultV2, cuda_ffi::GraphNdtProfile)> {
+        use cuda_ffi::async_stream::CudaEvent;
+        use std::time::Instant;
+
+        if self.num_points == 0 {
+            let mut profile = cuda_ffi::GraphNdtProfile::new();
+            profile.iterations = 0;
+            return Ok((
+                FullGpuOptimizationResultV2 {
+                    pose: *initial_pose,
+                    score: 0.0,
+                    converged: true,
+                    iterations: 0,
+                    hessian: [[0.0; 6]; 6],
+                    num_correspondences: 0,
+                    used_line_search: false,
+                    avg_alpha: 1.0,
+                    oscillation_count: 0,
+                    #[cfg(feature = "debug-iteration")]
+                    iterations_debug: None,
+                },
+                profile,
+            ));
+        }
+
+        let start_time = Instant::now();
+        let mut profile = cuda_ffi::GraphNdtProfile::new();
+
+        // Create timing events
+        let event_start = CudaEvent::new()?;
+        let event_end = CudaEvent::new()?;
+
+        // Upload initial pose
+        let pose_f32: [f32; 6] = initial_pose.map(|x| x as f32);
+        self.graph_initial_pose = self.client.create(f32::as_bytes(&pose_f32));
+
+        // Recreate buffers to ensure fresh memory
+        let state_zeros = [0.0f32; cuda_ffi::GRAPH_NDT_STATE_BUFFER_SIZE];
+        let reduce_zeros = [0.0f32; cuda_ffi::GRAPH_NDT_REDUCE_BUFFER_SIZE];
+        let ls_zeros = [0.0f32; cuda_ffi::GRAPH_NDT_LS_BUFFER_SIZE];
+        let output_zeros = [0.0f32; cuda_ffi::GRAPH_NDT_OUTPUT_BUFFER_SIZE];
+
+        self.graph_state_buffer = self.client.create(f32::as_bytes(&state_zeros));
+        self.graph_reduce_buffer = self.client.create(f32::as_bytes(&reduce_zeros));
+        self.graph_ls_buffer = self.client.create(f32::as_bytes(&ls_zeros));
+        self.graph_output_buffer = self.client.create(f32::as_bytes(&output_zeros));
+
+        // Force CubeCL to sync all pending operations
+        let _ = self.client.read_one(self.graph_state_buffer.clone());
+        cuda_ffi::cuda_device_synchronize()?;
+
+        // Build configuration for graph kernels
+        let config = cuda_ffi::GraphNdtConfig::new(
+            self.gauss_d1,
+            self.gauss_d2,
+            self.resolution,
+            transformation_epsilon as f32,
+            self.num_points as u32,
+            self.num_voxels as u32,
+            self.hash_capacity,
+            max_iterations as i32,
+        );
+
+        let config = if self.config.regularization_enabled {
+            config.with_regularization(
+                self.regularization_ref_x,
+                self.regularization_ref_y,
+                self.config.regularization_scale_factor,
+            )
+        } else {
+            config
+        };
+
+        let config = if self.config.use_line_search {
+            config.with_line_search(true, 8, self.config.armijo_mu, self.config.wolfe_nu)
+        } else {
+            config.with_fixed_step(self.config.fixed_step_size)
+        };
+
+        // Get raw device pointers
+        let d_source_points = self.raw_ptr(&self.source_points);
+        let d_voxel_means = self.raw_ptr(&self.voxel_means);
+        let d_voxel_inv_covs = self.raw_ptr(&self.voxel_inv_covs);
+        let d_hash_table = self.raw_ptr(&self.hash_table);
+        let d_initial_pose = self.raw_ptr(&self.graph_initial_pose);
+        let d_state_buffer = self.raw_ptr(&self.graph_state_buffer);
+        let d_reduce_buffer = self.raw_ptr(&self.graph_reduce_buffer);
+        let d_ls_buffer = self.raw_ptr(&self.graph_ls_buffer);
+        let d_output_buffer = self.raw_ptr(&self.graph_output_buffer);
+
+        // K1: Initialize with timing
+        event_start.record_default()?;
+        unsafe {
+            cuda_ffi::graph_ndt_launch_init_raw(
+                d_initial_pose,
+                d_state_buffer,
+                d_reduce_buffer,
+                d_ls_buffer,
+                None,
+            )?;
+        }
+        event_end.record_default()?;
+        event_end.synchronize()?;
+        profile.init.total_ms += event_end.elapsed_time(&event_start)?;
+        profile.init.count += 1;
+
+        // Iteration loop with per-kernel timing
+        for _ in 0..max_iterations {
+            // K2: Compute
+            event_start.record_default()?;
+            unsafe {
+                cuda_ffi::graph_ndt_launch_compute_raw(
+                    d_source_points,
+                    d_voxel_means,
+                    d_voxel_inv_covs,
+                    d_hash_table,
+                    &config,
+                    d_state_buffer,
+                    d_reduce_buffer,
+                    None,
+                )?;
+            }
+            event_end.record_default()?;
+            event_end.synchronize()?;
+            profile.compute.total_ms += event_end.elapsed_time(&event_start)?;
+            profile.compute.count += 1;
+
+            // K3: Solve
+            event_start.record_default()?;
+            unsafe {
+                cuda_ffi::graph_ndt_launch_solve_raw(
+                    &config,
+                    d_state_buffer,
+                    d_reduce_buffer,
+                    d_ls_buffer,
+                    d_output_buffer,
+                    None,
+                )?;
+            }
+            event_end.record_default()?;
+            event_end.synchronize()?;
+            profile.solve.total_ms += event_end.elapsed_time(&event_start)?;
+            profile.solve.count += 1;
+
+            // K4: Line search (if enabled)
+            if self.config.use_line_search {
+                event_start.record_default()?;
+                unsafe {
+                    cuda_ffi::graph_ndt_launch_linesearch_raw(
+                        d_source_points,
+                        d_voxel_means,
+                        d_voxel_inv_covs,
+                        d_hash_table,
+                        &config,
+                        d_state_buffer,
+                        d_ls_buffer,
+                        None,
+                    )?;
+                }
+                event_end.record_default()?;
+                event_end.synchronize()?;
+                profile.linesearch.total_ms += event_end.elapsed_time(&event_start)?;
+                profile.linesearch.count += 1;
+            }
+
+            // K5: Update
+            event_start.record_default()?;
+            unsafe {
+                cuda_ffi::graph_ndt_launch_update_raw(
+                    &config,
+                    d_state_buffer,
+                    d_reduce_buffer,
+                    d_ls_buffer,
+                    d_output_buffer,
+                    0, // No debug buffer for profiling
+                    None,
+                )?;
+            }
+            event_end.record_default()?;
+            event_end.synchronize()?;
+            profile.update.total_ms += event_end.elapsed_time(&event_start)?;
+            profile.update.count += 1;
+
+            // Check convergence
+            let converged = unsafe { cuda_ffi::graph_ndt_check_converged(d_state_buffer)? };
+            if converged {
+                break;
+            }
+        }
+
+        profile.iterations = profile.compute.count;
+        profile.total_ms = start_time.elapsed().as_secs_f32() * 1000.0;
+
+        // Download results from output buffer
+        let output_bytes = self.client.read_one(self.graph_output_buffer.clone());
+        let output = f32::from_bytes(&output_bytes);
+
+        // Parse output buffer
+        let pose: [f64; 6] = std::array::from_fn(|i| output[i] as f64);
+        let iterations = output[6] as u32;
+        let converged = output[7] > 0.5;
+        let score = output[8] as f64;
+
+        // Extract Hessian
+        let mut hessian = [[0.0f64; 6]; 6];
+        for i in 0..6 {
+            for j in 0..6 {
+                hessian[i][j] = output[9 + i * 6 + j] as f64;
+            }
+        }
+
+        let num_correspondences = output[45] as usize;
+        let oscillation_count = output[46] as usize;
+        let avg_alpha = output[47] as f64;
+
+        Ok((
+            FullGpuOptimizationResultV2 {
+                pose,
+                score,
+                converged,
+                iterations,
+                hessian,
+                num_correspondences,
+                used_line_search: self.config.use_line_search,
+                avg_alpha,
+                oscillation_count,
+                #[cfg(feature = "debug-iteration")]
+                iterations_debug: None, // Skip debug parsing in profiling mode
+            },
+            profile,
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -1241,5 +1483,101 @@ mod tests {
         assert!(result.iterations > 0, "Should run at least one iteration");
         assert!(result.score.is_finite(), "Score should be finite");
         assert!(!result.used_line_search, "Should not use line search");
+    }
+
+    /// Benchmark test for Phase 24.4 - profiles kernel execution times.
+    #[test]
+    fn test_pipeline_v2_profiled() {
+        let config = PipelineV2Config {
+            use_line_search: true,
+            ..Default::default()
+        };
+        let mut pipeline = FullGpuPipelineV2::with_config(10000, 5000, config).unwrap();
+
+        // Create a larger point cloud for more realistic timing
+        let source_points: Vec<[f32; 3]> = (0..5000)
+            .map(|i| {
+                let phi = (i as f32) * 0.02;
+                let theta = (i as f32) * 0.01;
+                let r = 1.0 + (i % 100) as f32 * 0.01;
+                [
+                    r * phi.sin() * theta.cos(),
+                    r * phi.sin() * theta.sin(),
+                    r * phi.cos(),
+                ]
+            })
+            .collect();
+
+        // Create a grid of voxels
+        let mut means = Vec::new();
+        let mut inv_covs = Vec::new();
+        let mut principal_axes = Vec::new();
+        let mut valid = Vec::new();
+
+        for x in -5..5 {
+            for y in -5..5 {
+                for z in -2..2 {
+                    means.extend_from_slice(&[x as f32 * 2.0, y as f32 * 2.0, z as f32 * 2.0]);
+                    inv_covs.extend_from_slice(&[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+                    principal_axes.extend_from_slice(&[0.0, 0.0, 1.0]);
+                    valid.push(1);
+                }
+            }
+        }
+
+        let voxel_data = GpuVoxelData {
+            means,
+            inv_covariances: inv_covs,
+            principal_axes,
+            valid: valid.clone(),
+            num_voxels: valid.len(),
+        };
+
+        // Upload alignment data
+        pipeline
+            .upload_alignment_data(&source_points, &voxel_data, 0.55, 0.4, 2.0)
+            .unwrap();
+
+        // Run profiled optimization
+        let initial_pose = [0.1, 0.05, 0.0, 0.0, 0.0, 0.02];
+        let (result, profile) = pipeline.optimize_profiled(&initial_pose, 30, 0.01).unwrap();
+
+        // Print profiling report
+        #[cfg(feature = "test-verbose")]
+        profile.print_report();
+
+        crate::test_println!("\n=== Phase 24.4 Profiling Results ===");
+        crate::test_println!(
+            "Total: {:.3} ms, {} iterations, {:.3} ms/iter",
+            profile.total_ms,
+            result.iterations,
+            profile.per_iteration_ms()
+        );
+        crate::test_println!("Kernel breakdown per iteration (avg):");
+        crate::test_println!("  Compute:    {:.3} ms", profile.compute.avg_ms());
+        crate::test_println!("  Solve:      {:.3} ms", profile.solve.avg_ms());
+        crate::test_println!("  LineSearch: {:.3} ms", profile.linesearch.avg_ms());
+        crate::test_println!("  Update:     {:.3} ms", profile.update.avg_ms());
+        crate::test_println!(
+            "Kernel efficiency: {:.1}% (kernel time / total time)",
+            100.0 * profile.kernel_total_ms() / profile.total_ms
+        );
+
+        // Basic sanity checks
+        assert!(result.iterations > 0, "Should run at least one iteration");
+        assert!(
+            profile.compute.count > 0,
+            "Should have compute kernel calls"
+        );
+        assert!(profile.solve.count > 0, "Should have solve kernel calls");
+        assert!(
+            profile.linesearch.count > 0,
+            "Should have line search kernel calls"
+        );
+        assert!(profile.update.count > 0, "Should have update kernel calls");
+        assert!(
+            profile.kernel_total_ms() > 0.0,
+            "Should have non-zero kernel time"
+        );
     }
 }

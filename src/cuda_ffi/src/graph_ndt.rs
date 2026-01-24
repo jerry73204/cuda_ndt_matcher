@@ -553,6 +553,188 @@ pub unsafe fn graph_ndt_run_iteration_raw(
     Ok(())
 }
 
+// ============================================================================
+// Phase 24.4: Iteration Batching & Profiling
+// ============================================================================
+
+/// Timing statistics for a single kernel.
+#[derive(Debug, Clone, Default)]
+pub struct KernelTiming {
+    /// Kernel name
+    pub name: &'static str,
+    /// Total time in milliseconds
+    pub total_ms: f32,
+    /// Number of invocations
+    pub count: u32,
+}
+
+impl KernelTiming {
+    /// Average time per invocation in milliseconds.
+    pub fn avg_ms(&self) -> f32 {
+        if self.count > 0 {
+            self.total_ms / self.count as f32
+        } else {
+            0.0
+        }
+    }
+}
+
+/// Profiling statistics for graph-based NDT optimization.
+#[derive(Debug, Clone, Default)]
+pub struct GraphNdtProfile {
+    /// K1: Init kernel timing
+    pub init: KernelTiming,
+    /// K2: Compute kernel timing
+    pub compute: KernelTiming,
+    /// K3: Solve kernel timing
+    pub solve: KernelTiming,
+    /// K4: Line search kernel timing
+    pub linesearch: KernelTiming,
+    /// K5: Update kernel timing
+    pub update: KernelTiming,
+    /// Total alignment time including host overhead
+    pub total_ms: f32,
+    /// Number of iterations executed
+    pub iterations: u32,
+}
+
+impl GraphNdtProfile {
+    /// Create a new empty profile.
+    pub fn new() -> Self {
+        Self {
+            init: KernelTiming {
+                name: "init",
+                ..Default::default()
+            },
+            compute: KernelTiming {
+                name: "compute",
+                ..Default::default()
+            },
+            solve: KernelTiming {
+                name: "solve",
+                ..Default::default()
+            },
+            linesearch: KernelTiming {
+                name: "linesearch",
+                ..Default::default()
+            },
+            update: KernelTiming {
+                name: "update",
+                ..Default::default()
+            },
+            total_ms: 0.0,
+            iterations: 0,
+        }
+    }
+
+    /// Total kernel time (sum of all kernels) in milliseconds.
+    pub fn kernel_total_ms(&self) -> f32 {
+        self.init.total_ms
+            + self.compute.total_ms
+            + self.solve.total_ms
+            + self.linesearch.total_ms
+            + self.update.total_ms
+    }
+
+    /// Per-iteration time in milliseconds.
+    pub fn per_iteration_ms(&self) -> f32 {
+        if self.iterations > 0 {
+            self.kernel_total_ms() / self.iterations as f32
+        } else {
+            0.0
+        }
+    }
+
+    /// Print formatted profiling report.
+    pub fn print_report(&self) {
+        println!("=== Graph NDT Profiling Report ===");
+        println!(
+            "Total alignment: {:.3} ms ({} iterations)",
+            self.total_ms, self.iterations
+        );
+        println!("Per-iteration avg: {:.3} ms", self.per_iteration_ms());
+        println!();
+        println!("Kernel breakdown:");
+        println!(
+            "  Init:       {:.3} ms (×{}, avg {:.3} ms)",
+            self.init.total_ms,
+            self.init.count,
+            self.init.avg_ms()
+        );
+        println!(
+            "  Compute:    {:.3} ms (×{}, avg {:.3} ms)",
+            self.compute.total_ms,
+            self.compute.count,
+            self.compute.avg_ms()
+        );
+        println!(
+            "  Solve:      {:.3} ms (×{}, avg {:.3} ms)",
+            self.solve.total_ms,
+            self.solve.count,
+            self.solve.avg_ms()
+        );
+        if self.linesearch.count > 0 {
+            println!(
+                "  LineSearch: {:.3} ms (×{}, avg {:.3} ms)",
+                self.linesearch.total_ms,
+                self.linesearch.count,
+                self.linesearch.avg_ms()
+            );
+        }
+        println!(
+            "  Update:     {:.3} ms (×{}, avg {:.3} ms)",
+            self.update.total_ms,
+            self.update.count,
+            self.update.avg_ms()
+        );
+        println!(
+            "Kernel total: {:.3} ms ({:.1}% of total)",
+            self.kernel_total_ms(),
+            100.0 * self.kernel_total_ms() / self.total_ms
+        );
+    }
+}
+
+/// Run N iterations without convergence checking (for benchmarking).
+///
+/// This function batches multiple iterations to minimize host-device sync overhead.
+/// Useful for benchmarking kernel performance without early exit.
+///
+/// # Safety
+/// All device pointers must be valid CUDA device pointers with appropriate sizes.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn graph_ndt_run_iterations_batched_raw(
+    d_source_points: u64,
+    d_voxel_means: u64,
+    d_voxel_inv_covs: u64,
+    d_hash_table: u64,
+    config: &GraphNdtConfig,
+    d_state_buffer: u64,
+    d_reduce_buffer: u64,
+    d_ls_buffer: u64,
+    d_output_buffer: u64,
+    d_debug_buffer: u64,
+    num_iterations: u32,
+    stream: Option<&CudaStream>,
+) -> Result<(), CudaError> {
+    for _ in 0..num_iterations {
+        graph_ndt_run_iteration_raw(
+            d_source_points,
+            d_voxel_means,
+            d_voxel_inv_covs,
+            d_hash_table,
+            config,
+            d_state_buffer,
+            d_reduce_buffer,
+            d_ls_buffer,
+            d_output_buffer,
+            d_debug_buffer,
+            stream,
+        )?;
+    }
+    Ok(())
+}
+
 /// Run full NDT alignment using graph-based kernels.
 ///
 /// This is the main entry point for graph-based NDT optimization.
@@ -633,6 +815,161 @@ pub unsafe fn graph_ndt_align_raw(
         max_oscillation_count: output_data[46] as u32,
         avg_alpha: output_data[47],
     })
+}
+
+/// Run full NDT alignment with profiling.
+///
+/// Same as `graph_ndt_align_raw` but records timing for each kernel.
+///
+/// # Safety
+/// All device pointers must be valid CUDA device pointers with appropriate sizes.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn graph_ndt_align_profiled_raw(
+    d_source_points: u64,
+    d_voxel_means: u64,
+    d_voxel_inv_covs: u64,
+    d_hash_table: u64,
+    config: &GraphNdtConfig,
+    d_initial_pose: u64,
+    d_state_buffer: u64,
+    d_reduce_buffer: u64,
+    d_ls_buffer: u64,
+    d_output_buffer: u64,
+    d_debug_buffer: u64,
+) -> Result<(GraphNdtOutput, GraphNdtProfile), CudaError> {
+    use crate::async_stream::CudaEvent;
+    use std::time::Instant;
+
+    let mut profile = GraphNdtProfile::new();
+    let start_time = Instant::now();
+
+    // Create events for timing
+    let event_start = CudaEvent::new()?;
+    let event_end = CudaEvent::new()?;
+
+    // K1: Initialize
+    event_start.record_default()?;
+    graph_ndt_launch_init_raw(
+        d_initial_pose,
+        d_state_buffer,
+        d_reduce_buffer,
+        d_ls_buffer,
+        None,
+    )?;
+    event_end.record_default()?;
+    event_end.synchronize()?;
+    profile.init.total_ms += event_end.elapsed_time(&event_start)?;
+    profile.init.count += 1;
+
+    // Iteration loop
+    let mut iterations = 0u32;
+    for _ in 0..config.max_iterations {
+        iterations += 1;
+
+        // K2: Compute
+        event_start.record_default()?;
+        graph_ndt_launch_compute_raw(
+            d_source_points,
+            d_voxel_means,
+            d_voxel_inv_covs,
+            d_hash_table,
+            config,
+            d_state_buffer,
+            d_reduce_buffer,
+            None,
+        )?;
+        event_end.record_default()?;
+        event_end.synchronize()?;
+        profile.compute.total_ms += event_end.elapsed_time(&event_start)?;
+        profile.compute.count += 1;
+
+        // K3: Solve
+        event_start.record_default()?;
+        graph_ndt_launch_solve_raw(
+            config,
+            d_state_buffer,
+            d_reduce_buffer,
+            d_ls_buffer,
+            d_output_buffer,
+            None,
+        )?;
+        event_end.record_default()?;
+        event_end.synchronize()?;
+        profile.solve.total_ms += event_end.elapsed_time(&event_start)?;
+        profile.solve.count += 1;
+
+        // K4: Line search (if enabled)
+        if config.ls_enabled != 0 {
+            event_start.record_default()?;
+            graph_ndt_launch_linesearch_raw(
+                d_source_points,
+                d_voxel_means,
+                d_voxel_inv_covs,
+                d_hash_table,
+                config,
+                d_state_buffer,
+                d_ls_buffer,
+                None,
+            )?;
+            event_end.record_default()?;
+            event_end.synchronize()?;
+            profile.linesearch.total_ms += event_end.elapsed_time(&event_start)?;
+            profile.linesearch.count += 1;
+        }
+
+        // K5: Update
+        event_start.record_default()?;
+        graph_ndt_launch_update_raw(
+            config,
+            d_state_buffer,
+            d_reduce_buffer,
+            d_ls_buffer,
+            d_output_buffer,
+            d_debug_buffer,
+            None,
+        )?;
+        event_end.record_default()?;
+        event_end.synchronize()?;
+        profile.update.total_ms += event_end.elapsed_time(&event_start)?;
+        profile.update.count += 1;
+
+        // Check convergence
+        if graph_ndt_check_converged(d_state_buffer)? {
+            break;
+        }
+    }
+
+    profile.iterations = iterations;
+    profile.total_ms = start_time.elapsed().as_secs_f32() * 1000.0;
+
+    // Read output
+    let mut output_data = [0.0f32; OUTPUT_BUFFER_SIZE];
+    check_cuda(cudaMemcpy(
+        output_data.as_mut_ptr() as *mut std::ffi::c_void,
+        d_output_buffer as *const std::ffi::c_void,
+        OUTPUT_BUFFER_SIZE * std::mem::size_of::<f32>(),
+        CUDA_MEMCPY_DEVICE_TO_HOST,
+    ))?;
+
+    // Parse output
+    let mut pose = [0.0f32; 6];
+    pose.copy_from_slice(&output_data[0..6]);
+
+    let mut hessian = [0.0f32; 36];
+    hessian.copy_from_slice(&output_data[9..45]);
+
+    let output = GraphNdtOutput {
+        pose,
+        iterations: output_data[6] as i32,
+        converged: output_data[7] > 0.5,
+        score: output_data[8],
+        hessian,
+        num_correspondences: output_data[45] as u32,
+        max_oscillation_count: output_data[46] as u32,
+        avg_alpha: output_data[47],
+    };
+
+    Ok((output, profile))
 }
 
 // ============================================================================
