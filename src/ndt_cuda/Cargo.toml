@@ -12,12 +12,15 @@ description = "CubeCL-based CUDA NDT scan matching"
 cubecl = { version = "0.8", features = ["cuda"] }
 
 # cudarc for cuSOLVER (GPU Newton solve)
+# Note: Using cuda-12050 because Jetson Tegra drivers are missing:
+# - cuEventElapsedTime_v2 (required by cuda-12080+)
+# - cusolverDnXgeev (required by cuda-12060+)
 cudarc = { version = "0.18", default-features = false, features = [
     "std",
     "driver",
     "cusolver",
     "dynamic-loading",
-    "cuda-12080",
+    "cuda-12050",
 ] }
 
 # CUB radix sort via FFI
