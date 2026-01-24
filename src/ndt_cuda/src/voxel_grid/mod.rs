@@ -479,6 +479,7 @@ impl VoxelGrid {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::test_utils::{
         make_default_half_cubic_pcd, make_half_cubic_pcd_offset, make_xy_plane, voxelize_pcd,
@@ -512,7 +513,6 @@ mod tests {
 
         points
     }
-
     #[test]
     fn test_voxel_grid_from_points() {
         let points = generate_test_points();
@@ -525,7 +525,6 @@ mod tests {
         // Check resolution
         assert_eq!(grid.resolution(), 2.0);
     }
-
     #[test]
     fn test_voxel_grid_means_flat() {
         let points = generate_test_points();
@@ -534,7 +533,6 @@ mod tests {
         let means = grid.means_flat();
         assert_eq!(means.len(), grid.len() * 3);
     }
-
     #[test]
     fn test_voxel_grid_inv_covariances_flat() {
         let points = generate_test_points();
@@ -548,7 +546,6 @@ mod tests {
             assert!(val.is_finite(), "Found non-finite value: {val}");
         }
     }
-
     #[test]
     fn test_voxel_grid_bounds() {
         let points = generate_test_points();
@@ -566,7 +563,6 @@ mod tests {
         assert!(max.x >= 4); // 10/2 = 5, but floor
         assert!(max.y >= 4);
     }
-
     #[test]
     fn test_empty_voxel_grid() {
         let points: Vec<[f32; 3]> = Vec::new();
@@ -576,7 +572,6 @@ mod tests {
         assert_eq!(grid.len(), 0);
         assert!(grid.bounds().is_none());
     }
-
     #[test]
     fn test_voxel_mean_accuracy() {
         // Create points with known mean
@@ -610,7 +605,6 @@ mod tests {
         assert_relative_eq!(voxel.mean.y, center[1], epsilon = 0.02);
         assert_relative_eq!(voxel.mean.z, center[2], epsilon = 0.02);
     }
-
     #[test]
     fn test_covariance_symmetry() {
         let points = generate_test_points();
@@ -642,7 +636,6 @@ mod tests {
     // ========================================================================
     // Phase 2: Voxel grid tests using Autoware-style test data
     // ========================================================================
-
     #[test]
     fn test_voxel_grid_from_half_cubic() {
         let points = make_default_half_cubic_pcd();
@@ -662,7 +655,6 @@ mod tests {
             grid.len()
         );
     }
-
     #[test]
     fn test_voxel_grid_half_cubic_bounds() {
         let points = make_default_half_cubic_pcd();
@@ -680,7 +672,6 @@ mod tests {
         assert!(max.y <= 10, "max.y should be <= 10");
         assert!(max.z <= 10, "max.z should be <= 10");
     }
-
     #[test]
     fn test_voxel_grid_half_cubic_offset() {
         let points = make_half_cubic_pcd_offset(100.0, 100.0, 0.0);
@@ -712,7 +703,6 @@ mod tests {
             max.y
         );
     }
-
     #[test]
     fn test_voxel_mean_on_planar_points() {
         // Points on XY plane at z=0
@@ -728,7 +718,6 @@ mod tests {
             );
         }
     }
-
     #[test]
     fn test_voxel_covariance_on_planar_points() {
         // Points on XY plane -> z variance should be regularized (near minimum)
@@ -750,7 +739,6 @@ mod tests {
             );
         }
     }
-
     #[test]
     fn test_voxelized_sensor_pcd() {
         let original = make_default_half_cubic_pcd();
@@ -777,7 +765,6 @@ mod tests {
             );
         }
     }
-
     #[test]
     fn test_radius_search_on_half_cubic() {
         let points = make_default_half_cubic_pcd();
@@ -805,7 +792,6 @@ mod tests {
             );
         }
     }
-
     #[test]
     fn test_voxel_grid_min_points_filter() {
         // Create sparse points that might not meet min_points threshold
@@ -829,7 +815,6 @@ mod tests {
             );
         }
     }
-
     #[test]
     fn test_inv_covariance_positive_definite() {
         let points = make_default_half_cubic_pcd();
@@ -880,7 +865,6 @@ mod tests {
     fn points_to_flat(points: &[[f32; 3]]) -> Vec<f32> {
         points.iter().flat_map(|p| p.iter().copied()).collect()
     }
-
     #[test]
     fn test_cpu_gpu_voxel_count_consistency() {
         let points = make_default_half_cubic_pcd();
@@ -923,7 +907,6 @@ mod tests {
             "CPU ({cpu_count}) and GPU ({gpu_valid_count}) voxel counts should be similar, diff={diff}"
         );
     }
-
     #[test]
     fn test_cpu_gpu_means_consistency() {
         // Use a simple point cloud where voxel assignment is deterministic
@@ -984,7 +967,6 @@ mod tests {
             match_ratio * 100.0
         );
     }
-
     #[test]
     fn test_cpu_gpu_covariance_consistency() {
         // Use a simple 3D point cloud
@@ -1031,7 +1013,6 @@ mod tests {
             );
         }
     }
-
     #[test]
     fn test_cpu_gpu_inv_covariance_consistency() {
         // Use a simple 3D point cloud
@@ -1078,7 +1059,6 @@ mod tests {
             );
         }
     }
-
     #[test]
     fn test_cpu_gpu_half_cubic_consistency() {
         let points = make_default_half_cubic_pcd();
@@ -1120,7 +1100,6 @@ mod tests {
             cpu_total_points
         );
     }
-
     #[test]
     fn test_morton_codes_valid() {
         use crate::voxel_grid::gpu::{compute_morton_codes_cpu, morton_decode_3d};
@@ -1145,7 +1124,6 @@ mod tests {
             assert!(z < 0x1FFFFF, "Morton z should be < 2^21");
         }
     }
-
     #[test]
     fn test_radix_sort_preserves_data() {
         use crate::voxel_grid::gpu::radix_sort_by_key_cpu;
@@ -1172,7 +1150,6 @@ mod tests {
         // Values should follow their keys
         assert_eq!(sorted_values, vec![3, 1, 0, 4, 2]);
     }
-
     #[test]
     fn test_segment_detection_consistency() {
         use crate::voxel_grid::gpu::detect_segments_cpu;

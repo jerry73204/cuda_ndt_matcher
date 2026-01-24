@@ -376,8 +376,8 @@ pub unsafe fn sort_pairs_inplace(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
+    use super::*;
     #[test]
     fn test_sort_empty() {
         let sorter = RadixSorter::new().unwrap();
@@ -385,7 +385,6 @@ mod tests {
         assert!(keys.is_empty());
         assert!(values.is_empty());
     }
-
     #[test]
     fn test_sort_single() {
         let sorter = RadixSorter::new().unwrap();
@@ -393,7 +392,6 @@ mod tests {
         assert_eq!(keys, vec![42]);
         assert_eq!(values, vec![0]);
     }
-
     #[test]
     fn test_sort_ordered() {
         let sorter = RadixSorter::new().unwrap();
@@ -403,7 +401,6 @@ mod tests {
         assert_eq!(sorted_keys, vec![1, 2, 3, 4, 5]);
         assert_eq!(sorted_values, vec![0, 1, 2, 3, 4]);
     }
-
     #[test]
     fn test_sort_reversed() {
         let sorter = RadixSorter::new().unwrap();
@@ -413,7 +410,6 @@ mod tests {
         assert_eq!(sorted_keys, vec![1, 2, 3, 4, 5]);
         assert_eq!(sorted_values, vec![4, 3, 2, 1, 0]);
     }
-
     #[test]
     fn test_sort_random() {
         let sorter = RadixSorter::new().unwrap();
@@ -423,7 +419,6 @@ mod tests {
         assert_eq!(sorted_keys, vec![1, 17, 42, 50, 99]);
         assert_eq!(sorted_values, vec![3, 1, 0, 4, 2]);
     }
-
     #[test]
     fn test_sort_duplicates() {
         let sorter = RadixSorter::new().unwrap();
@@ -434,7 +429,6 @@ mod tests {
         // Values for equal keys can be in either order (stable sort not guaranteed)
         assert!(sorted_values.contains(&3)); // value for key 1
     }
-
     #[test]
     fn test_sort_large() {
         let sorter = RadixSorter::new().unwrap();

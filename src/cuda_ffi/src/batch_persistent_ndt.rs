@@ -919,8 +919,8 @@ pub unsafe fn batch_persistent_ndt_launch_warp_optimized_raw(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
+    use super::*;
     #[test]
     fn test_blocks_per_slot() {
         // 256 points -> 1 block
@@ -930,13 +930,11 @@ mod tests {
         // 1000 points -> 4 blocks
         assert_eq!(BatchPersistentNdt::blocks_per_slot(1000), 4);
     }
-
     #[test]
     fn test_total_blocks() {
         // 4 slots, 4 blocks each -> 16 total
         assert_eq!(BatchPersistentNdt::total_blocks(4, 4), 16);
     }
-
     #[test]
     fn test_reduce_buffer_size() {
         let size = BatchPersistentNdt::reduce_buffer_size();
@@ -947,7 +945,6 @@ mod tests {
             "Reduce buffer should be 160 floats (640 bytes)"
         );
     }
-
     #[test]
     fn test_shared_mem_size() {
         let size = BatchPersistentNdt::shared_mem_size();
@@ -958,7 +955,6 @@ mod tests {
             "Shared memory should be 256 * 29 * 4 bytes"
         );
     }
-
     #[test]
     fn test_warp_shared_mem_size() {
         let size = batch_warp_shared_mem_size();

@@ -294,14 +294,13 @@ unsafe impl Send for BatchedCholeskySolver {}
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
+    use super::*;
     #[test]
     fn test_solver_creation() {
         let solver = BatchedCholeskySolver::new();
         assert!(solver.is_ok(), "Failed to create batched solver");
     }
-
     #[test]
     fn test_workspace_size_query() {
         let solver = BatchedCholeskySolver::new().expect("Failed to create solver");

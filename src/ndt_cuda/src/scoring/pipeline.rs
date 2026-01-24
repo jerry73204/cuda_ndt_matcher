@@ -641,6 +641,7 @@ impl GpuScoringPipeline {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::derivatives::GaussianParams;
     use crate::scoring::{compute_nvtl, compute_transform_probability, NvtlConfig};
@@ -666,7 +667,6 @@ mod tests {
         let voxel_data = GpuVoxelData::from_voxel_grid(&grid);
         (grid, voxel_data)
     }
-
     #[test]
     fn test_gpu_scoring_single_pose() {
         let (grid, voxel_data) = make_test_grid();
@@ -700,7 +700,6 @@ mod tests {
         );
         assert!(results[0].num_with_neighbors > 0, "Should find neighbors");
     }
-
     #[test]
     fn test_gpu_scoring_multiple_poses() {
         let (grid, voxel_data) = make_test_grid();
@@ -737,7 +736,6 @@ mod tests {
             "Pose far away should have no neighbors"
         );
     }
-
     #[test]
     fn test_gpu_vs_cpu_scoring() {
         let (grid, voxel_data) = make_test_grid();
@@ -799,7 +797,6 @@ mod tests {
             epsilon = 0.001
         );
     }
-
     #[test]
     fn test_gpu_scoring_empty_input() {
         let (grid, voxel_data) = make_test_grid();
@@ -828,7 +825,6 @@ mod tests {
             .unwrap();
         assert!(results.is_empty());
     }
-
     #[test]
     fn test_gpu_scoring_no_correspondences() {
         let (grid, voxel_data) = make_test_grid();
@@ -853,7 +849,6 @@ mod tests {
         assert_eq!(results[0].transform_probability, 0.0);
         assert_eq!(results[0].nvtl, 0.0);
     }
-
     #[test]
     fn test_gpu_scoring_gpu_reduce() {
         let (grid, voxel_data) = make_test_grid();

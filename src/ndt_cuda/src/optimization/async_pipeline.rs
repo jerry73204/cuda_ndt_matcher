@@ -676,8 +676,8 @@ impl AsyncBatchPipeline {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
+    use super::*;
     #[test]
     fn test_async_pipeline_creation() {
         let pipeline = AsyncBatchPipeline::new(4, 2000, 10000);
@@ -688,7 +688,6 @@ mod tests {
         assert_eq!(pipeline.max_points_per_slot(), 2000);
         assert!(!pipeline.has_pending());
     }
-
     #[test]
     fn test_async_pipeline_empty_batch() {
         let mut pipeline = AsyncBatchPipeline::new(4, 2000, 10000).unwrap();
@@ -711,7 +710,6 @@ mod tests {
         // No pending since empty
         assert!(!pipeline.has_pending());
     }
-
     #[test]
     fn test_async_pipeline_single_alignment() {
         let mut pipeline = AsyncBatchPipeline::new(4, 2000, 10000).unwrap();
@@ -769,7 +767,6 @@ mod tests {
         );
         assert!(result.iterations > 0);
     }
-
     #[test]
     fn test_async_pipeline_double_buffer() {
         let mut pipeline = AsyncBatchPipeline::new(4, 2000, 10000).unwrap();
@@ -829,7 +826,6 @@ mod tests {
             results1[0].iterations
         );
     }
-
     #[test]
     fn test_async_pipeline_poll() {
         let mut pipeline = AsyncBatchPipeline::new(4, 2000, 10000).unwrap();

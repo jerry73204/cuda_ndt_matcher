@@ -609,8 +609,8 @@ impl BatchGpuPipeline {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
+    use super::*;
     #[test]
     fn test_batch_pipeline_creation() {
         let pipeline = BatchGpuPipeline::new(4, 2000, 10000);
@@ -620,7 +620,6 @@ mod tests {
         assert_eq!(pipeline.num_slots(), 4);
         assert_eq!(pipeline.max_points_per_slot(), 2000);
     }
-
     #[test]
     fn test_batch_pipeline_empty_batch() {
         let mut pipeline = BatchGpuPipeline::new(4, 2000, 10000).unwrap();
@@ -641,7 +640,6 @@ mod tests {
         let results = pipeline.align_batch(&[], 30, 0.01).unwrap();
         assert!(results.is_empty());
     }
-
     #[test]
     fn test_batch_pipeline_single_alignment() {
         let mut pipeline = BatchGpuPipeline::new(4, 2000, 10000).unwrap();
@@ -690,7 +688,6 @@ mod tests {
         );
         assert!(result.iterations > 0);
     }
-
     #[test]
     fn test_batch_pipeline_multiple_alignments() {
         let mut pipeline = BatchGpuPipeline::new(4, 2000, 10000).unwrap();

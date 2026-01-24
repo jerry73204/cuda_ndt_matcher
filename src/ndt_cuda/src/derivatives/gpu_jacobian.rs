@@ -420,6 +420,7 @@ fn jacobians_set_zeros_72<F: Float>(arr: &mut Array<F>, base: u32) {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::derivatives::gpu::{compute_point_hessians_cpu, compute_point_jacobians_cpu};
     use cubecl::cuda::{CudaDevice, CudaRuntime};
@@ -432,7 +433,6 @@ mod tests {
         let client = CudaRuntime::client(&device);
         (device, client)
     }
-
     #[test]
     fn test_gpu_jacobians_match_cpu() {
         let (_device, client) = get_test_client();
@@ -492,7 +492,6 @@ mod tests {
             );
         }
     }
-
     #[test]
     fn test_gpu_point_hessians_match_cpu() {
         let (_device, client) = get_test_client();

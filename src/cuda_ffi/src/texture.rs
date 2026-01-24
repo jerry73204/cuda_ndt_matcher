@@ -319,15 +319,14 @@ pub unsafe fn batch_persistent_ndt_launch_textured_raw(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
+    use super::*;
     #[test]
     fn test_texture_handle_size() {
         let size = texture_handle_size();
         // cudaTextureObject_t is unsigned long long = 8 bytes
         assert_eq!(size, 8);
     }
-
     #[test]
     fn test_texture_error_display() {
         let err = TextureError(1);

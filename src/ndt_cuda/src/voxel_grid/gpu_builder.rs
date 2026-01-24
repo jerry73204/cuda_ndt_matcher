@@ -638,9 +638,9 @@ fn voxel_id_to_coord(
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::test_utils::make_default_half_cubic_pcd;
-
     #[test]
     fn test_gpu_voxel_grid_construction() {
         let points = make_default_half_cubic_pcd();
@@ -655,7 +655,6 @@ mod tests {
         assert!(!grid.is_empty());
         assert!(grid.len() > 100, "Expected >100 voxels for half-cubic PCD");
     }
-
     #[test]
     fn test_gpu_cpu_consistency() {
         let points = make_default_half_cubic_pcd();
@@ -680,7 +679,6 @@ mod tests {
             cpu_grid.len()
         );
     }
-
     #[test]
     fn test_gpu_segmented_voxel_grid_construction() {
         let points = make_default_half_cubic_pcd();
@@ -699,7 +697,6 @@ mod tests {
             grid.len()
         );
     }
-
     #[test]
     fn test_gpu_segmented_vs_cpu_consistency() {
         let points = make_default_half_cubic_pcd();
@@ -736,7 +733,6 @@ mod tests {
             valid_count
         );
     }
-
     #[test]
     fn test_gpu_segmented_vs_hybrid_consistency() {
         let points = make_default_half_cubic_pcd();
@@ -763,7 +759,6 @@ mod tests {
             segmented_grid.len()
         );
     }
-
     #[test]
     fn test_gpu_zero_copy_voxel_grid_construction() {
         let points = make_default_half_cubic_pcd();
@@ -782,7 +777,6 @@ mod tests {
             grid.len()
         );
     }
-
     #[test]
     fn test_gpu_zero_copy_vs_cpu_consistency() {
         let points = make_default_half_cubic_pcd();
@@ -819,7 +813,6 @@ mod tests {
             valid_count
         );
     }
-
     #[test]
     fn test_gpu_zero_copy_vs_segmented_consistency() {
         let points = make_default_half_cubic_pcd();
@@ -846,7 +839,6 @@ mod tests {
             zero_copy_grid.len()
         );
     }
-
     #[test]
     fn test_gpu_zero_copy_empty_input() {
         let points: Vec<[f32; 3]> = vec![];

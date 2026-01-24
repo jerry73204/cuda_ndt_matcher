@@ -1290,6 +1290,7 @@ fn check_wolfe_at_candidate<F: Float>(
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use cubecl::cuda::{CudaDevice, CudaRuntime};
     fn get_test_client() -> (
@@ -1326,7 +1327,6 @@ mod tests {
             1.0,
         ]
     }
-
     #[test]
     fn test_transform_kernel_matches_cpu() {
         let (_device, client) = get_test_client();
@@ -1388,7 +1388,6 @@ mod tests {
             }
         }
     }
-
     #[test]
     fn test_dot_product_kernel() {
         let (_device, client) = get_test_client();
@@ -1423,7 +1422,6 @@ mod tests {
             "Dot product mismatch: got {result}, expected {expected}"
         );
     }
-
     #[test]
     fn test_dot_product_kernel_orthogonal() {
         let (_device, client) = get_test_client();
@@ -1455,7 +1453,6 @@ mod tests {
             "Orthogonal vectors should have dot product 0, got {result}"
         );
     }
-
     #[test]
     fn test_generate_candidates_kernel() {
         let (_device, client) = get_test_client();
@@ -1495,7 +1492,6 @@ mod tests {
             );
         }
     }
-
     #[test]
     fn test_generate_candidates_with_clamping() {
         let (_device, client) = get_test_client();
@@ -1532,7 +1528,6 @@ mod tests {
             );
         }
     }
-
     #[test]
     fn test_update_pose_kernel() {
         let (_device, client) = get_test_client();
@@ -1574,7 +1569,6 @@ mod tests {
             assert!(diff < 1e-6, "Pose[{i}] mismatch: got {got}, expected {exp}");
         }
     }
-
     #[test]
     fn test_convergence_kernel_converged() {
         let (_device, client) = get_test_client();
@@ -1605,7 +1599,6 @@ mod tests {
 
         assert_eq!(converged, 1, "Should be converged with small step");
     }
-
     #[test]
     fn test_convergence_kernel_not_converged() {
         let (_device, client) = get_test_client();
@@ -1664,7 +1657,6 @@ mod tests {
             r20 * point[0] + r21 * point[1] + r22 * point[2] + pose[2],
         ]
     }
-
     #[test]
     fn test_batch_transform_kernel() {
         let (_device, client) = get_test_client();
@@ -1755,7 +1747,6 @@ mod tests {
             }
         }
     }
-
     #[test]
     fn test_batch_transform_kernel_identity() {
         let (_device, client) = get_test_client();
@@ -1818,7 +1809,6 @@ mod tests {
     // ========================================================================
     // Phase 15.8: More-Thuente Kernel Tests
     // ========================================================================
-
     #[test]
     fn test_more_thuente_kernel_wolfe_satisfied() {
         let (_device, client) = get_test_client();
@@ -1900,7 +1890,6 @@ mod tests {
             "Expected ls_converged=1.0, got {ls_converged}"
         );
     }
-
     #[test]
     fn test_more_thuente_kernel_armijo_only() {
         let (_device, client) = get_test_client();
@@ -1972,7 +1961,6 @@ mod tests {
             "Expected ls_converged=0.0, got {ls_converged}"
         );
     }
-
     #[test]
     fn test_more_thuente_kernel_no_armijo() {
         let (_device, client) = get_test_client();

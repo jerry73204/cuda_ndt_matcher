@@ -251,8 +251,8 @@ impl Default for CpuPointFilter {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
+    use super::*;
     #[test]
     fn test_filter_params_default() {
         let params = FilterParams::default();
@@ -260,7 +260,6 @@ mod tests {
         assert_eq!(params.max_distance, f32::MAX);
         assert!(params.downsample_resolution.is_none());
     }
-
     #[test]
     fn test_cpu_filter_distance() {
         let points = vec![
@@ -279,7 +278,6 @@ mod tests {
         assert_eq!(result.points.len(), 1);
         assert_eq!(result.points[0], [5.0, 0.0, 0.0]);
     }
-
     #[test]
     fn test_cpu_filter_z() {
         let points = vec![
@@ -297,7 +295,6 @@ mod tests {
         let result = filter_points_cpu(&points, &params);
         assert_eq!(result.points.len(), 1);
     }
-
     #[test]
     fn test_cpu_voxel_downsample() {
         let points = vec![

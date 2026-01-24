@@ -539,9 +539,9 @@ impl MultiGridNdt {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::test_utils::make_default_half_cubic_pcd;
-
     #[test]
     fn test_multi_grid_config_default() {
         let config = MultiGridConfig::default();
@@ -550,7 +550,6 @@ mod tests {
         assert_eq!(config.levels[1].resolution, 2.0);
         assert_eq!(config.levels[2].resolution, 1.0);
     }
-
     #[test]
     fn test_multi_grid_config_with_resolutions() {
         let config = MultiGridConfig::with_resolutions(&[8.0, 4.0, 2.0, 1.0]);
@@ -560,7 +559,6 @@ mod tests {
         assert_eq!(config.levels[3].resolution, 1.0);
         assert_eq!(config.levels[3].max_iterations, 15); // Finest
     }
-
     #[test]
     fn test_multi_grid_config_two_level() {
         let config = MultiGridConfig::two_level(4.0, 2.0);
@@ -568,7 +566,6 @@ mod tests {
         assert_eq!(config.levels[0].resolution, 4.0);
         assert_eq!(config.levels[1].resolution, 2.0);
     }
-
     #[test]
     fn test_multi_grid_ndt_creation() {
         let ndt = MultiGridNdt::new(&[4.0, 2.0]).unwrap();
@@ -576,7 +573,6 @@ mod tests {
         assert_eq!(ndt.resolutions(), vec![4.0, 2.0]);
         assert!(!ndt.has_target());
     }
-
     #[test]
     fn test_multi_grid_ndt_builder() {
         let ndt = MultiGridNdt::builder()
@@ -588,7 +584,6 @@ mod tests {
 
         assert_eq!(ndt.num_levels(), 3);
     }
-
     #[test]
     fn test_multi_grid_set_target() {
         let mut ndt = MultiGridNdt::new(&[4.0, 2.0]).unwrap();
@@ -597,7 +592,6 @@ mod tests {
         ndt.set_target(&points).unwrap();
         assert!(ndt.has_target());
     }
-
     #[test]
     fn test_multi_grid_align_identity() {
         let mut ndt = MultiGridNdt::builder()
@@ -622,7 +616,6 @@ mod tests {
             translation
         );
     }
-
     #[test]
     fn test_multi_grid_align_with_offset() {
         let mut ndt = MultiGridNdt::builder()
@@ -646,7 +639,6 @@ mod tests {
             translation
         );
     }
-
     #[test]
     fn test_multi_grid_result_conversion() {
         let multi_result = MultiGridAlignResult {
@@ -667,14 +659,12 @@ mod tests {
         assert_eq!(align_result.iterations, 15);
         assert!(align_result.converged);
     }
-
     #[test]
     fn test_multi_grid_empty_target_error() {
         let mut ndt = MultiGridNdt::new(&[4.0, 2.0]).unwrap();
         let result = ndt.set_target(&[]);
         assert!(result.is_err());
     }
-
     #[test]
     fn test_multi_grid_no_target_error() {
         let ndt = MultiGridNdt::new(&[4.0, 2.0]).unwrap();

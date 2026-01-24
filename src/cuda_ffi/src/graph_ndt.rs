@@ -978,8 +978,8 @@ pub unsafe fn graph_ndt_align_profiled_raw(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
+    use super::*;
     #[test]
     fn test_buffer_sizes() {
         let result = get_buffer_sizes();
@@ -1005,7 +1005,6 @@ mod tests {
             state, reduce, ls, output
         );
     }
-
     #[test]
     fn test_shared_mem_sizes() {
         let compute_smem = compute_shared_mem_size();
@@ -1020,7 +1019,6 @@ mod tests {
             compute_smem, ls_smem
         );
     }
-
     #[test]
     fn test_config_builder() {
         let config = GraphNdtConfig::new(
@@ -1043,7 +1041,6 @@ mod tests {
         assert_eq!(config.ls_enabled, 1);
         assert_eq!(config.debug_enabled, 1);
     }
-
     #[test]
     fn test_num_blocks() {
         assert_eq!(num_blocks(256), 1);
@@ -1051,7 +1048,6 @@ mod tests {
         assert_eq!(num_blocks(512), 2);
         assert_eq!(num_blocks(100000), 391);
     }
-
     #[test]
     fn test_profile_new() {
         let profile = GraphNdtProfile::new();
@@ -1063,7 +1059,6 @@ mod tests {
         assert_eq!(profile.iterations, 0);
         assert_eq!(profile.total_ms, 0.0);
     }
-
     #[test]
     fn test_kernel_timing_avg() {
         let mut timing = KernelTiming {
@@ -1077,7 +1072,6 @@ mod tests {
         timing.count = 0;
         assert_eq!(timing.avg_ms(), 0.0);
     }
-
     #[test]
     fn test_profile_per_iteration() {
         let mut profile = GraphNdtProfile::new();
@@ -1160,7 +1154,6 @@ mod tests {
         }
     }
     // Drop is automatically handled by AsyncDeviceBuffer's Drop implementation
-
     #[test]
     fn test_k1_init_kernel() {
         // Test that K1 (init kernel) runs without error
@@ -1212,7 +1205,6 @@ mod tests {
         assert!((state[1] - 2.0).abs() < 0.001, "Y should be initialized");
         assert!((state[2] - 3.0).abs() < 0.001, "Z should be initialized");
     }
-
     #[test]
     fn test_k2_compute_kernel() {
         // Test that K2 (compute kernel) runs without error on empty data
@@ -1252,7 +1244,6 @@ mod tests {
             check_cuda(cudaDeviceSynchronize()).expect("Sync failed");
         }
     }
-
     #[test]
     fn test_k3_solve_kernel() {
         // Test that K3 (solve kernel) runs without error
@@ -1290,7 +1281,6 @@ mod tests {
             check_cuda(cudaDeviceSynchronize()).expect("Sync failed");
         }
     }
-
     #[test]
     fn test_k4_linesearch_kernel() {
         // Test that K4 (line search kernel) runs without error
@@ -1331,7 +1321,6 @@ mod tests {
             check_cuda(cudaDeviceSynchronize()).expect("Sync failed");
         }
     }
-
     #[test]
     fn test_k5_update_kernel() {
         // Test that K5 (update kernel) runs without error
@@ -1375,7 +1364,6 @@ mod tests {
         assert!(iterations.is_ok(), "Should be able to read iterations");
         assert_eq!(iterations.unwrap(), 1, "Should have run 1 iteration");
     }
-
     #[test]
     fn test_full_iteration_sequence() {
         // Test that a full iteration (K2 -> K3 -> K5) runs correctly
@@ -1427,7 +1415,6 @@ mod tests {
             );
         }
     }
-
     #[test]
     fn test_convergence_flag() {
         // Test that convergence flag can be read

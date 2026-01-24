@@ -311,21 +311,19 @@ pub unsafe fn hash_table_count_entries(d_hash_table: u64, capacity: u32) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
+    use super::*;
     #[test]
     fn test_max_neighbors() {
         let max = max_neighbors();
         assert_eq!(max, 8, "MAX_NEIGHBORS should be 8");
     }
-
     #[test]
     fn test_get_capacity() {
         let cap = VoxelHash::get_capacity(1000).unwrap();
         assert!(cap >= 2000, "Capacity should be at least 2x voxels");
         assert!(cap.is_power_of_two(), "Capacity should be power of 2");
     }
-
     #[test]
     fn test_get_table_size() {
         let cap = VoxelHash::get_capacity(1000).unwrap();
@@ -333,7 +331,6 @@ mod tests {
         // Each entry is 16 bytes (int64 key + int32 value + int32 padding)
         assert_eq!(size, cap as usize * 16);
     }
-
     #[test]
     fn test_build_and_query() {
         // Create test data: 4 voxels at corners of a 4x4x4 grid

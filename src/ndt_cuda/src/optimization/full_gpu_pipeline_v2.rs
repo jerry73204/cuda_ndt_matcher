@@ -913,14 +913,13 @@ impl FullGpuPipelineV2 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
+    use super::*;
     #[test]
     fn test_pipeline_v2_creation() {
         let pipeline = FullGpuPipelineV2::new(1000, 5000);
         assert!(pipeline.is_ok());
     }
-
     #[test]
     fn test_pipeline_v2_with_config() {
         let config = PipelineV2Config {
@@ -931,7 +930,6 @@ mod tests {
         let pipeline = FullGpuPipelineV2::with_config(1000, 5000, config);
         assert!(pipeline.is_ok());
     }
-
     #[test]
     fn test_pipeline_v2_empty_input() {
         let mut pipeline = FullGpuPipelineV2::new(1000, 5000).unwrap();
@@ -958,7 +956,6 @@ mod tests {
         assert!(result.converged);
         assert_eq!(result.iterations, 0);
     }
-
     #[test]
     fn test_pipeline_v2_multiple_points() {
         let mut pipeline = FullGpuPipelineV2::new(1000, 5000).unwrap();
@@ -1026,7 +1023,6 @@ mod tests {
             result.score
         );
     }
-
     #[test]
     fn test_pipeline_v2_no_line_search() {
         let config = PipelineV2Config {
@@ -1091,7 +1087,6 @@ mod tests {
             result.converged
         );
     }
-
     #[test]
     fn test_pipeline_v2_with_line_search() {
         let config = PipelineV2Config {
@@ -1136,7 +1131,6 @@ mod tests {
             result.avg_alpha
         );
     }
-
     #[test]
     fn test_pipeline_v2_with_regularization() {
         // Use a small scale factor to avoid making the Hessian non-positive-definite
@@ -1210,7 +1204,6 @@ mod tests {
             "Should run at least one iteration with regularization"
         );
     }
-
     #[test]
     fn test_pipeline_v2_regularization_disabled() {
         // Regularization disabled in config
@@ -1278,7 +1271,6 @@ mod tests {
         // Should complete normally (regularization shouldn't affect result)
         assert!(result.iterations > 0 || result.converged);
     }
-
     #[test]
     fn test_pipeline_v2_oscillation_tracking() {
         // Test that oscillation count is tracked in GPU path
@@ -1417,7 +1409,6 @@ mod tests {
             }
         }
     }
-
     #[test]
     fn test_persistent_kernel_optimization() {
         // Test the persistent kernel optimization path

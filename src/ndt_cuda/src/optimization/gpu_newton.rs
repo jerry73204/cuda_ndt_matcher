@@ -525,9 +525,9 @@ impl GpuNewtonSolver {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use approx::assert_relative_eq;
-
     #[test]
     fn test_solve_identity() {
         let mut solver = GpuNewtonSolver::new(0).unwrap();
@@ -547,7 +547,6 @@ mod tests {
             assert_relative_eq!(val, -(i as f64 + 1.0), epsilon = 1e-10);
         }
     }
-
     #[test]
     fn test_solve_scaled_identity() {
         let mut solver = GpuNewtonSolver::new(0).unwrap();
@@ -567,7 +566,6 @@ mod tests {
             assert_relative_eq!(val, -(i as f64 + 1.0), epsilon = 1e-10);
         }
     }
-
     #[test]
     fn test_solve_positive_definite() {
         let mut solver = GpuNewtonSolver::new(0).unwrap();
@@ -595,7 +593,6 @@ mod tests {
             assert_relative_eq!(result[i], -gradient[i], epsilon = 1e-8);
         }
     }
-
     #[test]
     fn test_solve_non_positive_definite() {
         let mut solver = GpuNewtonSolver::new(0).unwrap();
@@ -623,7 +620,6 @@ mod tests {
             assert_relative_eq!(result[i], -gradient[i], epsilon = 1e-8);
         }
     }
-
     #[test]
     fn test_row_to_col_major() {
         let row_major = [
@@ -641,7 +637,6 @@ mod tests {
             }
         }
     }
-
     #[test]
     fn test_solve_inplace() {
         let mut solver = GpuNewtonSolver::new(0).unwrap();

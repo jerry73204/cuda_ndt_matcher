@@ -972,6 +972,7 @@ pub fn is_cuda_available() -> bool {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     /// Skip test at runtime if CUDA is not available.
@@ -985,13 +986,11 @@ mod tests {
             }
         };
     }
-
     #[test]
     fn test_cuda_availability() {
         let _available = is_cuda_available();
         crate::test_println!("CUDA available: {_available}");
     }
-
     #[test]
     fn test_transform_points_gpu() {
         require_cuda!();
@@ -1020,7 +1019,6 @@ mod tests {
             }
         }
     }
-
     #[test]
     fn test_transform_points_translation() {
         require_cuda!();
@@ -1044,7 +1042,6 @@ mod tests {
         assert!((result[0][1] - 2.0).abs() < 1e-5);
         assert!((result[0][2] - 3.0).abs() < 1e-5);
     }
-
     #[test]
     fn test_compute_scores_gpu() {
         require_cuda!();
@@ -1093,7 +1090,6 @@ mod tests {
         // Score should be negative (NDT score formula: -d1 * exp(...))
         assert!(result.total_score < 0.0);
     }
-
     #[test]
     fn test_compute_nvtl_scores_gpu() {
         require_cuda!();
@@ -1149,7 +1145,6 @@ mod tests {
         // max_scores should have one entry
         assert_eq!(result.max_scores.len(), 1);
     }
-
     #[test]
     fn test_cpu_vs_gpu_derivatives() {
         require_cuda!();
@@ -1307,7 +1302,6 @@ mod tests {
             );
         }
     }
-
     #[test]
     fn test_cpu_vs_gpu_single_point_single_voxel() {
         require_cuda!();

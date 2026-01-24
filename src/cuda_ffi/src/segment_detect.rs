@@ -406,8 +406,8 @@ pub unsafe fn detect_segments_inplace(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
+    use super::*;
     #[test]
     fn test_detect_segments_empty() {
         let detector = SegmentDetector::new().unwrap();
@@ -415,7 +415,6 @@ mod tests {
         assert_eq!(result.num_segments, 0);
         assert!(result.segment_ids.is_empty());
     }
-
     #[test]
     fn test_detect_segments_single() {
         let detector = SegmentDetector::new().unwrap();
@@ -427,7 +426,6 @@ mod tests {
         assert_eq!(result.segment_starts, vec![0]);
         assert_eq!(result.segment_codes, vec![42]);
     }
-
     #[test]
     fn test_detect_segments_all_same() {
         let detector = SegmentDetector::new().unwrap();
@@ -439,7 +437,6 @@ mod tests {
         assert_eq!(result.segment_starts, vec![0]);
         assert_eq!(result.segment_codes, vec![42]);
     }
-
     #[test]
     fn test_detect_segments_all_different() {
         let detector = SegmentDetector::new().unwrap();
@@ -450,7 +447,6 @@ mod tests {
         let expected_ids: Vec<u32> = (0..50).collect();
         assert_eq!(result.segment_ids, expected_ids);
     }
-
     #[test]
     fn test_detect_segments_three_groups() {
         let detector = SegmentDetector::new().unwrap();
@@ -463,7 +459,6 @@ mod tests {
         assert_eq!(result.segment_starts, vec![0, 3, 5]);
         assert_eq!(result.segment_codes, vec![1, 5, 9]);
     }
-
     #[test]
     fn test_detect_segments_gpu_vs_expected() {
         let detector = SegmentDetector::new().unwrap();

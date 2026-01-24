@@ -1242,6 +1242,7 @@ impl NdtScanMatcher {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::test_utils::{
         make_default_half_cubic_pcd, make_half_cubic_pcd_offset, voxelize_pcd,
@@ -1265,7 +1266,6 @@ mod tests {
             })
             .collect()
     }
-
     #[test]
     fn test_builder() {
         let matcher = NdtScanMatcher::builder()
@@ -1280,7 +1280,6 @@ mod tests {
         assert_eq!(matcher.config().max_iterations, 50);
         assert_relative_eq!(matcher.config().trans_epsilon, 0.001);
     }
-
     #[test]
     fn test_set_target() {
         let mut matcher = NdtScanMatcher::new(2.0).unwrap();
@@ -1292,7 +1291,6 @@ mod tests {
         assert!(matcher.has_target());
         assert!(matcher.target_grid().is_some());
     }
-
     #[test]
     fn test_set_target_empty() {
         let mut matcher = NdtScanMatcher::new(2.0).unwrap();
@@ -1301,7 +1299,6 @@ mod tests {
         let result = matcher.set_target(&points);
         assert!(result.is_err());
     }
-
     #[test]
     fn test_align_identity() {
         let mut matcher = NdtScanMatcher::new(2.0).unwrap();
@@ -1321,7 +1318,6 @@ mod tests {
             "Should have correspondences"
         );
     }
-
     #[test]
     fn test_align_with_translation() {
         let mut matcher = NdtScanMatcher::new(2.0).unwrap();
@@ -1341,7 +1337,6 @@ mod tests {
         assert!(result.score > 0.0);
         assert!(result.num_correspondences > 0);
     }
-
     #[test]
     fn test_align_no_target() {
         let matcher = NdtScanMatcher::new(2.0).unwrap();
@@ -1350,7 +1345,6 @@ mod tests {
         let result = matcher.align(&source, Isometry3::identity());
         assert!(result.is_err());
     }
-
     #[test]
     fn test_evaluate_nvtl() {
         let mut matcher = NdtScanMatcher::new(2.0).unwrap();
@@ -1367,7 +1361,6 @@ mod tests {
         // Points at same location should have positive NVTL
         assert!(nvtl > 0.0);
     }
-
     #[test]
     fn test_evaluate_transform_probability() {
         let mut matcher = NdtScanMatcher::new(2.0).unwrap();
@@ -1383,7 +1376,6 @@ mod tests {
 
         assert!(tp > 0.0);
     }
-
     #[test]
     fn test_per_point_scores() {
         let mut matcher = NdtScanMatcher::new(2.0).unwrap();

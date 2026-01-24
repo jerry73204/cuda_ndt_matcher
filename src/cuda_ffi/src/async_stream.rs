@@ -516,46 +516,40 @@ pub fn cuda_error_not_ready_code() -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
+    use super::*;
     #[test]
     fn test_stream_create_destroy() {
         let stream = CudaStream::new().expect("Failed to create stream");
         assert!(!stream.as_raw().is_null());
         // Drop should clean up
     }
-
     #[test]
     fn test_stream_non_blocking() {
         let stream = CudaStream::new_non_blocking().expect("Failed to create non-blocking stream");
         assert!(!stream.as_raw().is_null());
     }
-
     #[test]
     fn test_stream_synchronize() {
         let stream = CudaStream::new().expect("Failed to create stream");
         stream.synchronize().expect("Failed to synchronize");
     }
-
     #[test]
     fn test_stream_query() {
         let stream = CudaStream::new().expect("Failed to create stream");
         // Empty stream should be complete
         assert!(stream.is_complete());
     }
-
     #[test]
     fn test_event_create_destroy() {
         let event = CudaEvent::new().expect("Failed to create event");
         assert!(!event.as_raw().is_null());
     }
-
     #[test]
     fn test_event_disable_timing() {
         let event = CudaEvent::new_disable_timing().expect("Failed to create event");
         assert!(!event.as_raw().is_null());
     }
-
     #[test]
     fn test_event_record_sync() {
         let stream = CudaStream::new().expect("Failed to create stream");
@@ -565,7 +559,6 @@ mod tests {
         event.synchronize().expect("Failed to synchronize event");
         assert!(event.is_complete());
     }
-
     #[test]
     fn test_pinned_buffer_create() {
         let buffer = PinnedBuffer::<f32>::new(1024).expect("Failed to create pinned buffer");
@@ -573,14 +566,12 @@ mod tests {
         assert_eq!(buffer.size_bytes(), 1024 * 4);
         assert!(!buffer.as_ptr().is_null());
     }
-
     #[test]
     fn test_pinned_buffer_empty() {
         let buffer = PinnedBuffer::<f32>::new(0).expect("Failed to create empty buffer");
         assert_eq!(buffer.len(), 0);
         assert!(buffer.is_empty());
     }
-
     #[test]
     fn test_pinned_buffer_read_write() {
         let mut buffer = PinnedBuffer::<f32>::new(100).expect("Failed to create buffer");
@@ -592,7 +583,6 @@ mod tests {
         assert_eq!(buffer.as_slice()[0], 42.0);
         assert_eq!(buffer.as_slice()[99], 42.0);
     }
-
     #[test]
     fn test_pinned_buffer_copy_from_slice() {
         let mut buffer = PinnedBuffer::<f32>::new(100).expect("Failed to create buffer");
@@ -603,14 +593,12 @@ mod tests {
         assert_eq!(buffer.as_slice()[0], 0.0);
         assert_eq!(buffer.as_slice()[49], 49.0);
     }
-
     #[test]
     fn test_async_device_buffer() {
         let buffer = AsyncDeviceBuffer::new(1024).expect("Failed to create device buffer");
         assert_eq!(buffer.size(), 1024);
         assert!(!buffer.as_ptr().is_null());
     }
-
     #[test]
     fn test_async_h2d_d2h() {
         let stream = CudaStream::new().expect("Failed to create stream");
@@ -647,7 +635,6 @@ mod tests {
             assert_eq!(h_dst.as_slice()[i], i as f32, "Mismatch at index {i}");
         }
     }
-
     #[test]
     fn test_event_timing() {
         let stream = CudaStream::new().expect("Failed to create stream");
@@ -677,7 +664,6 @@ mod tests {
         #[cfg(feature = "test-verbose")]
         println!("Elapsed time: {elapsed:.4} ms");
     }
-
     #[test]
     fn test_stream_wait_event() {
         let stream1 = CudaStream::new().expect("Failed to create stream1");

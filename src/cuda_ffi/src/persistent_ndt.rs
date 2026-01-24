@@ -404,8 +404,8 @@ pub unsafe fn persistent_ndt_launch_raw(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
+    use super::*;
     #[test]
     fn test_is_supported() {
         let result = is_supported();
@@ -413,7 +413,6 @@ mod tests {
         #[cfg(feature = "test-verbose")]
         println!("Cooperative launch supported: {}", result.unwrap());
     }
-
     #[test]
     fn test_get_max_blocks() {
         let result = PersistentNdt::get_max_blocks();
@@ -423,7 +422,6 @@ mod tests {
         println!("Max cooperative blocks: {max_blocks}");
         assert!(max_blocks > 0, "Max blocks should be positive");
     }
-
     #[test]
     fn test_reduce_buffer_size() {
         let size = reduce_buffer_size();
@@ -433,7 +431,6 @@ mod tests {
             "Reduce buffer should be 160 floats (640 bytes) for parallel line search"
         );
     }
-
     #[test]
     fn test_can_launch() {
         // Small point count should always work

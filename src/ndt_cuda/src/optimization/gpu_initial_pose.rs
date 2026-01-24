@@ -859,8 +859,8 @@ fn solve_newton_step(hessian_flat: &[f64; 36], gradient: &[f64; 6]) -> Result<[f
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
+    use super::*;
     #[test]
     #[ignore = "requires CUDA GPU"]
     fn test_pipeline_creation() {
@@ -875,7 +875,6 @@ mod tests {
         // Pipeline created successfully
         assert_eq!(pipeline.config().max_points, 1000);
     }
-
     #[test]
     fn test_memory_requirements_calculation() {
         // Test memory requirement calculations without creating actual GPU pipeline
@@ -914,7 +913,6 @@ mod tests {
 
         crate::test_println!("Total memory: {:.2} MB", mem.total_mb());
     }
-
     #[test]
     #[ignore = "requires CUDA GPU"]
     fn test_evaluate_batch_empty() {
@@ -931,7 +929,6 @@ mod tests {
         let results = pipeline.evaluate_batch(&[]).unwrap();
         assert_eq!(results.len(), 0);
     }
-
     #[test]
     fn test_solve_newton_step() {
         // Test with identity Hessian
@@ -949,7 +946,6 @@ mod tests {
             assert!((delta[i] + gradient[i]).abs() < 1e-10);
         }
     }
-
     #[test]
     fn test_default_config() {
         let config = GpuInitialPoseConfig::default();
@@ -958,7 +954,6 @@ mod tests {
         assert_eq!(config.max_batch_size, 8);
         assert_eq!(config.max_iterations, 30);
     }
-
     #[test]
     fn test_batched_ndt_result() {
         let result = BatchedNdtResult {

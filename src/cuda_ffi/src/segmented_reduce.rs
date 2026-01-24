@@ -321,15 +321,14 @@ pub unsafe fn segmented_reduce_sum_f64_inplace(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
+    use super::*;
     #[test]
     fn test_sum_empty() {
         let reducer = SegmentedReducer::new().unwrap();
         let sums = reducer.sum_f32(&[], &[]).unwrap();
         assert!(sums.is_empty());
     }
-
     #[test]
     fn test_sum_single_segment() {
         let reducer = SegmentedReducer::new().unwrap();
@@ -339,7 +338,6 @@ mod tests {
         assert_eq!(sums.len(), 1);
         assert!((sums[0] - 10.0).abs() < 1e-5);
     }
-
     #[test]
     fn test_sum_multiple_segments() {
         let reducer = SegmentedReducer::new().unwrap();
@@ -352,7 +350,6 @@ mod tests {
         assert!((sums[1] - 18.0).abs() < 1e-5); // 5+6+7
         assert!((sums[2] - 27.0).abs() < 1e-5); // 8+9+10
     }
-
     #[test]
     fn test_sum_equal_segments() {
         let reducer = SegmentedReducer::new().unwrap();
@@ -366,7 +363,6 @@ mod tests {
         assert!((sums[2] - 24.0).abs() < 1e-5); // 7+8+9
         assert!((sums[3] - 33.0).abs() < 1e-5); // 10+11+12
     }
-
     #[test]
     fn test_sum_f64() {
         let reducer = SegmentedReducer::new().unwrap();
@@ -377,7 +373,6 @@ mod tests {
         assert!((sums[0] - 6.0).abs() < 1e-10);
         assert!((sums[1] - 15.0).abs() < 1e-10);
     }
-
     #[test]
     fn test_sum_large() {
         let reducer = SegmentedReducer::new().unwrap();
@@ -412,7 +407,6 @@ mod tests {
             );
         }
     }
-
     #[test]
     fn test_sum_43_segments() {
         // Test the exact NDT use case: 43 segments (1 score + 6 gradient + 36 hessian)
