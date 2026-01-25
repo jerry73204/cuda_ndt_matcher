@@ -4,7 +4,7 @@ Feature comparison between `cuda_ndt_matcher` and Autoware's `ndt_scan_matcher`.
 
 **Target Version**: Autoware 1.5.0 (`autoware_core` repository)
 
-**Last Updated**: 2026-01-24 (Updated target to Autoware 1.5.0)
+**Last Updated**: 2026-01-25 (Updated to CUDA Graph Kernels - Phase 24)
 
 ---
 
@@ -755,33 +755,57 @@ Results: means [V×3], inv_covariances [V×9]
 
 ### 2. Derivative Pipeline (`FullGpuPipelineV2`)
 
-**Current implementation** (~224 bytes per-iteration, Phase 15):
+**Architecture**: CUDA Graph Kernels (Phase 24)
+
+The optimization pipeline uses 5 separate CUDA kernels instead of a single cooperative kernel.
+This approach works on all GPUs, including those with limited SM count (e.g., Jetson Orin),
+and eliminates the cooperative groups dependency.
+
+**Kernel architecture** (`ndt_graph_kernels.cu`):
+
+| Kernel | Purpose | Grid/Block |
+|--------|---------|------------|
+| K1: Init | Initialize state from initial pose | 1×32 threads |
+| K2: Compute | Per-point score/gradient/Hessian + block reduction | ceil(N/256)×256 threads |
+| K3: Solve | Newton solve (Jacobi SVD), regularization, direction check | 1×32 threads |
+| K4: LineSearch | Parallel evaluation of K step size candidates | ceil(N/256)×256 threads |
+| K5: Update | Apply step, oscillation detection, convergence check | 1×32 threads |
+
+**Buffer layout** (persistent across iterations):
+
+| Buffer | Size (floats) | Purpose |
+|--------|---------------|---------|
+| state_buffer | 102 | Pose, delta, oscillation tracking, alpha candidates |
+| reduce_buffer | 29 | Score, gradient, Hessian upper triangle, correspondences |
+| ls_buffer | 68 | Line search candidates, phi_0/dphi_0, per-candidate scores/grads |
+| output_buffer | 48 | Final pose, iterations, convergence, Hessian, statistics |
+| debug_buffer | max_iter×50 | Optional per-iteration debug data |
+
+**Iteration flow** (~224 bytes per-iteration transfer):
 ```
 Once per alignment:
   Upload: source_points [N×3], voxel_means [V×3], voxel_inv_covs [V×9]
+  K1: Init state from initial_pose
 
 Per iteration:
-  Phase A - Newton Direction (GPU):
-    sin_cos → transform → jacobians → point_hessians →
-    radius_search → score → gradient → hessian → CUB reduce
-    Download: 172 bytes (for f64 Newton solve)
-    CPU: cuSOLVER 6×6 Cholesky
-    Upload: 24 bytes (delta)
-
-  Phase B - Line Search (GPU, if enabled):
-    Generate K=8 candidates → batch transform K×N points →
-    batch score/gradient → CUB reduce → More-Thuente selection
-
-  Phase C - Update State (GPU):
-    pose += α×δ → convergence check
-    Download: 24 bytes (pose for oscillation tracking)
-    Download: 4 bytes (converged flag)
-    CPU: Track pose history for oscillation detection
+  K2: Compute score/gradient/Hessian (parallel per-point, atomic reduction)
+  K3: Solve Newton system (Jacobi SVD), apply regularization, setup line search
+  K4: Line search evaluation (if enabled, parallel per-point for K=8 candidates)
+  K5: Apply best step, detect oscillation, check convergence
+  Host: cudaDeviceSynchronize + check convergence flag
 
 After convergence:
-  CPU: Compute oscillation count from pose history
-  Download: final pose [24 bytes] (already in history)
+  Download: output_buffer (192 bytes)
 ```
+
+**Advantages over cooperative kernel**:
+- Works on Jetson Orin (limited SM count prevents cooperative launch)
+- No `cudaLaunchCooperativeKernel` requirement
+- Explicit synchronization between kernels for easier debugging
+- Same algorithmic behavior as the original persistent kernel
+
+**Note**: The pipeline still uses CubeCL for some helper operations (point transformation,
+voxel grid construction). These require compatible nvrtc at runtime.
 
 ### 3. Scoring Pipeline (`GpuScoringPipeline`)
 
@@ -814,19 +838,101 @@ Per batch (M poses):
 - Batch scoring (`GpuScoringPipeline`)
 - Batch alignment (`align_batch_gpu()`)
 
-**Full GPU Newton with Line Search (Phase 15)**: The default path (`NDT_USE_GPU=1`) runs the entire Newton optimization on GPU with ~224 bytes per-iteration transfer:
-- Jacobians and Point Hessians computed on GPU
-- Newton solve via cuSOLVER (6×6 Cholesky) - requires f64, hence ~200 bytes download/upload
-- More-Thuente line search with K=8 batched candidates (GPU)
-- GNSS regularization penalty (GPU kernel)
-- Convergence check on GPU
-- Oscillation detection via pose history download (24 bytes/iter)
+**Full GPU Newton with Line Search (Phase 24)**: The default path (`NDT_USE_GPU=1`) runs the entire Newton optimization on GPU using CUDA graph kernels:
+- 5 separate kernels (K1-K5) replace the cooperative groups persistent kernel
+- Jacobi SVD solver for Newton direction (handles indefinite Hessians)
+- More-Thuente line search with K=8 batched candidates (parallel evaluation)
+- GNSS regularization in K3 (solve) and K5 (line search evaluation)
+- Oscillation detection via pose history in state_buffer
 - Per-iteration debug data collection (when `enable_debug: true`)
+- Works on Jetson Orin (no cooperative launch requirement)
 
 **Behavioral compatibility**: Convergence gating matches Autoware:
 - Max iterations check (gates if hit max iterations)
 - Oscillation count > 10 (gates if oscillating)
 - Score threshold (gates if below threshold)
+
+---
+
+## Phase 24 Migration Notes
+
+**Date**: 2026-01-25
+
+### Bugs Found and Fixed
+
+During the migration from cooperative groups persistent kernel to CUDA graph kernels,
+two bugs were discovered and fixed:
+
+#### 1. Output Buffer Ordering Bug (Fixed)
+
+**Location**: `ndt_graph_kernels.cu`, K5 update kernel
+
+**Bug**: The reduce buffer was cleared BEFORE writing final score and correspondences to
+the output buffer, resulting in zero values.
+
+**Impact**: Final score and correspondence count were always 0 in the output, affecting
+diagnostics and covariance estimation quality metrics.
+
+**Fix**: Moved output buffer write BEFORE reduce buffer clear:
+```cpp
+// BEFORE (wrong):
+for (int i = 0; i < ReduceOffset::TOTAL_SIZE; i++)
+    reduce_buffer[i] = 0.0f;  // Clears score!
+// ...later...
+output_buffer[OutputOffset::FINAL_SCORE] = reduce_buffer[ReduceOffset::SCORE];  // Always 0!
+
+// AFTER (correct):
+if (converged || at_max_iterations) {
+    output_buffer[OutputOffset::FINAL_SCORE] = reduce_buffer[ReduceOffset::SCORE];  // Correct value
+    // ...
+}
+for (int i = 0; i < ReduceOffset::TOTAL_SIZE; i++)
+    reduce_buffer[i] = 0.0f;  // Now safe to clear
+```
+
+#### 2. Regularization Gradient in Line Search (Fixed)
+
+**Location**: `ndt_graph_kernels.cu`, K5 update kernel, Wolfe condition check
+
+**Bug**: When computing the directional derivative (dphi_k) for the curvature condition,
+the regularization gradient adjustment was not applied. The old persistent kernel
+applied regularization to the gradient before computing dphi_k.
+
+**Impact**: Curvature condition in Strong Wolfe line search was computed incorrectly
+when GNSS regularization was enabled, potentially selecting suboptimal step sizes.
+
+**Fix**: Apply regularization gradient adjustment before computing dphi_k:
+```cpp
+// Copy gradient and apply regularization adjustment
+float grad[6];
+for (int i = 0; i < 6; i++)
+    grad[i] = ls_buffer[LineSearchOffset::CAND_GRADS + k * 6 + i];
+
+if (config.reg_enabled) {
+    // Apply gradient adjustment (same as in K3 solve)
+    grad[0] += config.reg_scale * corr_k * 2.0f * cos_yaw * longitudinal;
+    grad[1] += config.reg_scale * corr_k * 2.0f * sin_yaw * longitudinal;
+}
+
+// Now compute dphi_k with correct gradient
+float dphi_k = 0.0f;
+for (int i = 0; i < 6; i++)
+    dphi_k += grad[i] * state_buffer[StateOffset::DELTA + i];
+```
+
+### Environment Requirements
+
+The CUDA graph kernels are compiled with nvcc at build time and work correctly.
+However, the codebase also uses CubeCL for some helper operations (point transformation,
+voxel grid construction), which require nvrtc at runtime.
+
+**Required**: CUDA 12.4 for both build and runtime. Ensure:
+- `CUDA_PATH=/usr/local/cuda-12.4`
+- `PATH` includes `/usr/local/cuda-12.4/bin`
+- `LD_LIBRARY_PATH` includes `/usr/local/cuda-12.4/lib64`
+
+CUDA 13+ has incompatible nvrtc that causes CubeCL JIT compilation to fail with
+"invalid value for --gpu-architecture (-arch)" errors.
 
 ---
 
