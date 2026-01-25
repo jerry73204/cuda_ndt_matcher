@@ -226,6 +226,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "autoware_internal_debug_msgs"
+version = "1.12.0"
+dependencies = [
+ "builtin_interfaces",
+ "rosidl_runtime_rs",
+ "std_msgs",
+]
+
+[[package]]
 name = "autoware_map_msgs"
 version = "1.11.0"
 dependencies = [
@@ -960,6 +969,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arc-swap",
+ "autoware_internal_debug_msgs",
  "autoware_map_msgs",
  "builtin_interfaces",
  "ctrlc",
@@ -977,7 +987,6 @@ dependencies = [
  "std_msgs",
  "std_srvs",
  "tf2_msgs",
- "tier4_debug_msgs",
  "tier4_localization_msgs",
  "visualization_msgs",
 ]
@@ -3536,14 +3545,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
 dependencies = [
  "cfg-if",
-]
-
-[[package]]
-name = "tier4_debug_msgs"
-version = "0.1.0"
-dependencies = [
- "builtin_interfaces",
- "rosidl_runtime_rs",
 ]
 
 [[package]]

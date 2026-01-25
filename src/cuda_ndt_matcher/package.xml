@@ -14,7 +14,7 @@
   <depend>builtin_interfaces</depend>
   <depend>tier4_localization_msgs</depend>
   <depend>visualization_msgs</depend>
-  <depend>tier4_debug_msgs</depend>
+  <depend>autoware_internal_debug_msgs</depend>
   <depend>autoware_map_msgs</depend>
   <depend>diagnostic_msgs</depend>
 

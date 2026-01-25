@@ -28,9 +28,9 @@ tf2_msgs.workspace = true
 std_srvs.workspace = true
 builtin_interfaces.workspace = true
 tier4_localization_msgs.workspace = true
-visualization_msgs = "*"
-tier4_debug_msgs = "*"
-autoware_map_msgs = "*"
+visualization_msgs.workspace = true
+autoware_internal_debug_msgs.workspace = true
+autoware_map_msgs.workspace = true
 diagnostic_msgs.workspace = true
 
 [features]

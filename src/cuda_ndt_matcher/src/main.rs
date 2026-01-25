@@ -45,7 +45,7 @@ use std::time::Instant;
 use std_msgs::msg::Header;
 use std_srvs::srv::{SetBool, Trigger};
 use tf2_msgs::msg::TFMessage;
-use tier4_debug_msgs::msg::{Float32Stamped, Int32Stamped};
+use autoware_internal_debug_msgs::msg::{Float32Stamped, Int32Stamped};
 use tier4_localization_msgs::srv::PoseWithCovarianceStamped as PoseWithCovSrv;
 use visualization::ParticleMarkerConfig;
 use visualization_msgs::msg::{Marker, MarkerArray};
