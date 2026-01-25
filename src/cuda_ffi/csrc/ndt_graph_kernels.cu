@@ -645,7 +645,13 @@ __global__ void ndt_graph_update_kernel(
             float alpha = state_buffer[StateOffset::ALPHA_CANDIDATES + k];
             float corr_k = ls_buffer[LineSearchOffset::CAND_CORR + k];
 
-            // Apply regularization to candidate score if enabled
+            // Copy gradient to local for potential regularization modification
+            float grad[6];
+            for (int i = 0; i < 6; i++) {
+                grad[i] = ls_buffer[LineSearchOffset::CAND_GRADS + k * 6 + i];
+            }
+
+            // Apply regularization to candidate score and gradient if enabled
             if (config.reg_enabled) {
                 float trial_pose_x = state_buffer[StateOffset::ORIGINAL_POSE + 0] +
                                     alpha * state_buffer[StateOffset::DELTA + 0];
@@ -659,14 +665,19 @@ __global__ void ndt_graph_update_kernel(
                 float sin_yaw = sinf(trial_yaw);
                 float cos_yaw = cosf(trial_yaw);
                 float longitudinal = dy * sin_yaw + dx * cos_yaw;
+
+                // Score adjustment
                 phi_k += -config.reg_scale * corr_k * longitudinal * longitudinal;
+
+                // Gradient adjustment for curvature condition
+                grad[0] += config.reg_scale * corr_k * 2.0f * cos_yaw * longitudinal;
+                grad[1] += config.reg_scale * corr_k * 2.0f * sin_yaw * longitudinal;
             }
 
-            // Compute directional derivative
+            // Compute directional derivative using potentially modified gradient
             float dphi_k = 0.0f;
             for (int i = 0; i < 6; i++) {
-                dphi_k += ls_buffer[LineSearchOffset::CAND_GRADS + k * 6 + i] *
-                         state_buffer[StateOffset::DELTA + i];
+                dphi_k += grad[i] * state_buffer[StateOffset::DELTA + i];
             }
 
             // Strong Wolfe conditions
@@ -799,6 +810,25 @@ __global__ void ndt_graph_update_kernel(
         }
     }
 
+    // Increment iteration counter
+    state_buffer[StateOffset::ITERATIONS] = (float)(iter + 1);
+
+    // Write final output if converged or at max iterations
+    // NOTE: Must happen BEFORE clearing reduce buffer to capture final score/correspondences
+    if (converged || (iter + 1) >= config.max_iterations) {
+        for (int i = 0; i < 6; i++) {
+            output_buffer[OutputOffset::FINAL_POSE + i] = state_buffer[StateOffset::POSE + i];
+        }
+        output_buffer[OutputOffset::ITERATIONS] = state_buffer[StateOffset::ITERATIONS];
+        output_buffer[OutputOffset::CONVERGED] = state_buffer[StateOffset::CONVERGED];
+        output_buffer[OutputOffset::FINAL_SCORE] = reduce_buffer[ReduceOffset::SCORE];
+        output_buffer[OutputOffset::NUM_CORRESPONDENCES] = reduce_buffer[ReduceOffset::CORRESPONDENCES];
+        output_buffer[OutputOffset::MAX_OSC_COUNT] = state_buffer[StateOffset::MAX_OSC_COUNT];
+        float total_iters = state_buffer[StateOffset::ITERATIONS];
+        output_buffer[OutputOffset::AVG_ALPHA] = (total_iters > 0.0f) ?
+            state_buffer[StateOffset::ALPHA_SUM] / total_iters : 0.0f;
+    }
+
     // Clear reduce buffer for next iteration
     for (int i = 0; i < ReduceOffset::TOTAL_SIZE; i++) {
         reduce_buffer[i] = 0.0f;
@@ -813,24 +843,6 @@ __global__ void ndt_graph_update_kernel(
                 ls_buffer[LineSearchOffset::CAND_GRADS + k * 6 + i] = 0.0f;
             }
         }
-    }
-
-    // Increment iteration counter
-    state_buffer[StateOffset::ITERATIONS] = (float)(iter + 1);
-
-    // Write final output if converged or at max iterations
-    if (converged || (iter + 1) >= config.max_iterations) {
-        for (int i = 0; i < 6; i++) {
-            output_buffer[OutputOffset::FINAL_POSE + i] = state_buffer[StateOffset::POSE + i];
-        }
-        output_buffer[OutputOffset::ITERATIONS] = state_buffer[StateOffset::ITERATIONS];
-        output_buffer[OutputOffset::CONVERGED] = state_buffer[StateOffset::CONVERGED];
-        output_buffer[OutputOffset::FINAL_SCORE] = reduce_buffer[ReduceOffset::SCORE];
-        output_buffer[OutputOffset::NUM_CORRESPONDENCES] = reduce_buffer[ReduceOffset::CORRESPONDENCES];
-        output_buffer[OutputOffset::MAX_OSC_COUNT] = state_buffer[StateOffset::MAX_OSC_COUNT];
-        float total_iters = state_buffer[StateOffset::ITERATIONS];
-        output_buffer[OutputOffset::AVG_ALPHA] = (total_iters > 0.0f) ?
-            state_buffer[StateOffset::ALPHA_SUM] / total_iters : 0.0f;
     }
 }
 
