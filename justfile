@@ -356,14 +356,15 @@ build-cuda-debug-cov:
         --cmake-args -DCMAKE_BUILD_TYPE=Release \
         --cargo-args --release -p ndt_cuda --features debug-cov
 
-# Build CUDA with profiling only (timing, no debug data collection)
+# Build CUDA with profiling (timing + JSONL output, minimal overhead)
+# Uses debug-output for JSONL but without full debug-iteration data collection
 build-cuda-profiling:
     #!/usr/bin/env bash
     colcon build \
         --base-paths src \
         --symlink-install \
         --cmake-args -DCMAKE_BUILD_TYPE=Release \
-        --cargo-args --release --features profiling
+        --cargo-args --release --features profiling,debug-output
 
 # --- Run Recipes (Selective Debug Features) ---
 

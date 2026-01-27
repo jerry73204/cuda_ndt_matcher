@@ -512,11 +512,13 @@ impl NdtScanMatcher {
     ///
     /// This is the same as `align()` but also returns detailed debug information
     /// about each iteration for comparison with Autoware's implementation.
+    /// Align with debug information (timing, final state).
     ///
     /// When GPU mode is enabled, this uses the GPU path for alignment but returns
     /// simplified debug info (no per-iteration data, only final state).
     ///
-    /// Only available with the `debug-iteration` feature.
+    /// When CPU mode is enabled with `debug-iteration` feature, this returns
+    /// full per-iteration debug data.
     ///
     /// # Arguments
     /// * `source_points` - Source point cloud (sensor scan)
@@ -525,7 +527,6 @@ impl NdtScanMatcher {
     ///
     /// # Returns
     /// Tuple of (alignment result, debug info).
-    #[cfg(feature = "debug-iteration")]
     pub fn align_with_debug(
         &self,
         source_points: &[[f32; 3]],
@@ -547,35 +548,108 @@ impl NdtScanMatcher {
             return self.align_gpu_with_debug(source_points, initial_guess, timestamp_ns);
         }
 
-        // CPU path with full per-iteration debug info
-        let opt_config = self.build_optimizer_config();
-        let optimizer = NdtOptimizer::new(opt_config);
+        // CPU path with full per-iteration debug info (requires debug-iteration feature)
+        #[cfg(feature = "debug-iteration")]
+        {
+            let opt_config = self.build_optimizer_config();
+            let optimizer = NdtOptimizer::new(opt_config);
 
-        // Run alignment with debug
-        let (result, debug) =
-            optimizer.align_with_debug(source_points, grid, initial_guess, timestamp_ns);
+            // Run alignment with debug
+            let (result, debug) =
+                optimizer.align_with_debug(source_points, grid, initial_guess, timestamp_ns);
 
-        Ok((
-            AlignResult {
-                pose: result.pose,
-                converged: result.status.is_converged(),
-                score: result.score,
-                transform_probability: result.transform_probability,
-                nvtl: result.nvtl,
-                iterations: result.iterations,
-                hessian: result.hessian,
-                num_correspondences: result.num_correspondences,
-                oscillation_count: result.oscillation_count,
-            },
-            debug,
-        ))
+            return Ok((
+                AlignResult {
+                    pose: result.pose,
+                    converged: result.status.is_converged(),
+                    score: result.score,
+                    transform_probability: result.transform_probability,
+                    nvtl: result.nvtl,
+                    iterations: result.iterations,
+                    hessian: result.hessian,
+                    num_correspondences: result.num_correspondences,
+                    oscillation_count: result.oscillation_count,
+                },
+                debug,
+            ));
+        }
+
+        // CPU path without per-iteration debug (debug-iteration feature disabled)
+        #[cfg(not(feature = "debug-iteration"))]
+        {
+            use crate::optimization::AlignmentDebug;
+            use std::time::Instant;
+
+            let start_time = Instant::now();
+
+            // Run normal alignment (CPU path since GPU is not enabled)
+            let opt_config = self.build_optimizer_config();
+            let optimizer = NdtOptimizer::new(opt_config);
+            let result_inner = optimizer.align(source_points, grid, initial_guess);
+            let result = AlignResult {
+                pose: result_inner.pose,
+                converged: result_inner.status.is_converged(),
+                score: result_inner.score,
+                transform_probability: result_inner.transform_probability,
+                nvtl: result_inner.nvtl,
+                iterations: result_inner.iterations,
+                hessian: result_inner.hessian,
+                num_correspondences: result_inner.num_correspondences,
+                oscillation_count: result_inner.oscillation_count,
+            };
+            let exe_time_ms = start_time.elapsed().as_secs_f64() * 1000.0;
+
+            // Build minimal debug info
+            let translation = initial_guess.translation.vector;
+            let rotation = initial_guess.rotation.euler_angles();
+            let initial_pose_arr = [
+                translation.x,
+                translation.y,
+                translation.z,
+                rotation.0,
+                rotation.1,
+                rotation.2,
+            ];
+
+            let final_translation = result.pose.translation.vector;
+            let final_rotation = result.pose.rotation.euler_angles();
+            let final_pose_arr = [
+                final_translation.x,
+                final_translation.y,
+                final_translation.z,
+                final_rotation.0,
+                final_rotation.1,
+                final_rotation.2,
+            ];
+
+            let mut debug = AlignmentDebug::new(timestamp_ns);
+            debug.exe_time_ms = Some(exe_time_ms);
+            debug.set_initial_pose(&initial_pose_arr);
+            debug.set_final_pose(&final_pose_arr);
+            debug.num_source_points = source_points.len();
+            debug.convergence_status = if result.converged {
+                "Converged".to_string()
+            } else {
+                "MaxIterations".to_string()
+            };
+            debug.total_iterations = result.iterations;
+            debug.final_score = result.transform_probability;
+            debug.final_nvtl = result.nvtl;
+            debug.oscillation_count = result.oscillation_count;
+            debug.num_correspondences = Some(result.num_correspondences);
+            debug.gauss_d1 = Some(self.gauss_params.d1);
+            debug.gauss_d2 = Some(self.gauss_params.d2);
+            debug.resolution = Some(self.config.resolution as f64);
+            debug.outlier_ratio = Some(self.gauss_params.outlier_ratio);
+
+            Ok((result, debug))
+        }
     }
 
     /// GPU variant of align_with_debug.
     ///
     /// Uses the GPU path for alignment and returns simplified debug info
     /// (final state only, no per-iteration data since GPU runs entire loop).
-    #[cfg(feature = "debug-iteration")]
     fn align_gpu_with_debug(
         &self,
         source_points: &[[f32; 3]],

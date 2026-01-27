@@ -35,13 +35,17 @@ diagnostic_msgs.workspace = true
 
 [features]
 default = []
-# Enable JSONL debug output for alignment and pose initialization
-debug-output = ["ndt_cuda/debug-iteration"]
+# Enable JSONL debug output for alignment and pose initialization (minimal overhead)
+# Does NOT enable per-iteration debug data collection (see debug-iterations)
+debug-output = []
+# Enable per-iteration debug data collection (adds overhead: GPU buffer allocation + GPU->CPU transfer)
+# Requires debug-output to be useful
+debug-iterations = ["debug-output", "ndt_cuda/debug-iteration"]
 # Enable voxel grid JSON dump for comparison with Autoware
 debug-voxels = []
 # Enable visualization debug features (markers, colored point clouds)
 debug-markers = ["ndt_cuda/debug-iteration"]
 # Enable all debug features
-debug = ["debug-output", "debug-voxels", "debug-markers", "ndt_cuda/debug"]
+debug = ["debug-iterations", "debug-voxels", "debug-markers", "ndt_cuda/debug"]
 # Forward profiling to ndt_cuda
 profiling = ["ndt_cuda/profiling"]
