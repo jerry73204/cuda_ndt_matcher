@@ -12,6 +12,7 @@ CUDA/Rust re-implementation of Autoware's `ndt_scan_matcher` using CubeCL for GP
 
 **Documentation**:
 - `docs/autoware-comparison.md` - Feature comparison and GPU acceleration status
+- `docs/autoware_vs_cuda_comparison.md` - Detailed CUDA vs Autoware comparison findings
 - `docs/roadmap/` - Implementation phases and status
 - `docs/profiling-results.md` - Performance analysis
 - `docs/optimization-approaches.md` - Potential optimizations for iteration reduction
@@ -72,7 +73,11 @@ src/
 | Feature | Description |
 |---------|-------------|
 | `cuda` | Enable CUDA backend (default) |
-| `profiling` | Enable detailed timing instrumentation and hash table debug logs |
+| `profiling` | Enable timing instrumentation (minimal overhead) |
+| `debug-iteration` | Enable per-iteration data collection (adds overhead) |
+| `debug-cov` | Enable GPU vs CPU covariance comparison |
+| `debug-vpp` | Enable voxel-per-point distribution logging |
+| `debug` | All debug features combined (`debug-iteration` + `debug-cov` + `debug-vpp` + `profiling`) |
 | `test-verbose` | Enable verbose println output in tests |
 
 **cuda_ffi crate**:
@@ -81,6 +86,8 @@ src/
 | `test-verbose` | Enable verbose println output in tests |
 
 Enable features with: `cargo test --features test-verbose` or `cargo build --features profiling`
+
+**Important**: Use `profiling` for performance measurement. The `debug` feature adds significant overhead from per-iteration data collection.
 
 ## ROS 2 Integration Notes
 
@@ -161,6 +168,38 @@ pkill -9 -f "component_container_mt"   # Multi-threaded containers
 pkill -9 -f "robot_state_publisher"    # TF publisher
 pkill -9 -f "ros2-daemon"              # ROS 2 CLI daemon
 ```
+
+## Profiling
+
+**Release profiling** (minimal overhead, for accurate performance comparison):
+```bash
+just profile-compare           # Full workflow: build, run both, compare
+just run-cuda-profiling        # CUDA with timing data only
+just run-builtin-profiling     # Autoware with timing data only
+just compare-profiling         # Analyze results
+```
+
+**Debug profiling** (full debug data, adds overhead):
+```bash
+just run-cuda-debug            # CUDA with all debug features
+just run-builtin-debug         # Autoware with all debug features
+```
+
+**Build differences**:
+| Build | Feature | Overhead | Use Case |
+|-------|---------|----------|----------|
+| `build-cuda-profiling` | `profiling` | Minimal | Performance measurement |
+| `build-cuda-debug` | `debug` | Significant | Debug data collection |
+
+Output files:
+- `logs/ndt_cuda_profiling.jsonl` - CUDA timing data
+- `logs/ndt_autoware_profiling.jsonl` - Autoware timing data
+- `logs/ndt_cuda_debug.jsonl` - CUDA full debug data
+- `logs/ndt_autoware_debug.jsonl` - Autoware full debug data
+
+Analysis scripts:
+- `tmp/profile_comparison.py` - Compare CUDA vs Autoware performance
+- `scripts/analyze_profile.py` - Analyze profile directory structure
 
 ## Comparison Testing
 
