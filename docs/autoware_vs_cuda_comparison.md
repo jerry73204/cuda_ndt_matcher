@@ -178,31 +178,60 @@ CUDA's stricter epsilon results in ~0.3 more iterations on average.
 - Large inverse covariance differences are expected because small covariance changes amplify in matrix inversion
 - Some voxels show different Z coordinates (e.g., CUDA: -0.76m vs Autoware: 1.40m), suggesting different point assignments near voxel boundaries
 
-### 2. Alignment Results Comparison
+### 2. Pose Difference (CUDA vs Autoware)
 
-**289 common timestamps** (out of 290 CUDA / 289 Autoware alignments)
+This section compares the final poses computed by both implementations for the same input frames. Note: This is **not ground truth validation** - it measures implementation consistency.
 
-#### Position & Rotation Differences
+**Run comparison**: `just compare-poses` or `just compare-poses-verbose`
 
-| Metric             | Mean  | Std   | Max   | Min   |
-|--------------------|-------|-------|-------|-------|
-| Position (meters)  | 0.039 | 0.037 | 0.223 | 0.004 |
-| Rotation (radians) | 0.019 | 0.015 | 0.054 | 0.004 |
+#### Position Difference
+
+**Desktop x86**:
+
+| Metric             | Mean   | Std    | Max    | P95    |
+|--------------------|--------|--------|--------|--------|
+| Position 3D (m)    | 0.039  | 0.037  | 0.223  | -      |
+| Position 2D (m)    | -      | -      | -      | -      |
+| Rotation (rad)     | 0.019  | 0.015  | 0.054  | -      |
+
+**Jetson AGX Orin**:
+
+| Metric             | Mean   | Std    | Max    | P95    |
+|--------------------|--------|--------|--------|--------|
+| Position 3D (m)    | 0.038  | 0.039  | 0.264  | 0.107  |
+| Position 2D (m)    | 0.036  | 0.037  | 0.263  | 0.101  |
+| Rotation (rad)     | 0.019  | 0.015  | 0.055  | 0.051  |
+| Rotation (deg)     | 1.11   | 0.86   | 3.16   | 2.94   |
+
+**Key Observations**:
+- Both platforms show similar pose differences (~3.8cm mean, ~26cm max)
+- Rotation differences are small (~1.1 deg mean, ~3.2 deg max)
+- Largest differences occur when CUDA converges in fewer iterations
 
 #### Convergence
 
-| Implementation | Converged | Total | Rate |
-|----------------|-----------|-------|------|
-| CUDA           | 289       | 289   | 100% |
-| Autoware       | 289       | 289   | 100% |
+| Platform    | CUDA Converged | Autoware Converged | Common Frames |
+|-------------|----------------|--------------------|---------------|
+| x86         | 289/289 (100%) | 289/289 (100%)     | 289           |
+| Jetson      | 294/294 (100%) | 290/290 (100%)     | 289           |
 
-#### Iteration Count
+#### Iteration Count Difference (CUDA - Autoware)
 
-| Metric                      | Value    |
-|-----------------------------|----------|
-| Mean diff (CUDA - Autoware) | +0.28    |
-| Std dev                     | 1.42     |
-| Range                       | -4 to +7 |
+| Platform | Mean  | Std  | Range      |
+|----------|-------|------|------------|
+| x86      | +0.28 | 1.42 | [-4, +7]   |
+| Jetson   | +0.29 | 1.44 | [-5, +5]   |
+
+#### Largest Position Differences (Jetson)
+
+| Timestamp       | Pos Diff | Rot Diff | CUDA Iters | AW Iters |
+|-----------------|----------|----------|------------|----------|
+| ...269743713792 | 0.264m   | 0.008    | 1          | 5        |
+| ...269844508160 | 0.260m   | 0.008    | 1          | 5        |
+| ...255644498944 | 0.253m   | 0.024    | 1          | 6        |
+| ...280443982592 | 0.226m   | 0.040    | 1          | 6        |
+
+**Observation**: Largest differences occur when CUDA converges very early (1 iteration) while Autoware takes more iterations. This is due to different convergence epsilon (CUDA: 0.01m vs Autoware: 0.1m).
 
 ### 3. Score Calculation Differences
 
@@ -463,22 +492,38 @@ For reference, the debug build with full per-iteration data collection shows:
 
 The debug build adds ~6ms overhead per frame due to GPU debug buffer allocation and GPU→CPU transfers.
 
-### Profiling Commands
+### Profiling and Comparison Commands
 
 ```bash
+# === Performance Profiling ===
+
 # Build and run release profiling (minimal overhead)
 just run-cuda-profiling      # CUDA with profiling only
 just run-builtin-profiling   # Autoware with profiling only
 
-# Full comparison (build, run both, compare)
+# Full profiling comparison (build, run both, compare timing)
 just profile-compare
 
 # Debug builds (full debug data, slower)
 just run-cuda-debug          # CUDA with all debug features
 just run-builtin-debug       # Autoware with all debug features
+
+# === Pose Accuracy Comparison ===
+
+# Compare poses from existing profiling logs
+just compare-poses           # Summary output
+just compare-poses-verbose   # Include largest differences
+just compare-poses-json      # JSON output for automation
+
+# Full accuracy test (run both implementations and compare)
+just accuracy-test           # Build, run both, compare poses
 ```
 
-The `profiling` feature only enables timing instrumentation. The `debug` feature enables per-iteration data collection which adds significant overhead. For accurate performance comparison, use the `profiling` build.
+**Notes**:
+- The `profiling` feature only enables timing instrumentation (minimal overhead)
+- The `debug` feature enables per-iteration data collection (significant overhead)
+- For accurate performance comparison, use the `profiling` build
+- Pose comparison requires profiling logs from both implementations
 
 ## Future Investigation
 
@@ -492,24 +537,22 @@ The `profiling` feature only enables timing instrumentation. The `debug` feature
 | File                                 | Purpose                                             |
 |--------------------------------------|-----------------------------------------------------|
 | `logs/ndt_cuda_profiling.jsonl`      | CUDA release profiling (294 entries)                |
-| `logs/ndt_autoware_profiling.jsonl`  | Autoware profiling (289 entries)                    |
-| `logs/ndt_cuda_debug.jsonl`          | CUDA alignment debug (291 entries)                  |
-| `logs/ndt_cuda_debug_fixed.jsonl`    | CUDA alignment debug with fixed score normalization |
-| `logs/ndt_autoware_debug.jsonl`      | Autoware alignment debug (289 entries)              |
-| `logs/ndt_autoware_iterations.jsonl` | Autoware per-iteration debug (289 entries)          |
+| `logs/ndt_autoware_profiling.jsonl`  | Autoware profiling (290 entries)                    |
+| `logs/ndt_cuda_debug.jsonl`          | CUDA alignment debug                                |
+| `logs/ndt_autoware_debug.jsonl`      | Autoware alignment debug                            |
 | `logs/ndt_cuda_voxels.json`          | CUDA voxel grid dump (11,601 voxels)                |
 | `logs/ndt_autoware_voxels.json`      | Autoware voxel grid dump (11,601 voxels)            |
-| `tmp/compare_ndt_outputs.py`         | Comparison analysis script                          |
-| `tmp/profile_comparison.py`          | Performance profiling analysis script               |
+| `scripts/compare_poses.py`           | Pose difference comparison script                   |
+| `tmp/analyze_jetson_profiling.py`    | Jetson profiling analysis script                    |
 
 ## Conclusion
 
-The CUDA NDT implementation is **functionally correct** and produces results within acceptable tolerance of Autoware's reference implementation:
+The CUDA NDT implementation is **functionally equivalent** to Autoware's NDT:
 
-- **Position accuracy**: Mean 3.9cm, Max 22cm (acceptable for localization)
+- **Pose difference**: Mean 3.8cm, Max 26cm (within acceptable localization tolerance)
 - **100% convergence**: Both implementations converge successfully on both platforms
 - **Voxel grids match**: Same voxel counts with minor boundary differences
-- **Score output**: Now normalized to match Autoware's convention (ratio ~0.81)
+- **Score output**: Normalized to match Autoware's convention (ratio ~0.81)
 
 ### Cross-Platform Performance Summary
 
