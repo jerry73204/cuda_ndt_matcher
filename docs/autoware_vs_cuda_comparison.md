@@ -12,6 +12,141 @@ The CUDA NDT implementation produces functionally equivalent results to Autoware
 - **Performance (release build)**: CUDA 93.9 Hz vs Autoware 120.9 Hz (0.78x, 22% slower)
 - **Performance (debug build)**: CUDA 59.5 Hz vs Autoware 120.9 Hz (debug overhead significant)
 
+## Implementation Methods
+
+### Algorithm Overview
+
+Both implementations use **Newton's method** for maximum likelihood estimation based on the Normal Distributions Transform (Magnusson 2009). The core optimization loop:
+
+1. Transform source points using current pose estimate
+2. Find nearby voxels for each point
+3. Compute score, gradient, and Hessian across all point-voxel correspondences
+4. Solve Newton step: `Δp = -H⁻¹g`
+5. Normalize and scale step, optionally apply line search
+6. Update pose and check convergence
+
+**Score Function** (Gaussian probability model):
+```
+p(x) = -d1 × exp(-d2/2 × (x-μ)ᵀΣ⁻¹(x-μ))
+```
+
+Where d1, d2 are derived from outlier ratio and resolution (Magnusson 2009).
+
+### Architecture Comparison
+
+| Aspect                  | Autoware                              | CUDA                              |
+|-------------------------|---------------------------------------|-----------------------------------|
+| **Language**            | C++                                   | Rust + CUDA                       |
+| **Parallelization**     | OpenMP (CPU threads)                  | CUDA (GPU blocks/threads)         |
+| **Voxel Storage**       | PCL KD-tree with embedded covariances | Sparse array + spatial hash table |
+| **Neighbor Search**     | KD-tree radius search                 | Grid-based 3×3×3 lookup           |
+| **Numerical Precision** | Double (f64) throughout               | Mixed: GPU f32, CPU f64           |
+
+### Autoware Implementation (multigrid_ndt_omp)
+
+**Parallelization Strategy**:
+```cpp
+#pragma omp parallel for
+for each source point:
+    nearby_voxels = kdtree.radiusSearch(point, radius)
+    for each voxel in nearby_voxels:
+        compute score, gradient, Hessian contributions
+        atomic accumulate into global buffers
+// After all points: solve Newton step on single thread
+```
+
+**Key Characteristics**:
+- Fine-grained parallelism: one thread per point
+- KD-tree radius search finds variable voxels per point (typically 4-6)
+- Shared state via atomic operations
+- Memory-bound (KD-tree traversal)
+
+**Default Parameters**:
+- Max iterations: 35
+- Transformation epsilon: 0.1m
+- Step size: 0.1
+- Outlier ratio: 0.55
+- Line search: Disabled (causes local minima issues)
+
+### CUDA Implementation (full_gpu_pipeline_v2)
+
+**GPU Pipeline Architecture** (Phase 24 - Graph Kernels):
+
+| Kernel              | Function                                           | Parallelism              |
+|---------------------|----------------------------------------------------|--------------------------|
+| **K1 (Init)**       | Initialize state from initial pose                 | Single block             |
+| **K2 (Compute)**    | Per-point score/gradient/Hessian + block reduction | N points across blocks   |
+| **K3 (Solve)**      | Newton solve via SVD + optional regularization     | Single block             |
+| **K4 (LineSearch)** | Parallel line search evaluation (optional)         | K candidates in parallel |
+| **K5 (Update)**     | Apply step, check convergence                      | Single block             |
+
+**Parallelization Strategy**:
+```cuda
+// K2: Each block processes a chunk of points
+for each point in block's range:
+    voxel_indices = grid_lookup_3x3x3(point)
+    for each valid voxel:
+        compute contributions to score, gradient, Hessian
+    block-level reduce via shared memory
+    atomic add to global reduce buffers
+```
+
+**Key Characteristics**:
+- Coarse-grained parallelism: blocks process point chunks
+- Grid-based 3×3×3 lookup (max 27 voxels per point)
+- Block-local reduction minimizes atomic contention
+- Compute-bound (matrix operations, exponentials)
+
+**Default Parameters**:
+- Max iterations: 30
+- Transformation epsilon: 0.01m (stricter than Autoware)
+- Step size: 0.1
+- Outlier ratio: 0.55
+- Line search: Configurable (disabled by default)
+
+### Neighbor Search Comparison
+
+| Aspect                    | Autoware (KD-tree)             | CUDA (Grid Hash)      |
+|---------------------------|--------------------------------|-----------------------|
+| **Lookup Complexity**     | O(log V) per query             | O(27) constant        |
+| **Search Pattern**        | Radius-based, variable results | Fixed 3×3×3 grid      |
+| **Correspondences/Point** | 4-6 typical (variable)         | ≤27 (fixed max)       |
+| **Total Correspondences** | ~25,000/frame                  | ~20,000/frame         |
+| **Boundary Behavior**     | Finds voxels across boundaries | Strictly grid-aligned |
+
+**Impact**: CUDA finds ~20% fewer correspondences, resulting in ~81% score ratio. This does not affect localization accuracy.
+
+### Convergence Criteria
+
+| Criterion                 | Autoware                             | CUDA           |
+|---------------------------|--------------------------------------|----------------|
+| **Delta Norm**            | `‖Δp‖ < 0.1m`                        | `‖Δp‖ < 0.01m` |
+| **Max Iterations**        | 35                                   | 30             |
+| **Oscillation Detection** | Consecutive steps dot product < -0.9 | Same           |
+
+CUDA's stricter epsilon results in ~0.3 more iterations on average.
+
+### Newton Solver
+
+**Both implementations**:
+- Use Jacobi SVD for numerical stability
+- Normalize step: `Δp /= ‖Δp‖`
+- Scale step: `min(‖Δp‖, step_size)`
+
+**CUDA additions**:
+- Optional L2 regularization for near-singular Hessian
+- Optional GNSS regularization (penalty for deviation from GNSS pose)
+
+### Key Algorithmic Differences Summary
+
+| Aspect                | Autoware       | CUDA                  | Impact                     |
+|-----------------------|----------------|-----------------------|----------------------------|
+| Neighbor Search       | KD-tree radius | Grid 3×3×3            | ~20% fewer correspondences |
+| Correspondences/Frame | ~25,000        | ~20,000               | Score ratio ~0.81          |
+| Trans Epsilon         | 0.1m           | 0.01m                 | CUDA ~0.3 more iterations  |
+| Precision             | f64            | f32 (GPU) / f64 (CPU) | Negligible difference      |
+| Per-Iteration Cost    | ~3.2ms         | ~5.4ms                | GPU launch overhead        |
+
 ## Detailed Findings
 
 ### 1. Voxel Grid Comparison
