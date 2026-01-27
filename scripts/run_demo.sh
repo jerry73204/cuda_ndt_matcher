@@ -57,9 +57,12 @@ fi
 # Run simulation, bag play, and recording in parallel
 # --halt now,done=1: When any job finishes, kill all others immediately
 # This ensures cleanup when ros2 bag play completes (since -l flag removed)
+# Wait time before starting rosbag playback (Jetson needs longer startup)
+STARTUP_DELAY="${NDT_STARTUP_DELAY:-60}"
+
 parallel --halt now,done=1 --line-buffer ::: \
     "$SCRIPT_DIR/run_ndt_simulation.sh $USE_CUDA '$MAP_DIR'" \
-    "sleep 30 && source '$AUTOWARE_ACTIVATE' && ros2 bag play '$ROSBAG'" \
-    "sleep 35 && source '$AUTOWARE_ACTIVATE' && ros2 bag record -o '$BAG_NAME' ${NDT_TOPICS[*]}"
+    "sleep $STARTUP_DELAY && source '$AUTOWARE_ACTIVATE' && ros2 bag play '$ROSBAG'" \
+    "sleep $((STARTUP_DELAY + 5)) && source '$AUTOWARE_ACTIVATE' && ros2 bag record -o '$BAG_NAME' ${NDT_TOPICS[*]}"
 
 echo "Demo finished. Recording saved to: $BAG_NAME"
