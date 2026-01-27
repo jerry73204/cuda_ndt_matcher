@@ -395,12 +395,47 @@ run-cuda-debug-voxels: build-cuda-debug-voxels
             "$(realpath {{sample_rosbag}})" \
             "{{rosbag_output_dir}}"
 
-# Run CUDA with profiling only (for raw speed measurement)
+# Run CUDA with profiling only (minimal overhead timing data)
 run-cuda-profiling: build-cuda-profiling
-    ./scripts/run_demo.sh --cuda \
-        "$(realpath {{sample_map_dir}})" \
-        "$(realpath {{sample_rosbag}})" \
-        "{{rosbag_output_dir}}"
+    mkdir -p {{logs_dir}}
+    NDT_DEBUG_FILE={{logs_dir}}/ndt_cuda_profiling.jsonl \
+        ./scripts/run_demo.sh --cuda \
+            "$(realpath {{sample_map_dir}})" \
+            "$(realpath {{sample_rosbag}})" \
+            "{{rosbag_output_dir}}"
+
+# Run Autoware with profiling (timing data for comparison)
+run-builtin-profiling:
+    mkdir -p {{logs_dir}}
+    cd tests/comparison && just run-profiling
+
+# Compare CUDA and Autoware profiling results
+compare-profiling:
+    python3 tmp/profile_comparison.py
+
+# Full profiling comparison: build, run both, compare
+profile-compare: build-cuda-profiling
+    #!/usr/bin/env bash
+    set -e
+    echo "=== Building CUDA with profiling ==="
+    # Already built by dependency
+
+    echo ""
+    echo "=== Running CUDA profiling ==="
+    mkdir -p {{logs_dir}}
+    NDT_DEBUG_FILE={{logs_dir}}/ndt_cuda_profiling.jsonl \
+        ./scripts/run_demo.sh --cuda \
+            "$(realpath {{sample_map_dir}})" \
+            "$(realpath {{sample_rosbag}})" \
+            "{{rosbag_output_dir}}"
+
+    echo ""
+    echo "=== Running Autoware profiling ==="
+    cd tests/comparison && just run-profiling
+
+    echo ""
+    echo "=== Comparing results ==="
+    python3 tmp/profile_comparison.py
 
 # Run Autoware with per-iteration debug output (requires build-comparison first)
 run-builtin-debug:

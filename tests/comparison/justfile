@@ -70,6 +70,20 @@ run-debug:
             "$(realpath data/sample-rosbag-fixed)" \
             "rosbag"
 
+# Run Autoware with profiling only (timing data, minimal overhead)
+# Only enables alignment-level debug without per-iteration data
+run-profiling:
+    #!/usr/bin/env bash
+    set -eo pipefail
+    cd {{project_root}}
+    mkdir -p logs
+    NDT_DEBUG=1 \
+    NDT_DEBUG_FILE=logs/ndt_autoware_profiling.jsonl \
+        ./scripts/run_demo.sh \
+            "$(realpath data/sample-map)" \
+            "$(realpath data/sample-rosbag-fixed)" \
+            "rosbag"
+
 # === Debug Data Collection ===
 
 # Dump voxel grid data from Autoware (requires build first)
